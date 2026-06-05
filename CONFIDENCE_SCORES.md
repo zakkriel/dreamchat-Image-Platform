@@ -4,7 +4,17 @@ Every PRD/spec/ADR/schema/runbook in this repo carries a per-file confidence-to-
 
 **Changelog**
 
-- **2026-06-05 (latest)** — Benchmark corpus populated:
+- **2026-06-05 (latest)** — Cost-control + preview-capability + observability thresholds:
+  - New `docs/architecture/cost-control.md` — price book, budgets, reservations, 11-step pre-flight estimation pipeline, behavior rules, failure modes. `daily_cost_usd` rate-limit dimension now has a defined backing model.
+  - `docs/api/rate-limits.md` rewritten with six distinct limit dimensions (request rate, concurrent jobs, daily cost, monthly cost, provider-specific, token-specific), each tied to a concrete data structure. Score **75 → 90**.
+  - `docs/api/openapi.yaml` v0.5.0: replaces `PriceBookEntry` with full `ProviderModelPrice` (operation_type / unit_type enums, effective dating, is_active); rebuilds `CostBudget` to spec (scope_type / period / limit_amount / reserved_amount / spent_amount / status); adds `CostReservation` with full lifecycle + `GET /v1/admin/cost-reservations`; adds `PreviewCapability` enum on `ProviderModel`; returns `estimated_cost_usd` and `cost_reservation_id` on `GenerationJobAccepted`. Splits price-book endpoints into POST/GET/PUT-by-id. Adds POST for cost-budgets.
+  - `docs/runbooks/cost-spike.md` updated to use the new schema field names and `POST /v1/admin/price-book` (new entry) for incident review.
+  - `docs/architecture/observability.md` adds explicit numeric alert thresholds (latency, failure rate, queue, cost, cache/retrieval, consistency) with warning/critical bands. Score **78 → 88**.
+  - `prds/06_delivery_pipeline_performance_cost_and_rollout.md` adds §3.0 Provider preview capability — `true_preview`/`derived_preview`/`no_preview` modes and router rules. Score **75 → 85**.
+  - `docs/adr/010-preview-first-delivery.md` rewritten to make preview-first explicitly provider-dependent. Score **78 → 88**.
+  - `docs/architecture/provider-adapters.md` router inputs now include `ProviderCapability` + `PreviewCapability`.
+  - See `frustration_log.md` entry 17.
+- **2026-06-05 (earlier)** — Benchmark corpus populated:
   - `prds/schemas/benchmark_corpus_template.md` replaced with 100 real cases (25 characters, 25 places, 25 artifacts, 25 consistency stress tests), explicit 1–5 scoring rubric on 10 quality dimensions, 10-item operational pass/fail checklist, scoring policy with capability-mapping floors, result-row schema for the runner.
   - All 100 JSON cases validate; benchmark_ids unique; `required_capability` distribution (25 identity_capable, 10 pack_capable, 65 scene_capable) ties cleanly to PRD 03 §8.
   - Score shift: `prds/schemas/benchmark_corpus_template.md` **60 → 88**.
@@ -37,15 +47,15 @@ Score is "my confidence I could implement the file end-to-end without further hu
 
 | Group | Avg | Median | Min | Max | Files |
 |---|---:|---:|---:|---:|---:|
-| PRDs (`prds/`) | **88** | 88 | 75 | 95 | 10 (1 deprecated, excluded) |
-| ADRs (`docs/adr/`) | **89** | 90 | 78 | 95 | 15 |
-| API specs (`docs/api/`) | **86** | 88 | 75 | 94 | 9 |
-| Architecture (`docs/architecture/`) | **86** | 88 | 78 | 90 | 10 |
+| PRDs (`prds/`) | **89** | 88 | 80 | 95 | 10 (1 deprecated, excluded) |
+| ADRs (`docs/adr/`) | **90** | 90 | 85 | 95 | 15 |
+| API specs (`docs/api/`) | **88** | 90 | 85 | 94 | 9 |
+| Architecture (`docs/architecture/`) | **88** | 88 | 85 | 90 | 11 (incl. cost-control.md) |
 | DB (`docs/db/`) | **85** | 85 | 85 | 85 | 1 |
 | Guidelines (`docs/guidelines/`) | **90** | 90 | 85 | 95 | 4 |
 | Runbooks (`docs/runbooks/`) | **87** | 88 | 80 | 90 | 5 |
 | Schemas (`docs/schemas/`) | **90** | 89 | 88 | 95 | 4 |
-| **All files** | **88** | 89 | 75 | 95 | **58** |
+| **All files** | **89** | 90 | 80 | 95 | **59** |
 
 ## Per-file scores
 
@@ -59,7 +69,7 @@ Score is "my confidence I could implement the file end-to-end without further hu
 | **82** | `03_character_and_place_consistency_system.md` | *(was 65)* Provider Capability Floor added; consistency now testable |
 | 80 | `04_asset_packs_variants_and_expressions.md` | Pack templates + asset roles enumerated; trigger thresholds open |
 | **92** | `05_storage_retrieval_versioning_and_cache_strategy.md` | *(was 88)* variant compatibility matrix now defined; retrieval is deterministic |
-| 75 | `06_delivery_pipeline_performance_cost_and_rollout.md` | Phased rollout solid; preview-first needs provider support |
+| **85** | `06_delivery_pipeline_performance_cost_and_rollout.md` | *(was 75)* preview capability classification + router rules; cost-control backed by spec |
 | 85 | `07_superpowers_implementation_prompt.md` | Meta-build prompt; stack choice conflicts with docs |
 | _N/A_ | `schemas/image_platform_openapi_draft.yaml` | **DEPRECATED** — points at `docs/api/openapi.yaml` |
 | 90 | `schemas/image_platform_data_model.json` | Cleanest spec in pack; near-1:1 to DDL |
@@ -78,7 +88,7 @@ Score is "my confidence I could implement the file end-to-end without further hu
 | 85 | `007-provider-adapters.md` |
 | 85 | `008-asset-state-first.md` |
 | **92** | `009-retrieval-before-generation.md` *(was 85; variant matrix now defined)* |
-| 78 | `010-preview-first-delivery.md` |
+| **88** | `010-preview-first-delivery.md` *(was 78; provider-dependent preview capability)* |
 | 95 | `011-s3-object-storage.md` |
 | 95 | `012-postgres-source-of-truth.md` |
 | 85 | `013-redis-queue-mvp.md` |
@@ -91,13 +101,13 @@ All ADRs share a templated Context/Tradeoffs/Notes block; the *decision* sentenc
 
 | Score | File |
 |---:|---|
-| **94** | `openapi.yaml` *(v0.4.0; variant-compatibility-matrix support: FallbackPolicy + MatchType enums, six new VisualAsset fields, fallback_policy on search + generation; 29 paths, 33 schemas, 123 refs resolve, validates against OpenAPI 3.1.0)* |
-| 90 | `authentication.md` *(now documents tenant inference and admin scopes)* |
+| **94** | `openapi.yaml` *(v0.5.0; adds cost-control + preview-capability spec: ProviderModelPrice, CostBudget rebuilt, CostReservation, PreviewCapability enum, estimated_cost_usd on GenerationJobAccepted; 30 paths, 43 schemas, 147 refs resolve)* |
+| 90 | `authentication.md` *(documents tenant inference + admin scopes)* |
 | 92 | `errors.md` |
 | 85 | `idempotency.md` |
 | 90 | `jobs.md` |
 | 88 | `models.md` |
-| 75 | `rate-limits.md` |
+| **90** | `rate-limits.md` *(was 75; six dimensions + cost-control backing)* |
 | 85 | `styles.md` |
 | 85 | `assets.md` |
 
@@ -109,12 +119,13 @@ All ADRs share a templated Context/Tradeoffs/Notes block; the *decision* sentenc
 | 90 | `component-boundaries.md` |
 | 88 | `data-model.md` |
 | 88 | `job-lifecycle.md` |
-| 78 | `observability.md` |
+| **88** | `observability.md` *(was 78; numeric alert thresholds)* |
 | 82 | `provider-adapters.md` |
 | **90** | `asset-versioning.md` *(was 82; now references the variant-compatibility matrix)* |
 | 85 | `security-and-auth.md` |
 | 88 | `admin-control-surface.md` *(planned admin endpoints + scopes + audit + CLI hooks)* |
-| **90** | `variant-compatibility-matrix.md` *(new; four match outcomes, fallback policy, per-entity rules)* |
+| 90 | `variant-compatibility-matrix.md` *(four match outcomes, fallback policy, per-entity rules)* |
+| **90** | `cost-control.md` *(new; price book + budgets + reservations + 11-step pre-flight pipeline)* |
 
 ### DB (`docs/db/`)
 
@@ -159,10 +170,11 @@ All ADRs share a templated Context/Tradeoffs/Notes block; the *decision* sentenc
 
 ## Lowest-confidence items (work to do first)
 
-1. **`docs/api/rate-limits.md` (75)** — `estimated_cost_per_day` requires a price book + pre-flight cost estimation pipeline. (Admin surface now documents the price-book endpoints; estimation pipeline is the remaining decision.)
-2. **`prds/06_delivery_pipeline_performance_cost_and_rollout.md` (75)** — preview-first only delivers UX value when the provider supports a true fast-preview path.
-3. **`docs/architecture/observability.md` (78)** — alert thresholds (what counts as "high"?) need numbers before they can be wired.
-4. **`docs/adr/010-preview-first-delivery.md` (78)** — same provider-capability dependency as PRD 06.
+1. **`docs/db/initial_schema.sql` (85)** — DB schema lags the data model; missing `asset_packs`, `provider_attempts`, `provider_model_price`, `cost_budget`, `cost_reservation`, `route` tables. Mostly mechanical work.
+2. **`docs/architecture/asset-versioning.md` (82)** + variant_family promotion to a proper column — currently in JSONB.
+3. **`docs/architecture/provider-adapters.md` (82)** — the router policy is still prose; once we have benchmark results we can encode it as a rule table.
+
+No remaining item is below **80**.
 
 ## Cross-cutting risks
 

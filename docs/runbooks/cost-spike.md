@@ -81,20 +81,28 @@ Authorization: Bearer <admin-token>   # scope: admin:costs
 Content-Type: application/json
 
 {
-  "amount_usd": "50.00",
-  "window": "day",
-  "downgrade_to_tier": "draft"
+  "limit_amount": "50.00",
+  "status": "active"
 }
 ```
 
-This caps spend at the scope and instructs the router to downgrade to draft
-quality once the soft warning fires.
+This caps spend at the scope. The pre-flight estimation pipeline
+(`docs/architecture/cost-control.md` §3) immediately starts rejecting new
+reservations once the period's
+`reserved_amount + spent_amount >= limit_amount`. To stop new
+generation entirely without changing the cap, set `status: "paused"`
+(records cost but does not deny) or `status: "exceeded"` (denies new
+reservations until the period resets or the limit is raised).
+
+To **force quality downgrade** for the affected scope rather than deny,
+use 4b (disable the high-tier route) so the router falls through to a
+cheaper alternative.
 
 | Endpoint | Scope | Status |
 |---|---|---|
 | `PUT /v1/admin/cost-budgets/{id}` | `admin:costs` | **PLANNED** |
-| Future CLI: `dci-admin costs budget set <id> --amount-usd 50 --downgrade-to draft` | — | planned |
-| **MANUAL** fallback: `UPDATE cost_budgets SET amount_usd = '50.00', downgrade_to_tier = 'draft' WHERE id = '<budget_id>';` — write audit event by hand. | — | manual |
+| Future CLI: `dci-admin costs budget set <id> --limit-usd 50` | — | planned |
+| **MANUAL** fallback: `UPDATE cost_budgets SET limit_amount = '50.00', status = 'active' WHERE id = '<budget_id>';` — write audit event by hand. | — | manual |
 
 ### 4b. Disable an expensive route
 
@@ -114,17 +122,39 @@ Content-Type: application/json
 | `POST /v1/admin/routes/{id}/disable` | `admin:routes` | **PLANNED** |
 | Future CLI: `dci-admin routes disable <route_id> --reason "..."` | — | planned |
 
-### 4c. Force draft tier for the offending token (last resort)
+### 4c. Tighten the offending token's budget (last resort)
 
-If the spike is from a single client repeatedly generating, lower their cap
-via the token's budget:
+If the spike is from a single client repeatedly generating, tighten
+their token-scoped cap:
 
-- Find their token-scoped budget via §3.
-- Set `downgrade_to_tier: "draft"` and `hard_limit_pct: 80`.
+- Find the token-scoped budget via §3 (filter `scope_type=token`,
+  `scope_id=<their token_id>`).
+- Lower `limit_amount` or set `status: "exceeded"` to block new
+  reservations immediately. The period reset (daily / monthly) will
+  return them to normal once the underlying behavior is understood.
 
-(This requires a token-scoped budget to exist. If not, create one — `POST
-/v1/admin/cost-budgets` will be added alongside the PUT in the same
-implementation slice.)
+If no token-scoped budget exists, create one:
+
+```http
+POST /v1/admin/cost-budgets
+Authorization: Bearer <admin-token>   # scope: admin:costs
+Content-Type: application/json
+
+{
+  "tenant_id": "<tenant>",
+  "scope_type": "token",
+  "scope_id": "<their token_id>",
+  "period": "daily",
+  "limit_amount": "5.00",
+  "currency": "USD",
+  "status": "active"
+}
+```
+
+| Endpoint | Scope | Status |
+|---|---|---|
+| `POST /v1/admin/cost-budgets` | `admin:costs` | **PLANNED** |
+| `PUT /v1/admin/cost-budgets/{id}` | `admin:costs` | **PLANNED** |
 
 ## 5. Confirm mitigation
 
@@ -154,14 +184,36 @@ After the incident:
   this.
 - **Review idempotency usage** — if the spike was driven by a client retrying
   without an `Idempotency-Key`, file a bug against that client.
-- **Update the price book** if the cost-per-call was higher than estimated:
+- **Update the price book** if the cost-per-call was higher than estimated.
+  Post a *new* `provider_model_price` entry rather than editing in place
+  (the previous entry's `effective_to` is auto-set on POST so audit
+  preserves history). See `docs/architecture/cost-control.md` §2.1.
+
   ```http
-  PUT /v1/admin/price-book/{provider_model_id}
+  POST /v1/admin/price-book
   Content-Type: application/json
-  { "operation": "generate_final", "estimated_cost_usd": "0.08",
-    "source": "incident_review_2026-06-05" }
+
+  {
+    "provider_id": "bfl",
+    "model_id": "flux-2-klein",
+    "operation_type": "variant_pack",
+    "unit_type": "image",
+    "price_per_unit": "0.08",
+    "currency": "USD",
+    "effective_from": "2026-06-05T18:00:00Z",
+    "source": "incident_review_2026-06-05"
+  }
   ```
   Scope `admin:costs` — **PLANNED**.
+
+- **Inspect live reservations** to see what's currently held against
+  the budget:
+  ```http
+  GET /v1/admin/cost-reservations?status=reserved&tenant_id=<t>&limit=200
+  ```
+  Scope `admin:costs` — **PLANNED**. Useful when a budget reads as full
+  but actual spend looks low (lots of in-flight work that hasn't
+  reconciled).
 
 ## 7. Audit events expected
 
@@ -169,7 +221,8 @@ After the incident:
 |---|---|---|
 | §4a budget change | `admin.cost_budget.updated` | Endpoint emits |
 | §4b route disable | `admin.route.disabled` | Endpoint emits |
-| §6 price-book update | `admin.price_book.updated` | Endpoint emits |
+| §4c create budget | `admin.cost_budget.created` | Endpoint emits |
+| §6 price-book update | `admin.price_book.created` (new entry) and `admin.price_book.updated` (previous entry's `effective_to` set) | Endpoints emit |
 | Any **MANUAL** action | Written by hand via planned `POST /v1/admin/audit-events` | Operator |
 
 Verify in `GET /v1/admin/audit-events` (planned).

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: DreamChat Image Platform API
-  version: 0.4.0
+  version: 0.5.0
   description: |
     Standalone API for generating, storing, retrieving, and versioning persistent visual assets for DreamChat worlds.
 
@@ -721,18 +721,35 @@ paths:
   /v1/admin/price-book:
     get:
       tags: [Admin]
-      summary: List price-book entries
+      summary: List provider_model_price entries
       description: |
         **PLANNED — required admin surface for implementation, not yet served.**
 
-        Per (provider_model_id × operation) prices used for pre-flight cost
-        estimation. Supports the `estimated_cost_per_day` rate-limit
-        dimension (see `docs/api/rate-limits.md`).
+        Returns `provider_model_price` rows used by the pre-flight cost
+        estimation pipeline (`docs/architecture/cost-control.md`). Multiple
+        entries per (provider × model × operation_type) are allowed; entries
+        are dated via `effective_from`/`effective_to` and selected with
+        `is_active`. Supports the `daily_cost_usd` rate-limit dimension
+        (see `docs/api/rate-limits.md`).
       security:
         - BearerAuth: [admin:costs]
+      parameters:
+        - in: query
+          name: provider_id
+          schema: { type: string }
+        - in: query
+          name: model_id
+          schema: { type: string }
+        - in: query
+          name: operation_type
+          schema:
+            $ref: '#/components/schemas/PriceOperationType'
+        - in: query
+          name: only_active
+          schema: { type: boolean, default: true }
       responses:
         '200':
-          description: Price book
+          description: Price book entries
           content:
             application/json:
               schema:
@@ -742,21 +759,70 @@ paths:
                   entries:
                     type: array
                     items:
-                      $ref: '#/components/schemas/PriceBookEntry'
+                      $ref: '#/components/schemas/ProviderModelPrice'
         default:
           $ref: '#/components/responses/ErrorResponse'
-  /v1/admin/price-book/{provider_model_id}:
-    put:
+    post:
       tags: [Admin]
-      summary: Upsert a price-book entry
+      summary: Create a new provider_model_price entry
       description: |
         **PLANNED — required admin surface for implementation, not yet served.**
 
-        Emits `admin.price_book.updated`.
+        Creates a new price entry. Implementations should auto-set
+        `effective_to` on the previously-active entry for the same
+        (provider × model × operation_type) to avoid overlapping active
+        prices. Emits `admin.price_book.created`.
+      security:
+        - BearerAuth: [admin:costs]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProviderModelPriceWrite'
+      responses:
+        '201':
+          description: Created entry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderModelPrice'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/admin/price-book/{price_id}:
+    get:
+      tags: [Admin]
+      summary: Get one provider_model_price entry
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
       security:
         - BearerAuth: [admin:costs]
       parameters:
-        - name: provider_model_id
+        - name: price_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Price entry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderModelPrice'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+    put:
+      tags: [Admin]
+      summary: Update mutable fields on a provider_model_price entry
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        Allowed mutations: `effective_to`, `is_active`, `notes`. To change
+        price_per_unit, POST a new entry. Emits `admin.price_book.updated`.
+      security:
+        - BearerAuth: [admin:costs]
+      parameters:
+        - name: price_id
           in: path
           required: true
           schema: { type: string }
@@ -765,14 +831,60 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/PriceBookEntryWrite'
+              $ref: '#/components/schemas/ProviderModelPriceMutable'
       responses:
         '200':
           description: Updated entry
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PriceBookEntry'
+                $ref: '#/components/schemas/ProviderModelPrice'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /v1/admin/cost-reservations:
+    get:
+      tags: [Admin]
+      summary: List cost reservations
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        Cost reservations created during the pre-flight estimation pipeline
+        (`docs/architecture/cost-control.md` §3 step 7). Useful for the
+        cost-spike runbook to inspect what's currently held against budgets
+        and what has been committed vs. released.
+      security:
+        - BearerAuth: [admin:costs]
+      parameters:
+        - in: query
+          name: tenant_id
+          schema: { type: string }
+        - in: query
+          name: status
+          schema:
+            $ref: '#/components/schemas/CostReservationStatus'
+        - in: query
+          name: created_after
+          schema: { type: string, format: date-time }
+        - in: query
+          name: created_before
+          schema: { type: string, format: date-time }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 100, maximum: 1000 }
+      responses:
+        '200':
+          description: Cost reservations
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [reservations]
+                properties:
+                  reservations:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CostReservation'
         default:
           $ref: '#/components/responses/ErrorResponse'
 
@@ -783,10 +895,22 @@ paths:
       description: |
         **PLANNED — required admin surface for implementation, not yet served.**
 
-        Budgets at per-tenant, per-world, per-token, and per-day scope. Used
-        by the cost-spike runbook to inspect and adjust caps.
+        Budgets at `tenant`, `token`, `world`, or `user` scope, daily or
+        monthly period. Used by the cost-spike runbook to inspect and adjust
+        caps. See `docs/architecture/cost-control.md` for semantics.
       security:
         - BearerAuth: [admin:costs]
+      parameters:
+        - in: query
+          name: tenant_id
+          schema: { type: string }
+        - in: query
+          name: scope_type
+          schema:
+            $ref: '#/components/schemas/BudgetScopeType'
+        - in: query
+          name: scope_id
+          schema: { type: string }
       responses:
         '200':
           description: Cost budgets
@@ -802,6 +926,30 @@ paths:
                       $ref: '#/components/schemas/CostBudget'
         default:
           $ref: '#/components/responses/ErrorResponse'
+    post:
+      tags: [Admin]
+      summary: Create a cost budget
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        Emits `admin.cost_budget.created`.
+      security:
+        - BearerAuth: [admin:costs]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CostBudgetWrite'
+      responses:
+        '201':
+          description: Created budget
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CostBudget'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
   /v1/admin/cost-budgets/{budget_id}:
     put:
       tags: [Admin]
@@ -809,6 +957,8 @@ paths:
       description: |
         **PLANNED — required admin surface for implementation, not yet served.**
 
+        Mutable: `limit_amount`, `status`. `reserved_amount` and
+        `spent_amount` are computed by the platform and not editable.
         Emits `admin.cost_budget.updated`.
       security:
         - BearerAuth: [admin:costs]
@@ -822,7 +972,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CostBudgetWrite'
+              $ref: '#/components/schemas/CostBudgetMutable'
       responses:
         '200':
           description: Updated budget
@@ -1038,6 +1188,22 @@ components:
         - compatible_match
         - preview_fallback
         - generated_required
+    PreviewCapability:
+      type: string
+      description: |
+        Whether the provider model can return a fast low-cost preview
+        before the final asset. See ADR-010 and PRD 06 §3.4.
+        - `true_preview`: provider has a separate fast-preview path; the
+          preview asset lands meaningfully before the final asset.
+        - `derived_preview`: provider only returns one image; the platform
+          downscales it for thumbnail/preview tiers but generation latency
+          is unchanged (no UX wait-time benefit).
+        - `no_preview`: no preview support; the API returns progress
+          state (and a placeholder) until the final asset lands.
+      enum:
+        - true_preview
+        - derived_preview
+        - no_preview
     # ------------------------------------------------------------------------
     # Health & error
     # ------------------------------------------------------------------------
@@ -1159,6 +1325,23 @@ components:
         status:
           type: string
           enum: [queued]
+        estimated_cost_usd:
+          type: string
+          description: |
+            Pre-flight cost estimate from the price book, in USD. Returned
+            when the route has at least one matching `provider_model_price`
+            entry. Null when the route allows an unpriced provider for
+            internal testing (`allow_unpriced_provider=true` per
+            `docs/architecture/cost-control.md`).
+        currency:
+          type: string
+          default: USD
+        cost_reservation_id:
+          type: string
+          description: |
+            ID of the `cost_reservation` row created for this job. The
+            reservation is committed against the budget on job success and
+            released on failure/cancel.
     GenerationJob:
       type: object
       required: [id, status, job_type, created_at, updated_at]
@@ -1347,7 +1530,13 @@ components:
           description: Capability tiers this model satisfies (used by the router).
           items:
             $ref: '#/components/schemas/ProviderCapability'
-        supports_preview: { type: boolean }
+        preview_capability:
+          $ref: '#/components/schemas/PreviewCapability'
+        supports_preview:
+          type: boolean
+          description: |
+            **Deprecated**, prefer `preview_capability`. Treat as
+            `preview_capability != no_preview`.
         supports_high_res: { type: boolean }
         status: { type: string, enum: [active, degraded, disabled] }
     # ------------------------------------------------------------------------
@@ -1409,74 +1598,240 @@ components:
         disabled_reason: { type: string }
         disabled_by_token_id: { type: string }
         disabled_at: { type: string, format: date-time }
-    PriceBookEntry:
+    PriceOperationType:
+      type: string
+      description: |
+        What kind of provider call a price entry covers.
+      enum:
+        - text_to_image
+        - image_to_image
+        - upscale
+        - variant_pack
+        - edit
+    PriceUnitType:
+      type: string
+      description: |
+        Unit that `price_per_unit` is denominated in.
+      enum:
+        - image
+        - megapixel
+        - second
+        - credit
+        - request
+    BudgetScopeType:
+      type: string
+      description: |
+        Scope at which a cost budget applies. Budgets at narrower scopes
+        (token, world, user) sit inside the parent tenant's budget; both
+        must permit a reservation for it to succeed.
+      enum:
+        - tenant
+        - token
+        - world
+        - user
+    BudgetPeriod:
+      type: string
+      description: Reset period for a cost budget.
+      enum:
+        - daily
+        - monthly
+    BudgetStatus:
+      type: string
+      description: |
+        Live status of a cost budget.
+        - active: enforcing normally.
+        - paused: enforcement disabled (e.g. for migration); reservations
+          still record but do not deny requests.
+        - exceeded: hard limit reached; new reservations rejected until
+          period reset or limit raised.
+      enum:
+        - active
+        - paused
+        - exceeded
+    CostReservationStatus:
+      type: string
+      description: |
+        Lifecycle of a cost reservation. `reserved` is created pre-flight;
+        `committed` on job success with `actual_amount`; `released` on
+        job cancel/failure to return budget; `failed` if the reservation
+        itself could not be created (e.g. budget exceeded).
+      enum:
+        - reserved
+        - committed
+        - released
+        - failed
+    ProviderModelPrice:
       type: object
-      required: [provider_model_id, operation, estimated_cost_usd]
+      required: [id, provider_id, model_id, operation_type, unit_type, price_per_unit, currency, effective_from, is_active]
       properties:
-        provider_model_id: { type: string }
-        operation:
+        id: { type: string }
+        provider_id: { type: string }
+        model_id: { type: string }
+        operation_type:
+          $ref: '#/components/schemas/PriceOperationType'
+        unit_type:
+          $ref: '#/components/schemas/PriceUnitType'
+        price_per_unit:
           type: string
           description: |
-            Operation slug — e.g. `generate_preview`, `generate_final`,
-            `upscale`. Matches the `operation` field on cost_event rows.
-        estimated_cost_usd:
+            Fixed-decimal price in `currency` per `unit_type`. String to
+            preserve precision (e.g. "0.0140").
+        currency:
           type: string
-          description: Fixed-decimal USD cost. String to preserve precision.
+          default: USD
+          description: ISO 4217 code.
+        effective_from:
+          type: string
+          format: date-time
+        effective_to:
+          type: string
+          format: date-time
+          nullable: true
+          description: |
+            Null while the entry is the active price for its
+            (provider × model × operation_type). Set when superseded.
+        is_active:
+          type: boolean
+          description: |
+            Convenience flag for "this is the currently quoted price."
+            Implementations must keep `is_active` synchronized with
+            `effective_from <= now < effective_to` (or `effective_to` null).
         source:
           type: string
           description: |
-            Where the price came from (e.g. `provider_pricing_page`,
-            `internal_benchmark`).
+            Provenance of the price (e.g. `provider_pricing_page`,
+            `internal_benchmark`, `incident_review_2026_06_05`).
         notes: { type: string }
+        created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
-    PriceBookEntryWrite:
+    ProviderModelPriceWrite:
       type: object
-      required: [operation, estimated_cost_usd]
+      required: [provider_id, model_id, operation_type, unit_type, price_per_unit, effective_from]
       properties:
-        operation: { type: string }
-        estimated_cost_usd: { type: string }
+        provider_id: { type: string }
+        model_id: { type: string }
+        operation_type:
+          $ref: '#/components/schemas/PriceOperationType'
+        unit_type:
+          $ref: '#/components/schemas/PriceUnitType'
+        price_per_unit: { type: string }
+        currency: { type: string, default: USD }
+        effective_from: { type: string, format: date-time }
+        effective_to:
+          type: string
+          format: date-time
+          nullable: true
         source: { type: string }
+        notes: { type: string }
+    ProviderModelPriceMutable:
+      type: object
+      description: |
+        Fields editable on an existing price entry. To change
+        `price_per_unit`, POST a new entry instead — the old one is
+        retained for audit.
+      properties:
+        effective_to:
+          type: string
+          format: date-time
+          nullable: true
+        is_active: { type: boolean }
         notes: { type: string }
     CostBudget:
       type: object
-      required: [id, scope, scope_id, amount_usd, window]
+      required: [id, tenant_id, scope_type, scope_id, period, limit_amount, currency, status]
       properties:
         id: { type: string }
-        scope:
-          type: string
-          enum: [tenant, world, token, session, global]
+        tenant_id: { type: string }
+        scope_type:
+          $ref: '#/components/schemas/BudgetScopeType'
         scope_id:
           type: string
           description: |
-            Identifier for the scope (e.g. `tenant_abc`, `world_42`,
-            `tok_xyz`). Null when `scope=global`.
-          nullable: true
-        amount_usd: { type: string }
-        window:
+            Identifier within the scope (e.g. `tenant_abc`, `tok_xyz`,
+            `world_42`, `user_7`). For `scope_type=tenant`, equal to
+            `tenant_id`.
+        period:
+          $ref: '#/components/schemas/BudgetPeriod'
+        limit_amount:
           type: string
-          enum: [hour, day, week, month]
-        soft_warning_pct:
-          type: integer
+          description: Hard cap in `currency` per `period`.
+        reserved_amount:
+          type: string
           description: |
-            Percentage of budget at which soft warnings fire. Default 80.
-        hard_limit_pct:
-          type: integer
+            Sum of currently-held reservations for the current period
+            (status `reserved`). Read-only; computed by the platform.
+        spent_amount:
+          type: string
           description: |
-            Percentage at which generation is denied or downgraded. Default 100.
-        downgrade_to_tier:
-          $ref: '#/components/schemas/QualityTier'
+            Sum of committed actuals for the current period (status
+            `committed`). Read-only; computed by the platform.
+        currency:
+          type: string
+          default: USD
+        status:
+          $ref: '#/components/schemas/BudgetStatus'
+        created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
     CostBudgetWrite:
       type: object
+      required: [scope_type, scope_id, period, limit_amount]
       properties:
-        amount_usd: { type: string }
-        window:
+        tenant_id:
           type: string
-          enum: [hour, day, week, month]
-        soft_warning_pct: { type: integer }
-        hard_limit_pct: { type: integer }
-        downgrade_to_tier:
-          $ref: '#/components/schemas/QualityTier'
+          description: |
+            Required for non-tenant-scope budgets. For `scope_type=tenant`,
+            equal to `scope_id`.
+        scope_type:
+          $ref: '#/components/schemas/BudgetScopeType'
+        scope_id: { type: string }
+        period:
+          $ref: '#/components/schemas/BudgetPeriod'
+        limit_amount: { type: string }
+        currency: { type: string, default: USD }
+        status:
+          $ref: '#/components/schemas/BudgetStatus'
+    CostBudgetMutable:
+      type: object
+      description: Fields editable on an existing budget.
+      properties:
+        limit_amount: { type: string }
+        status:
+          $ref: '#/components/schemas/BudgetStatus'
+    CostReservation:
+      type: object
+      required: [id, generation_job_id, tenant_id, estimated_amount, reserved_amount, currency, status, created_at]
+      properties:
+        id: { type: string }
+        generation_job_id: { type: string }
+        tenant_id: { type: string }
+        estimated_amount:
+          type: string
+          description: |
+            Pre-flight cost estimate calculated from the price book.
+        reserved_amount:
+          type: string
+          description: |
+            Amount actually held against the budget. Normally equal to
+            `estimated_amount`; may exceed it slightly if the price book
+            includes a safety margin.
+        actual_amount:
+          type: string
+          nullable: true
+          description: |
+            Committed cost from provider reporting. Null until the job
+            terminates and is reconciled.
+        currency:
+          type: string
+          default: USD
+        status:
+          $ref: '#/components/schemas/CostReservationStatus'
+        failure_reason:
+          type: string
+          description: |
+            Populated when `status = failed` (e.g. `budget_exceeded`,
+            `no_price_entry`).
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
     CostEvent:
       type: object
       required: [id, operation, status, created_at]
@@ -1498,6 +1853,27 @@ components:
 # Confidence to Implement
 #
 # Score: 94/100 — Very High
+#
+# v0.5.0 — adds cost-control + preview-capability spec:
+#   * Replaces `PriceBookEntry`/`PriceBookEntryWrite` with the richer
+#     `ProviderModelPrice` model: operation_type enum, unit_type enum,
+#     effective_from/effective_to dating, is_active flag. Splits write
+#     into `ProviderModelPriceWrite` (create) and
+#     `ProviderModelPriceMutable` (allowed edits). Adds POST endpoint
+#     and per-id GET/PUT under /v1/admin/price-book.
+#   * `CostBudget` rebuilt to spec: scope_type (tenant/token/world/user),
+#     period (daily/monthly), limit_amount + reserved_amount +
+#     spent_amount, status (active/paused/exceeded). Adds POST endpoint
+#     for creation; PUT body restricted to `CostBudgetMutable`.
+#   * New `CostReservation` entity with full lifecycle
+#     (reserved/committed/released/failed) plus
+#     `GET /v1/admin/cost-reservations` for incident inspection.
+#   * `GenerationJobAccepted` now returns `estimated_cost_usd` and
+#     `cost_reservation_id` on the 202 response so callers know the
+#     pre-flight estimate.
+#   * `PreviewCapability` enum (true_preview / derived_preview /
+#     no_preview) added to `ProviderModel` so the router can enforce
+#     PRD 06 / ADR-010 preview-first contract honestly.
 #
 # v0.4.0 — adds variant-compatibility-matrix support: `FallbackPolicy` and
 # `MatchType` enums; new fields on VisualAsset (`variant_family`,

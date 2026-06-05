@@ -42,6 +42,11 @@ Inputs:
 - provider availability
 - cost policy
 - token/client limits
+- `ProviderCapability` level required by the request (per PRD 03 §8 —
+  e.g. `identity_capable` for recurring NPC packs)
+- `PreviewCapability` of the provider model (per ADR-010 and PRD 06
+  §3.0 — `true_preview` / `derived_preview` / `no_preview`); routes
+  that promise preview-first UX require `true_preview`.
 
 Example routing:
 

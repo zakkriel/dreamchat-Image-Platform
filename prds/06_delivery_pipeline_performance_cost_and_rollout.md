@@ -18,6 +18,37 @@ This lets DreamChat remain responsive while still supporting higher visual quali
 
 ## 3. Delivery Pipeline
 
+### 3.0 Provider preview capability (precondition for preview-first UX)
+
+Preview-first delivery is not free for every provider. Whether the user
+actually experiences a fast preview followed by a final upgrade depends
+on what the chosen provider can do, classified into three modes
+(exposed as `ProviderModel.preview_capability` in
+`docs/api/openapi.yaml`):
+
+| Mode | Provider behavior | Platform delivery semantics |
+|---|---|---|
+| `true_preview` | Provider has a separate fast / cheap preview generation path that returns before the final asset is ready. | The platform delivers a preview asset early, then upgrades to the final asset when it lands. **Preview-first UX wait-time win is real.** |
+| `derived_preview` | Provider returns only one final image. The platform downscales it for thumbnail / preview tiers. | Low-res delivery improves browser rendering and bandwidth, but does **not** reduce generation wait time. The UI should not promise "preview coming soon"; it should show progress/loading state until the single image lands. |
+| `no_preview` | Provider has no preview behavior and the platform cannot manufacture a useful preview before the final asset exists (e.g. content is illegible until full resolution). | The API returns job-progress state and a placeholder; no preview asset is created until final. |
+
+Route rules enforced by the router (ADR-007):
+
+- **Character / place starter pack generation** may use `derived_preview`
+  providers — pack jobs aren't on the interactive critical path; the
+  multiple-asset latency dominates either way.
+- **Interactive scene generation** (UI-driven, single image, must feel
+  responsive) should prefer `true_preview` routes. If only
+  `derived_preview` or `no_preview` is available, the router either
+  rejects the request with `503 preview_unavailable` *or* downgrades
+  expectations and exposes that in the response — never silently
+  promises preview-first UX it can't deliver.
+- The `Idempotency-Key` and retrieval-before-generation flows are
+  unchanged across all three modes.
+
+This rule replaces any implicit "preview-first works everywhere"
+assumption earlier in this PRD.
+
 ### 3.1 Standard Pipeline
 
 1. API receives request.
@@ -371,7 +402,7 @@ This PRD is implemented when:
 
 ## Confidence to Implement
 
-**Score: 75/100 — High**
+**Score: 85/100 — High** *(was 75; +10 after preview capability classification added)*
 
-The three pipelines (standard, retrieval, pack), the resolution tiers, and the rollout phases (0→5) are concrete and sequenceable. Cost-control levers (budget caps, quality downgrade, queue delay) and telemetry surface are well-listed. Two reasons I'm not higher: (1) the latency targets (2–8s preview, 10–30s final) are directional but only achievable if the provider supports a true fast-preview model — preview-first only works when the backend can produce a low-res output materially faster than the final; some providers don't, in which case "preview" becomes a thumbnail of the final and the UX promise weakens. (2) The benchmark corpus and "provider routing strategy" require a measurement pipeline (scoring rubric + golden images + automated runs) that isn't described — implementable but its own subproject.
+The three pipelines (standard, retrieval, pack), the resolution tiers, and the rollout phases (0→5) are concrete and sequenceable. Cost-control levers (budget caps, route-level disable) are now backed by the cost-control spec (`docs/architecture/cost-control.md`) and the admin surface (`docs/architecture/admin-control-surface.md`). The preview-first promise is now honest: §3.0 classifies providers into `true_preview` / `derived_preview` / `no_preview` and the router enforces the route rules so the platform never silently promises a UX it can't deliver. The benchmark corpus is populated (`prds/schemas/benchmark_corpus_template.md`) so provider routing decisions are testable. Remaining 15 points reflect the runner itself (orchestration script) and the LLM-judge augmentation being follow-ups, not blockers.
 
