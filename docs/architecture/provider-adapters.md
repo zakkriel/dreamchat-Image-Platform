@@ -90,3 +90,11 @@ Provider API keys must be loaded from environment or secret manager.
 
 Never store provider secrets in DB.
 Never log provider secrets.
+
+---
+
+## Confidence to Implement
+
+**Score: 82/100 — High**
+
+The Go interface is small and right. Mock adapter is trivial. Error normalization vocabulary is complete. Risks are real-adapter-specific: each provider has its own async/polling shape, its own way of passing reference images (URL vs. base64 vs. asset upload), its own seed semantics. The interface's `Generate(ProviderGenerateRequest)` will need to grow when reference-image conditioning is added. Circuit breaker is correctly deferred. The router-decision policy is the underspecified piece.

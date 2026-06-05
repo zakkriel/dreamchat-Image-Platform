@@ -27,3 +27,9 @@ Tradeoffs:
 ## Notes
 
 This ADR can be revisited after the first production benchmark.
+
+## Confidence to Implement
+
+**Score: 90/100 — Very High**
+
+`Authorization: Bearer <token>` + scope checks is a standard middleware pattern. The token prefix/hash lookup flow is described in `docs/architecture/security-and-auth.md` and is straightforward (prefix lookup → constant-time hash compare → scope set check). The scope list (`images:read`, `images:write`, `jobs:read`, `styles:*`, `models:read`, `admin:*`) is already enumerated. Minor uncertainty around scope-to-endpoint mapping conflicts in edge cases (e.g. does `POST /v1/assets/{id}/regenerate` need `images:write` or a new `images:regenerate`?) — choosable.

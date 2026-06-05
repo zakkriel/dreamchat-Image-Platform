@@ -26,3 +26,11 @@ If a token leaks:
 ## Logging
 
 Never paste raw tokens into tickets or logs.
+
+---
+
+## Confidence to Implement
+
+**Score: 90/100 — Very High**
+
+Standard rotation flow. The `last_used_at` column already exists in `api_tokens`. Admin endpoints to create/revoke + a query for token usage are small additions. Emergency-revocation flow is well covered. Operationally clean.

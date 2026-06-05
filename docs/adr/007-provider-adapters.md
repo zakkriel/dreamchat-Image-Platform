@@ -27,3 +27,9 @@ Tradeoffs:
 ## Notes
 
 This ADR can be revisited after the first production benchmark.
+
+## Confidence to Implement
+
+**Score: 85/100 — High**
+
+The Go interface in `docs/architecture/provider-adapters.md` (`Generate`, `Upscale`, `GetStatus`, `Capabilities`) is small and reasonable. The mock adapter is trivial (deterministic placeholder bytes). Risk shows up only when adding *real* adapters: each provider (BFL, Replicate, Fal, etc.) has its own quirks for image-to-image references, seeds, async polling cadence, and content-policy errors — the interface may need to widen. The router decision logic ("character portrait + standard + fast → provider A") is policy-shaped and not pinned down here.

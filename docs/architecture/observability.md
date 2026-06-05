@@ -106,3 +106,11 @@ Initial alerts:
 - storage upload failures
 - token auth failures spike
 - API latency spike
+
+---
+
+## Confidence to Implement
+
+**Score: 78/100 — High**
+
+The list of fields, metrics, and alerts is correct. Implementation is the work: a structured logger (zap/slog), OpenTelemetry SDK for spans + metrics, a Prometheus exporter or OTel Collector, and either an APM (Honeycomb, Grafana, Datadog) or self-hosted (Prom + Tempo + Loki). All standard, but the "cost telemetry per token/world/style/quality_tier" requires aggregation queries that can become expensive without a separate analytics table or rollup job. The alert thresholds aren't numbered yet (what's "high"?) — needs benchmarking before they can be wired up usefully.

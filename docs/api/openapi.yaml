@@ -566,3 +566,25 @@ components:
         supports_preview: { type: boolean }
         supports_high_res: { type: boolean }
         status: { type: string, enum: [active, degraded, disabled] }
+
+# ----------------------------------------------------------------------------
+# Confidence to Implement
+#
+# Score: 88/100 — High
+#
+# This is the more concrete of the two OpenAPI specs in the repo. Entity IDs
+# are in the path, bearer auth + scopes are baked in via the BearerAuth
+# securityScheme, the GenerationJob lifecycle matches the in-repo job
+# spec, and error responses point at a Problem Details schema. Suitable for
+# direct code generation with oapi-codegen / ogen.
+#
+# Why not higher:
+#   - Several request bodies use `canonical_visual_traits` as a free-form
+#     object (additionalProperties: true). Implementer must choose whether to
+#     enforce shape downstream (PRD 03 gives example fields but they aren't
+#     typed here).
+#   - The PRD draft (prds/schemas/image_platform_openapi_draft.yaml) carries
+#     extra fields (tenant_id, match_type on search responses, richer status
+#     enum) that aren't here. Implementer must decide whether to merge them
+#     up before generating clients (frustration_log.md entry 6).
+# ----------------------------------------------------------------------------

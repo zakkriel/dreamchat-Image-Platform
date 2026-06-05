@@ -27,3 +27,9 @@ Tradeoffs:
 ## Notes
 
 This ADR can be revisited after the first production benchmark.
+
+## Confidence to Implement
+
+**Score: 88/100 — High**
+
+Standard hashed-credential pattern. `docs/architecture/security-and-auth.md` proposes Argon2id/bcrypt for human-created keys or HMAC-SHA256 with a server-side pepper for high-throughput API tokens — both are well-supported in Go (`golang.org/x/crypto/argon2`, `crypto/hmac`). Subtracting points because the decision says "lookup prefixes only" but doesn't fix the prefix length, hash algorithm, or pepper rotation policy — implementer picks, but with no guidance these choices later become migration debt.

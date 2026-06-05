@@ -139,3 +139,11 @@ Every provider call should create cost telemetry.
   "status": "success"
 }
 ```
+
+---
+
+## Confidence to Implement
+
+**Score: 88/100 — High**
+
+Six core entities, each with a concrete shape and example payloads. Maps almost 1:1 to `docs/db/initial_schema.sql`. The PRD data model adds `visual_identity_version` (audit trail of canonical changes) and `provider_attempt` (per-call retry log) tables that this doc and the SQL omit — worth adding before MVP code. Otherwise solid.

@@ -108,3 +108,11 @@ generation_job.failed
 ```
 
 Not required for MVP.
+
+---
+
+## Confidence to Implement
+
+**Score: 88/100 — High**
+
+State machine is small, finite, and well-defined. The retry/no-retry split (timeouts retryable, content-policy and auth-fail not) is correct. The standard flow's 14 numbered steps are direct enough to translate to a worker function. Subtracting points because the lifecycle here only has `running → preview_ready → completed`, while PRD 02 has a richer `planning / retrieving_existing_assets / generating_preview / generating_final / final_ready / completed_with_warnings` enum. Pick one and stick with it — the simpler one is fine for MVP if telemetry captures stage timings separately.

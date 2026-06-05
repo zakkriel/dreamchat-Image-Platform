@@ -55,3 +55,11 @@ The service stores only token hashes.
 Admin users can revoke tokens.
 
 A revoked token must immediately stop working.
+
+---
+
+## Confidence to Implement
+
+**Score: 90/100 — Very High**
+
+Token prefix conventions (`dci_test_`, `dci_live_`, `dci_dev_`), the scope list, and the bearer header are all concrete. "Revoked token immediately stops working" implies no in-memory caching of token records or a cache invalidation step — that's a small but real correctness detail that should be called out in the auth middleware. Otherwise standard.

@@ -140,3 +140,11 @@ ApiTokenRepository
 ProviderModelRepository
 CostEventRepository
 ```
+
+---
+
+## Confidence to Implement
+
+**Score: 90/100 — Very High**
+
+The boundaries are sharp and they avoid the most common drift problems: provider-specific logic stays in adapters, business logic doesn't reach into Postgres directly, the prompt compiler is isolated so it can be golden-tested. The `prompt_hash` requirement is a nice forcing function for determinism. The Go package layout in `docs/guidelines/go-service-guidelines.md` mirrors these boundaries. Easy to enforce with a linting rule (`go-import-restrictions` or a `tool` check on architectural layers).

@@ -27,3 +27,9 @@ Tradeoffs:
 ## Notes
 
 This ADR can be revisited after the first production benchmark.
+
+## Confidence to Implement
+
+**Score: 95/100 — Very High**
+
+"Build it as a separate service" is operationally clear: one Go module, its own deploy unit, its own DB. Nothing here requires invention. The decision *enables* implementability — it isolates the platform from the web app's churn. Mild caveats only: the boundary must be enforced by code review (otherwise web devs reach in), and inter-service auth/networking has to be configured (S2S token, internal DNS) — not in this ADR.

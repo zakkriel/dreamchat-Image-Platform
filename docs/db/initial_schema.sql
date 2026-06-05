@@ -145,3 +145,27 @@ CREATE TABLE audit_events (
     metadata JSONB NOT NULL DEFAULT '{}',
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ---------------------------------------------------------------------------
+-- Confidence to Implement
+--
+-- Score: 85/100 — High
+--
+-- Covers the core tables (api_tokens, style_profiles, provider_models,
+-- visual_identities, visual_assets, generation_jobs, generation_cost_events,
+-- idempotency_keys, audit_events) with reasonable types, enums, and FKs.
+-- Suitable as a starting migration.
+--
+-- Gaps that should be closed before MVP:
+--   1. The PRD data model has `asset_packs` (pack-level batch status) and
+--      `provider_attempts` (per-call retry log) tables — both missing here.
+--   2. `visual_assets` should index by (visual_identity_id, variant_key, version)
+--      AND by (world_id, asset_type) for search performance; only the first
+--      composite index exists.
+--   3. `idempotency_keys.request_hash` should probably also index by
+--      (token_id, endpoint) for replay-lookup speed.
+--   4. `api_tokens.token_prefix` UNIQUE works for lookup, but the doc mentions
+--      a per-environment pepper — not represented in the schema; pepper should
+--      live in env config, not DB.
+--   5. No FKs for `world_id` (deliberate? cross-service FK ambiguity).
+-- ---------------------------------------------------------------------------

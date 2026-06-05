@@ -27,3 +27,9 @@ Tradeoffs:
 ## Notes
 
 This ADR can be revisited after the first production benchmark.
+
+## Confidence to Implement
+
+**Score: 85/100 — High**
+
+Concretely: every generation handler calls `assetRepository.find(identityID, variantKey, version, styleProfileID)` before creating a job; if found, return cached + skip the worker. The 4-tier match in PRD 05 (exact → variant → fallback → generate) maps to indexed queries on `visual_assets`. Cache-hit telemetry is straightforward. The point I'd negotiate: "variant match" needs a compatibility matrix between variant tags (which expressions / time-of-days are acceptable substitutes) — not specified here.

@@ -27,3 +27,9 @@ Tradeoffs:
 ## Notes
 
 This ADR can be revisited after the first production benchmark.
+
+## Confidence to Implement
+
+**Score: 90/100 — Very High**
+
+202 Accepted + `job_id` + poll-or-webhook is a standard pattern. The job state machine in `docs/architecture/job-lifecycle.md` is explicit and finite. Redis-based queue (ADR-013) is enough for MVP. Mild uncertainty only around retry policy edge cases (provider accepted but response lost = ambiguous) and the future webhook surface — both are noted as MVP-deferable in the supporting docs.

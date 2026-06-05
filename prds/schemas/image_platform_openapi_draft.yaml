@@ -1,0 +1,540 @@
+openapi: 3.0.3
+info:
+  title: DreamChat Image Platform API
+  version: 0.1.0
+  description: Standalone API for persistent visual asset generation, storage, retrieval, and consistency.
+servers:
+  - url: https://image-api.dreamchat.local
+paths:
+  /v1/health:
+    get:
+      summary: Health check
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+  /v1/models:
+    get:
+      summary: List available model/provider capabilities
+      responses:
+        '200':
+          description: Available models
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  models:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ModelCapability'
+  /v1/capabilities:
+    get:
+      summary: Service capabilities
+      responses:
+        '200':
+          description: Capabilities
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  capabilities:
+                    type: object
+                    additionalProperties:
+                      type: boolean
+  /v1/characters/generate-pack:
+    post:
+      summary: Generate or extend a character asset pack
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CharacterPackRequest'
+      responses:
+        '202':
+          description: Job accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationJobResponse'
+  /v1/places/generate-pack:
+    post:
+      summary: Generate or extend a place asset pack
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlacePackRequest'
+      responses:
+        '202':
+          description: Job accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationJobResponse'
+  /v1/artifacts/generate:
+    post:
+      summary: Generate an artifact/context image
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ArtifactGenerationRequest'
+      responses:
+        '202':
+          description: Job accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationJobResponse'
+  /v1/images/regenerate:
+    post:
+      summary: Regenerate an asset deliberately
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegenerateRequest'
+      responses:
+        '202':
+          description: Regeneration job accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationJobResponse'
+  /v1/jobs/{job_id}:
+    get:
+      summary: Get job status
+      parameters:
+        - in: path
+          name: job_id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Job status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationJob'
+  /v1/assets/{asset_id}:
+    get:
+      summary: Get asset metadata and URLs
+      parameters:
+        - in: path
+          name: asset_id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Asset
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Asset'
+  /v1/characters/{character_id}/assets:
+    get:
+      summary: Get assets for a character
+      parameters:
+        - in: path
+          name: character_id
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: asset_role
+          schema:
+            type: string
+        - in: query
+          name: expression
+          schema:
+            type: string
+        - in: query
+          name: angle
+          schema:
+            type: string
+        - in: query
+          name: allow_fallback
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Matching assets
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetQueryResponse'
+  /v1/places/{place_id}/assets:
+    get:
+      summary: Get assets for a place
+      parameters:
+        - in: path
+          name: place_id
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: asset_role
+          schema:
+            type: string
+        - in: query
+          name: time_of_day
+          schema:
+            type: string
+        - in: query
+          name: weather
+          schema:
+            type: string
+        - in: query
+          name: allow_fallback
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Matching assets
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetQueryResponse'
+  /v1/artifacts/{artifact_id}/assets:
+    get:
+      summary: Get assets for an artifact
+      parameters:
+        - in: path
+          name: artifact_id
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: asset_role
+          schema:
+            type: string
+        - in: query
+          name: allow_fallback
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Matching assets
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetQueryResponse'
+  /v1/styles/preview:
+    post:
+      summary: Generate a small style preview
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StylePreviewRequest'
+      responses:
+        '202':
+          description: Job accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationJobResponse'
+  /v1/styles/validate:
+    post:
+      summary: Validate a style profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StyleProfile'
+      responses:
+        '200':
+          description: Validation result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid:
+                    type: boolean
+                  warnings:
+                    type: array
+                    items:
+                      type: string
+components:
+  schemas:
+    StyleProfile:
+      type: object
+      required: [style_profile_id, style_mode]
+      properties:
+        style_profile_id:
+          type: string
+        style_profile_version:
+          type: integer
+          default: 1
+        style_mode:
+          type: string
+          enum: [open_prompt, preset_style_pack, creator_style_pack, lora_pack]
+        style_prompt:
+          type: string
+        negative_prompt:
+          type: string
+        loras:
+          type: array
+          items:
+            type: string
+        reference_style_asset_ids:
+          type: array
+          items:
+            type: string
+    CharacterPackRequest:
+      type: object
+      required: [tenant_id, world_id, character_id, character_visual_profile, style_profile]
+      properties:
+        tenant_id:
+          type: string
+        world_id:
+          type: string
+        character_id:
+          type: string
+        visual_identity_id:
+          type: string
+        character_visual_profile:
+          type: object
+        style_profile:
+          $ref: '#/components/schemas/StyleProfile'
+        pack_template:
+          type: string
+          default: character_expression_pack
+        quality_tier:
+          type: string
+          enum: [draft, standard, premium]
+        latency_tier:
+          type: string
+          enum: [fast, balanced, quality]
+        generate_preview:
+          type: boolean
+          default: true
+        generate_final:
+          type: boolean
+          default: true
+        idempotency_key:
+          type: string
+    PlacePackRequest:
+      type: object
+      required: [tenant_id, world_id, place_id, place_visual_profile, style_profile]
+      properties:
+        tenant_id:
+          type: string
+        world_id:
+          type: string
+        place_id:
+          type: string
+        visual_identity_id:
+          type: string
+        place_visual_profile:
+          type: object
+        style_profile:
+          $ref: '#/components/schemas/StyleProfile'
+        pack_template:
+          type: string
+          default: place_minimal_scene_pack
+        quality_tier:
+          type: string
+          enum: [draft, standard, premium]
+        latency_tier:
+          type: string
+          enum: [fast, balanced, quality]
+        generate_preview:
+          type: boolean
+          default: true
+        generate_final:
+          type: boolean
+          default: true
+        idempotency_key:
+          type: string
+    ArtifactGenerationRequest:
+      type: object
+      required: [tenant_id, world_id, artifact_id, artifact_visual_profile, style_profile]
+      properties:
+        tenant_id:
+          type: string
+        world_id:
+          type: string
+        artifact_id:
+          type: string
+        artifact_visual_profile:
+          type: object
+        style_profile:
+          $ref: '#/components/schemas/StyleProfile'
+        asset_role:
+          type: string
+          default: artifact_card
+        quality_tier:
+          type: string
+          enum: [draft, standard, premium]
+        latency_tier:
+          type: string
+          enum: [fast, balanced, quality]
+        generate_preview:
+          type: boolean
+          default: true
+        generate_final:
+          type: boolean
+          default: true
+        idempotency_key:
+          type: string
+    RegenerateRequest:
+      type: object
+      required: [tenant_id, world_id, asset_id, reason]
+      properties:
+        tenant_id:
+          type: string
+        world_id:
+          type: string
+        asset_id:
+          type: string
+        reason:
+          type: string
+          enum: [quality_failure, style_change, identity_drift, canonical_visual_change, user_requested, provider_failure, new_version_required]
+        notes:
+          type: string
+    StylePreviewRequest:
+      type: object
+      required: [tenant_id, style_profile]
+      properties:
+        tenant_id:
+          type: string
+        style_profile:
+          $ref: '#/components/schemas/StyleProfile'
+        prompt:
+          type: string
+    GenerationJobResponse:
+      type: object
+      properties:
+        job_id:
+          type: string
+        status:
+          type: string
+        estimated_preview_eta_ms:
+          type: integer
+        estimated_final_eta_ms:
+          type: integer
+        links:
+          type: object
+          additionalProperties:
+            type: string
+    GenerationJob:
+      type: object
+      properties:
+        job_id:
+          type: string
+        status:
+          type: string
+          enum: [queued, planning, retrieving_existing_assets, generating_preview, preview_ready, generating_final, final_ready, completed, completed_with_warnings, failed, cancelled]
+        assets:
+          type: array
+          items:
+            $ref: '#/components/schemas/Asset'
+        errors:
+          type: array
+          items:
+            type: string
+        metrics:
+          type: object
+    Asset:
+      type: object
+      properties:
+        asset_id:
+          type: string
+        entity_type:
+          type: string
+          enum: [character, place, artifact]
+        entity_id:
+          type: string
+        visual_identity_id:
+          type: string
+        visual_identity_version:
+          type: integer
+        asset_role:
+          type: string
+        style_profile_id:
+          type: string
+        urls:
+          type: object
+          properties:
+            thumbnail:
+              type: string
+            preview:
+              type: string
+            final:
+              type: string
+        metadata:
+          type: object
+    AssetQueryResponse:
+      type: object
+      properties:
+        match_type:
+          type: string
+          enum: [exact_cache_hit, variant_cache_hit, fallback_cache_hit, miss_generated, miss_queued]
+        assets:
+          type: array
+          items:
+            $ref: '#/components/schemas/Asset'
+        generation_recommended:
+          type: boolean
+    ModelCapability:
+      type: object
+      properties:
+        provider_id:
+          type: string
+        model_id:
+          type: string
+        backend_type:
+          type: string
+          enum: [external_api, self_hosted, local_dev, mock]
+        capabilities:
+          type: object
+          additionalProperties:
+            type: boolean
+        supported_aspect_ratios:
+          type: array
+          items:
+            type: string
+        max_batch_size:
+          type: integer
+        estimated_cost_class:
+          type: string
+          enum: [low, medium, high]
+        estimated_latency_class:
+          type: string
+          enum: [fast, medium, slow]
+
+# ----------------------------------------------------------------------------
+# Confidence to Implement
+#
+# Score: 80/100 — High
+#
+# The contract is complete enough to generate server stubs and a client SDK.
+# All requests/responses are typed; the GenerationJob status enum is rich and
+# matches the lifecycle in PRD 02. Two reasons I'm not higher:
+#   1. This draft diverges from docs/api/openapi.yaml in non-trivial ways
+#      (entity-id in body vs. path, tenant_id presence, status enum, quality
+#      tier names) — implementers must reconcile first (frustration_log.md
+#      entry 6).
+#   2. Several object shapes (character_visual_profile, place_visual_profile,
+#      artifact_visual_profile, style_profile.style_prompt) are typed as
+#      free-form `object` / `string`, which postpones validation to runtime.
+# ----------------------------------------------------------------------------

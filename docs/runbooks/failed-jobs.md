@@ -45,3 +45,11 @@ For partial success:
 - keep completed preview assets
 - mark final step failed
 - allow regeneration for missing high-res variants
+
+---
+
+## Confidence to Implement
+
+**Score: 78/100 — High**
+
+The retry policy (retry timeouts and capacity errors, do not retry content-policy or auth) is correct. The investigation steps assume the request_id + job_id + provider request_id are all linked in logs (covered by observability spec) — that part is implementable. The "manual repair" for partial success requires admin endpoints (`POST /v1/admin/jobs/{id}/retry` style) that aren't in the API yet. Same gap as provider-failure runbook.

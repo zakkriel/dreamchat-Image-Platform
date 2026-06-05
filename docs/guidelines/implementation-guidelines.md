@@ -51,3 +51,11 @@ Python may be considered later only for:
 - LoRA training
 - offline image evaluation
 - ML experiments
+
+---
+
+## Confidence to Implement
+
+**Score: 90/100 — Very High**
+
+The 10 non-negotiable rules are a tight, useful checklist that any code review can verify line-by-line. The first-milestone definition (Swagger up, dev token, identity, pack via mock, poll, retrieve) is a concrete acceptance test. "Add exactly one real provider first" is wise — prevents adapter-shaped premature abstraction. The Python ban for MVP matches ADR-002. Nothing fuzzy.

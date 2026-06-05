@@ -66,3 +66,11 @@ basic linting
 Prompt compiler should use golden tests.
 
 Same structured input should produce the same normalized prompt package and prompt hash.
+
+---
+
+## Confidence to Implement
+
+**Score: 85/100 — High**
+
+Unit + integration (with testcontainers Postgres/Redis/MinIO) + OpenAPI contract tests + golden tests for the prompt compiler is the right ladder. Provider adapter tests against `httptest` servers cover the most error-prone code. Security test list is complete. The only thing I'd add explicitly is **fuzz tests for the auth/idempotency middleware** (random bearer tokens, replay attacks) and a **load test** for the job queue before phase-3 web app integration. Not blockers, just standard for an API that handles money-shaped requests.

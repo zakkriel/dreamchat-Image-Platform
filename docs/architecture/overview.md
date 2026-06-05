@@ -127,3 +127,11 @@ The service does not own:
 - Every generation has a job ID.
 - Every provider call has provider metadata.
 - Every generated asset has model, provider, prompt hash, seed, and cost metadata.
+
+---
+
+## Confidence to Implement
+
+**Score: 90/100 — Very High**
+
+The "modular monolith with `image-platform api` + `image-platform worker` from the same codebase" deployment shape is exactly right for MVP. The asset-state-first model (visual identity → intent → prompt package → job → asset → variant) is implementable as a clean pipeline. Every component listed has a corresponding spec elsewhere in `docs/`. The remaining work is wiring, not invention.

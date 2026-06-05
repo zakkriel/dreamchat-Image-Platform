@@ -28,3 +28,11 @@
 - Add provider incident note.
 - Classify failed jobs as retryable or terminal.
 - Requeue retryable failed jobs after provider recovers.
+
+---
+
+## Confidence to Implement
+
+**Score: 75/100 — High**
+
+The procedure is sensible but it presumes the existence of supporting tooling that isn't yet built: an admin endpoint or CLI to "disable failing provider route", an admin query to find retryable-failed jobs by provider, a way to flip `/health` into degraded mode. Each is small but unbuilt — the runbook is a *target*, not a description of current capability. Score reflects the gap between narrative and tooling — see `frustration_log.md` entry 9.

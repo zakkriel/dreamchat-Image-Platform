@@ -127,3 +127,11 @@ Using only the API and Swagger docs, a developer can:
 8. Search assets by owner ID and variant.
 9. See request IDs and structured logs.
 10. See OpenAPI docs in browser.
+
+---
+
+## Confidence to Implement
+
+**Score: 90/100 — Very High**
+
+This is the in-repo Go-flavored version of the superpowers prompt. It's more concrete than `prds/07_superpowers_implementation_prompt.md` (Go-specific deliverables, exact endpoint list, mock-provider-first rule, demo success criteria as a numbered checklist). All 20 required deliverables map to an obvious code module or test. The first-demo success criteria are testable in a script. Minor uncertainty around "scope checking" granularity (which scopes are minimal vs. nice-to-have) and the exact shape of the bearer-token + Idempotency-Key middleware order — both are choosable, not unspecifiable.

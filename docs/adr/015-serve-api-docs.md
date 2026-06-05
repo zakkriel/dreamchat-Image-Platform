@@ -27,3 +27,9 @@ Tradeoffs:
 ## Notes
 
 This ADR can be revisited after the first production benchmark.
+
+## Confidence to Implement
+
+**Score: 95/100 — Very High**
+
+Embedding `swagger-ui` or `redoc` as a static asset and serving `/openapi.json` from the same Go binary takes ~50 LoC. The only production concern (gating docs behind admin auth or a flag) is a single conditional in the router. Done.

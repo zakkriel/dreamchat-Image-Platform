@@ -28,3 +28,11 @@
 - Add budget alerts.
 - Add per-world/session cost caps.
 - Review idempotency usage.
+
+---
+
+## Confidence to Implement
+
+**Score: 72/100 — Medium**
+
+The diagnostic queries (cost-by-token, cost-by-asset-type) need a cost-events analytics view or rollup table — implementable but not specified. The mitigation ("temporarily lower token generation limits", "force draft tier", "block regeneration") requires admin tooling that doesn't exist yet, the same per-token rate-limit infrastructure flagged at 75 in `rate-limits.md`, plus the cost-budget reservation flow that's mentioned but not designed. So the runbook is correct in spirit but multiple chunks of platform work need to land first.

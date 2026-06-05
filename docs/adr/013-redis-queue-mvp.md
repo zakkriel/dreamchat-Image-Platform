@@ -27,3 +27,9 @@ Tradeoffs:
 ## Notes
 
 This ADR can be revisited after the first production benchmark.
+
+## Confidence to Implement
+
+**Score: 85/100 — High**
+
+Asynq, river, or a small custom Redis-Streams worker pool all fit MVP. Idempotency locks via `SETNX`, rate-limiting via token-bucket Lua scripts — all standard. Subtracting points because "Redis is enough for MVP" works until visibility/at-least-once semantics matter (provider call accepted but worker crash), at which point either Postgres-based queue (`river`) or NATS JetStream becomes preferable. The ADR acknowledges this as a known follow-up.
