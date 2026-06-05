@@ -4,6 +4,13 @@ Every PRD/spec/ADR/schema/runbook in this repo carries a per-file confidence-to-
 
 **Changelog**
 
+- **2026-06-05 (latest)** — Variant compatibility matrix specified:
+  - New `docs/architecture/variant-compatibility-matrix.md` — four match outcomes (`exact_match`, `compatible_match`, `preview_fallback`, `invalid_match`), five-step retrieval rule, `fallback_policy` enum (`none`, `compatible_only`, `preview_allowed`, `any_existing`), twelve variant dimensions, and per-entity rules for characters / places / artifacts.
+  - The product-safety rule ("fallback must never visually contradict known world state") is now explicit and overrides every other matrix rule.
+  - OpenAPI v0.4.0 adds `FallbackPolicy` and `MatchType` enums; six new fields on `VisualAsset` (`variant_family`, `state_version`, `compatibility_tags`, `fallback_allowed`, `fallback_rank`, `is_identity_anchor`); `fallback_policy` on `AssetSearchRequest` and the three generation request bodies; `match_type` / `compatibility_score` / `fallback_reason` on `AssetSearchResponse`. Breaking: `match_type` values renamed (e.g. `exact` → `exact_match`).
+  - `docs/architecture/asset-versioning.md`, `prds/05`, and `docs/adr/009` updated to reference and consume the matrix.
+  - Score shifts: ADR-009 **85 → 92**; `asset-versioning.md` **82 → 90**; PRD 05 **88 → 92**; `openapi.yaml` 93 → 94. New file `variant-compatibility-matrix.md` at **90**.
+  - See `frustration_log.md` entry 15.
 - **2026-06-05 (later)** — Doc-quality patches landed:
   - All 15 ADRs rewritten with real Alternatives Considered + Tradeoffs + Revisit When sections (per the Superpowers documentation-confidence task). Cross-cutting "ADR boilerplate" risk resolved.
   - PRD 03 Provider Capability Floor added (§8) — provider capability levels, routing rules, and 4-of-5 acceptance tests. PRD 03 score **65 → 82**.
@@ -25,15 +32,15 @@ Score is "my confidence I could implement the file end-to-end without further hu
 
 | Group | Avg | Median | Min | Max | Files |
 |---|---:|---:|---:|---:|---:|
-| PRDs (`prds/`) | **85** | 87 | 60 | 95 | 10 (1 deprecated, excluded) |
+| PRDs (`prds/`) | **86** | 88 | 60 | 95 | 10 (1 deprecated, excluded) |
 | ADRs (`docs/adr/`) | **89** | 90 | 78 | 95 | 15 |
-| API specs (`docs/api/`) | **86** | 88 | 75 | 93 | 9 |
-| Architecture (`docs/architecture/`) | **86** | 86 | 78 | 90 | 9 (incl. admin-control-surface.md) |
+| API specs (`docs/api/`) | **86** | 88 | 75 | 94 | 9 |
+| Architecture (`docs/architecture/`) | **86** | 88 | 78 | 90 | 10 (incl. admin-control-surface.md, variant-compatibility-matrix.md) |
 | DB (`docs/db/`) | **85** | 85 | 85 | 85 | 1 |
 | Guidelines (`docs/guidelines/`) | **90** | 90 | 85 | 95 | 4 |
 | Runbooks (`docs/runbooks/`) | **87** | 88 | 80 | 90 | 5 |
 | Schemas (`docs/schemas/`) | **90** | 89 | 88 | 95 | 4 |
-| **All files** | **88** | 89 | 60 | 95 | **57** |
+| **All files** | **88** | 89 | 60 | 95 | **58** |
 
 ## Per-file scores
 
@@ -46,7 +53,7 @@ Score is "my confidence I could implement the file end-to-end without further hu
 | 88 | `02_standalone_image_generation_api_and_job_system.md` | *(was 82)* OpenAPI drift resolved; router policy still open |
 | **82** | `03_character_and_place_consistency_system.md` | *(was 65)* Provider Capability Floor added; consistency now testable |
 | 80 | `04_asset_packs_variants_and_expressions.md` | Pack templates + asset roles enumerated; trigger thresholds open |
-| 88 | `05_storage_retrieval_versioning_and_cache_strategy.md` | *(was 85)* `match_type` now in canonical spec; variant compat matrix still open |
+| **92** | `05_storage_retrieval_versioning_and_cache_strategy.md` | *(was 88)* variant compatibility matrix now defined; retrieval is deterministic |
 | 75 | `06_delivery_pipeline_performance_cost_and_rollout.md` | Phased rollout solid; preview-first needs provider support |
 | 85 | `07_superpowers_implementation_prompt.md` | Meta-build prompt; stack choice conflicts with docs |
 | _N/A_ | `schemas/image_platform_openapi_draft.yaml` | **DEPRECATED** — points at `docs/api/openapi.yaml` |
@@ -65,7 +72,7 @@ Score is "my confidence I could implement the file end-to-end without further hu
 | 90 | `006-async-generation-jobs.md` |
 | 85 | `007-provider-adapters.md` |
 | 85 | `008-asset-state-first.md` |
-| 85 | `009-retrieval-before-generation.md` |
+| **92** | `009-retrieval-before-generation.md` *(was 85; variant matrix now defined)* |
 | 78 | `010-preview-first-delivery.md` |
 | 95 | `011-s3-object-storage.md` |
 | 95 | `012-postgres-source-of-truth.md` |
@@ -79,7 +86,7 @@ All ADRs share a templated Context/Tradeoffs/Notes block; the *decision* sentenc
 
 | Score | File |
 |---:|---|
-| **93** | `openapi.yaml` *(was 95; v0.3.0 adds planned admin surface; 29 paths, 31 schemas, 118 refs resolve, validates against OpenAPI 3.1.0)* |
+| **94** | `openapi.yaml` *(v0.4.0; variant-compatibility-matrix support: FallbackPolicy + MatchType enums, six new VisualAsset fields, fallback_policy on search + generation; 29 paths, 33 schemas, 123 refs resolve, validates against OpenAPI 3.1.0)* |
 | 90 | `authentication.md` *(now documents tenant inference and admin scopes)* |
 | 92 | `errors.md` |
 | 85 | `idempotency.md` |
@@ -99,9 +106,10 @@ All ADRs share a templated Context/Tradeoffs/Notes block; the *decision* sentenc
 | 88 | `job-lifecycle.md` |
 | 78 | `observability.md` |
 | 82 | `provider-adapters.md` |
-| 82 | `asset-versioning.md` |
+| **90** | `asset-versioning.md` *(was 82; now references the variant-compatibility matrix)* |
 | 85 | `security-and-auth.md` |
-| **88** | `admin-control-surface.md` *(new; planned admin endpoints + scopes + audit + CLI hooks)* |
+| 88 | `admin-control-surface.md` *(planned admin endpoints + scopes + audit + CLI hooks)* |
+| **90** | `variant-compatibility-matrix.md` *(new; four match outcomes, fallback policy, per-entity rules)* |
 
 ### DB (`docs/db/`)
 
@@ -150,7 +158,7 @@ All ADRs share a templated Context/Tradeoffs/Notes block; the *decision* sentenc
 2. **`docs/api/rate-limits.md` (75)** — `estimated_cost_per_day` requires a price book + pre-flight cost estimation pipeline. (Admin surface now documents the price-book endpoints; estimation pipeline is the remaining decision.)
 3. **`prds/06_delivery_pipeline_performance_cost_and_rollout.md` (75)** — preview-first only delivers UX value when the provider supports a true fast-preview path.
 4. **`docs/architecture/observability.md` (78)** — alert thresholds (what counts as "high"?) need numbers before they can be wired.
-5. **`docs/architecture/asset-versioning.md` (82)** + **`prds/05` (88)** — variant-compatibility matrix between variant tags is unspecified. Implementer has to invent one.
+5. **`docs/adr/010-preview-first-delivery.md` (78)** — same provider-capability dependency as PRD 06.
 
 ## Cross-cutting risks
 
@@ -158,4 +166,5 @@ All ADRs share a templated Context/Tradeoffs/Notes block; the *decision* sentenc
 - ~~**All 15 ADRs share an identical templated Context/Tradeoffs section**~~ — **RESOLVED 2026-06-05**. All 15 ADRs rewritten with project-specific Alternatives, Tradeoffs, and Revisit When sections. See `frustration_log.md` entry 12.
 - ~~**Visual consistency outcome ≠ consistency-system code**~~ — **RESOLVED 2026-06-05**. PRD 03 §8 Provider Capability Floor pins minimum provider capability + routing rules + 4-of-5 acceptance tests. See `frustration_log.md` entry 13.
 - ~~**Runbooks assume admin tooling that isn't built**~~ — **RESOLVED 2026-06-05** at the spec level. `docs/architecture/admin-control-surface.md` defines the surface; runbooks now map every action to a planned endpoint, planned CLI, or **MANUAL** fallback. Implementation of the endpoints is the remaining work. See `frustration_log.md` entry 14.
-- **Variant-compatibility matrix** (new top risk) — `docs/architecture/asset-versioning.md`, `prds/05`, and `docs/adr/009-retrieval-before-generation.md` all reference "variant match" but none specify which variants are acceptable substitutes for which (e.g. is `neutral_front` a valid fallback for `warm_expression`?). This is product-shaped and needs a decision.
+- ~~**Variant-compatibility matrix**~~ — **RESOLVED 2026-06-05**. `docs/architecture/variant-compatibility-matrix.md` defines four match outcomes, the `fallback_policy` enum, twelve variant dimensions, and per-entity rules for characters / places / artifacts. The product-safety rule ("fallback must never visually contradict known world state") overrides every other matrix rule. See `frustration_log.md` entry 15.
+- **No open cross-cutting risks remaining at the documentation level.** The remaining gaps are item-specific (benchmark corpus, cost-budget reservation pipeline, preview-first provider dependency, observability thresholds, product-safety filter substance) and tracked above in "Lowest-confidence items."

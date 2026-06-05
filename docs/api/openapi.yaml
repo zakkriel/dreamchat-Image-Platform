@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: DreamChat Image Platform API
-  version: 0.3.0
+  version: 0.4.0
   description: |
     Standalone API for generating, storing, retrieving, and versioning persistent visual assets for DreamChat worlds.
 
@@ -1015,6 +1015,29 @@ components:
         - character
         - place
         - artifact
+    FallbackPolicy:
+      type: string
+      description: |
+        Controls which retrieval outcomes count as a usable hit vs. forcing
+        generation. Default `compatible_only`. See
+        `docs/architecture/variant-compatibility-matrix.md` §5.
+      enum:
+        - none
+        - compatible_only
+        - preview_allowed
+        - any_existing
+      default: compatible_only
+    MatchType:
+      type: string
+      description: |
+        How the retrieval layer resolved a request against stored assets,
+        per the variant compatibility matrix
+        (`docs/architecture/variant-compatibility-matrix.md` §3).
+      enum:
+        - exact_match
+        - compatible_match
+        - preview_fallback
+        - generated_required
     # ------------------------------------------------------------------------
     # Health & error
     # ------------------------------------------------------------------------
@@ -1085,6 +1108,14 @@ components:
         variant_keys:
           type: array
           items: { type: string }
+        fallback_policy:
+          $ref: '#/components/schemas/FallbackPolicy'
+          description: |
+            Controls whether the retrieval-before-generation step (ADR-009)
+            short-circuits the pack job. `none` always generates; the
+            default `compatible_only` skips generation when an exact or
+            compatible asset already exists per the variant compatibility
+            matrix.
     GeneratePlacePackRequest:
       type: object
       required: [world_id, style_profile_id]
@@ -1098,6 +1129,10 @@ components:
         variant_keys:
           type: array
           items: { type: string }
+        fallback_policy:
+          $ref: '#/components/schemas/FallbackPolicy'
+          description: |
+            See GenerateCharacterPackRequest.fallback_policy.
     GenerateArtifactRequest:
       type: object
       required: [world_id, style_profile_id, description]
@@ -1109,6 +1144,10 @@ components:
           $ref: '#/components/schemas/QualityTier'
         latency_tier:
           $ref: '#/components/schemas/LatencyTier'
+        fallback_policy:
+          $ref: '#/components/schemas/FallbackPolicy'
+          description: |
+            See GenerateCharacterPackRequest.fallback_policy.
     # ------------------------------------------------------------------------
     # Jobs
     # ------------------------------------------------------------------------
@@ -1156,25 +1195,50 @@ components:
         asset_type:
           $ref: '#/components/schemas/AssetType'
         variant_key: { type: string }
+        variant_family:
+          type: string
+          description: |
+            Filter / matrix-lookup family for the request. See
+            `docs/architecture/variant-compatibility-matrix.md` §6.
         version: { type: integer }
+        state_version:
+          type: integer
+          description: |
+            Requested state version for the entity. Defaults to current.
+            Set explicitly when requesting historical/flashback assets.
         style_profile_id: { type: string }
+        fallback_policy:
+          $ref: '#/components/schemas/FallbackPolicy'
     AssetSearchResponse:
       type: object
       required: [assets]
       properties:
         match_type:
+          $ref: '#/components/schemas/MatchType'
+        compatibility_score:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          description: |
+            0.0–1.0 confidence that the returned asset is a safe substitution
+            for the requested variant. `1.0` for `exact_match`. Combines the
+            matrix rule's intrinsic confidence with the asset's `fallback_rank`.
+        fallback_reason:
           type: string
           description: |
-            Telemetry hint describing how the best result was found. `exact` means
-            owner+variant+version+style all matched; `variant` means a compatible
-            variant was substituted; `fallback` means a usable but non-matching
-            asset was returned; `miss` means nothing matched.
-          enum: [exact, variant, fallback, miss]
+            When `match_type` is `compatible_match` or `preview_fallback`,
+            the matrix rule that allowed the substitution (e.g.
+            `character.expression.warm→smiling.compatible`,
+            `place.time_of_day.day↔night.preview_only`). Useful for audit
+            and debugging.
         generation_recommended:
           type: boolean
           description: |
-            True when the client should follow up with a generate-pack request
-            (e.g. because only a fallback or variant was returned).
+            True when the client should follow up with a generate-pack
+            request (e.g. because only a compatible_match or
+            preview_fallback was returned, or `generated_required` was the
+            outcome).
         assets:
           type: array
           items:
@@ -1189,7 +1253,46 @@ components:
         asset_type:
           $ref: '#/components/schemas/AssetType'
         variant_key: { type: string }
+        variant_family:
+          type: string
+          description: |
+            Grouping used by the variant compatibility matrix
+            (e.g. `neutral`, `warm`, `strong_emotion`, `establishing`,
+            `document_clean`). See
+            `docs/architecture/variant-compatibility-matrix.md` §6.
         version: { type: integer }
+        state_version:
+          type: integer
+          description: |
+            State version for the underlying entity at generation time
+            (independent of `visual_identity_version`, which is identity-level).
+            Used by the variant compatibility matrix to enforce strict
+            state boundaries (e.g. a destroyed-place asset is never a
+            fallback for an intact-place request).
+        compatibility_tags:
+          type: array
+          description: |
+            Tags consulted by the variant compatibility matrix
+            (e.g. `generic_presence`, `preview_safe`,
+            `identity_anchor_eligible`).
+          items: { type: string }
+        fallback_allowed:
+          type: boolean
+          description: |
+            Whether this asset may be returned as `preview_fallback` for
+            other variants. Default `false` for strong-emotion targets and
+            altered-state documents/artifacts.
+        fallback_rank:
+          type: integer
+          description: |
+            Lower = preferred fallback within its compatibility tier. Used
+            to pick the best candidate when several would qualify.
+        is_identity_anchor:
+          type: boolean
+          description: |
+            True for anchor assets used as reference inputs. Anchor assets
+            must never be returned as a `compatible_match` for a non-anchor
+            display request — they are reference inputs, not display assets.
         status:
           $ref: '#/components/schemas/AssetStatus'
         low_res_url: { type: string }
@@ -1394,7 +1497,19 @@ components:
 # ----------------------------------------------------------------------------
 # Confidence to Implement
 #
-# Score: 93/100 — Very High
+# Score: 94/100 — Very High
+#
+# v0.4.0 — adds variant-compatibility-matrix support: `FallbackPolicy` and
+# `MatchType` enums; new fields on VisualAsset (`variant_family`,
+# `state_version`, `compatibility_tags`, `fallback_allowed`, `fallback_rank`,
+# `is_identity_anchor`); `fallback_policy` on AssetSearchRequest and the
+# three generation request bodies; `match_type` / `compatibility_score` /
+# `fallback_reason` on AssetSearchResponse. The previously-vague "variant
+# match" is now a typed, deterministic lookup backed by
+# docs/architecture/variant-compatibility-matrix.md. Breaking change:
+# AssetSearchResponse.match_type values renamed from
+# {exact,variant,fallback,miss} to {exact_match,compatible_match,
+# preview_fallback,generated_required}.
 #
 # v0.3.0 — adds the planned admin control surface (Admin tag) under
 # /v1/admin/{providers,routes,jobs,price-book,cost-budgets,cost-events}.
@@ -1409,16 +1524,18 @@ components:
 # OwnerType) referenced via $ref; bearer auth + RFC 7807 ProblemDetails +
 # Idempotency-Key + /openapi.json + /docs all defined.
 #
-# Spec passes openapi-spec-validator against the OpenAPI 3.1.0 schema;
-# all 118 internal $refs resolve.
+# Spec passes openapi-spec-validator against the OpenAPI 3.1.0 schema.
 #
 # Suitable for direct codegen with oapi-codegen / ogen (with the admin
 # endpoints generated as not-yet-implemented stubs).
 #
 # Score nuance:
 #   + Canonical, well-typed, validated.
+#   + Variant matching is now deterministic and product-safe.
 #   − `canonical_visual_traits` and VisualAsset.metadata remain free-form
 #     `object` (intentional — PRDs 03 and 04 define shape loosely).
 #   − Admin endpoints are spec-only; until implementation, runbooks
 #     reference them via PLANNED markers and manual fallbacks.
+#   − Product-safety filter (matrix §2) is a stub at MVP — grows as the
+#     product surfaces more world-state hints to the retrieval call.
 # ----------------------------------------------------------------------------

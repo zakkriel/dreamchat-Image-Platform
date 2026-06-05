@@ -114,3 +114,18 @@ Format per entry:
   - Runbook confidence shifts: provider-failure **75 → 85**, failed-jobs **78 → 88**, cost-spike **72 → 85**.
 - **Caveat**: This is a doc patch, not implementation. Codegen will produce admin handlers as TODO stubs returning 501 until the actual endpoints land. The runbooks rely on the manual SQL fallback in the interim.
 
+### Entry 15
+- **Trigger**: Superpowers documentation-confidence task — variant compatibility matrix
+- **Category**: process (resolution)
+- **Note**: The last open cross-cutting doc-confidence risk is now resolved. Created `docs/architecture/variant-compatibility-matrix.md` with:
+  - Four match outcomes (`exact_match`, `compatible_match`, `preview_fallback`, `invalid_match`) replacing the vague "variant match" prose.
+  - Five-step retrieval rule (exact → compatible → preview → generate, never invalid) consumed by both search and generation endpoints.
+  - `fallback_policy` enum (`none`, `compatible_only`, `preview_allowed`, `any_existing`) with explicit "admin/debug only" carve-out for `any_existing`.
+  - Twelve variant dimensions canonicalized.
+  - Per-entity rules for **characters** (generic presence, expression families, angle compatibility, strict state versioning), **places** (generic presence, day↔night never compatible, weather/mood strict for strong moods, state versioning strict), **artifacts** (generic OK, documents and symbols especially strict).
+  - Product-safety rule that overrides everything: "Fallback must never visually contradict known world state. It is better to show no image or a loading placeholder than to show a misleading variant."
+  - Schema additions documented and reflected in the OpenAPI: `FallbackPolicy` and `MatchType` enums, six new `VisualAsset` fields (`variant_family`, `state_version`, `compatibility_tags`, `fallback_allowed`, `fallback_rank`, `is_identity_anchor`), `fallback_policy` on `AssetSearchRequest` and on the three generation request bodies, and `match_type` / `compatibility_score` / `fallback_reason` on `AssetSearchResponse`.
+- **Renames** (breaking, but pre-v1): `AssetSearchResponse.match_type` values shifted from `exact|variant|fallback|miss` to `exact_match|compatible_match|preview_fallback|generated_required`. OpenAPI bumped to v0.4.0.
+- **Updates**: `docs/architecture/asset-versioning.md`, `prds/05`, and `docs/adr/009` all updated to reference and consume the matrix rather than describe it vaguely. ADR-009 confidence **85 → 92**; PRD 05 **88 → 92**; asset-versioning **82 → 90**; new matrix doc at **90**.
+- **Open follow-up**: matrix §2 product-safety filter (preventing visual contradictions of known world state) is a stub at MVP — it grows as the product surfaces more world-state hints to the retrieval call. Treating this as item-specific follow-up, not a cross-cutting risk.
+

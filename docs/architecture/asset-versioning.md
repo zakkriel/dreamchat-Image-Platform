@@ -103,6 +103,14 @@ Before generating a new asset, the platform should search existing assets:
 4. generation required
 ```
 
+The "compatible variant" step is governed by the deterministic rules in
+`docs/architecture/variant-compatibility-matrix.md`. That document defines the
+four outcomes (`exact_match`, `compatible_match`, `preview_fallback`,
+`invalid_match`), the retrieval algorithm in detail, the `fallback_policy`
+request field, and the per-entity rules for characters, places, and
+artifacts. The product-safety rule from the matrix overrides every other rule
+here: **fallback must never visually contradict known world state.**
+
 ## Invalidation Rules
 
 Create a new version when:

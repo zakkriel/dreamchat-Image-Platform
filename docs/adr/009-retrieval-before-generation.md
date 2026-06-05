@@ -25,29 +25,32 @@ Every generation handler runs a retrieval step **before** creating a job. The re
 
 - **+** Cost and latency wins translate directly to product UX and unit economics.
 - **+** Forces clean cache keys (PRD 05's `entity:id:vid_version:style_version:asset_role:variant_tags:quality:resolution`) and metadata discipline.
-- **+** Cache-hit telemetry (`exact|variant|fallback|miss`) becomes a first-class metric and a debuggable signal when costs jump.
+- **+** Cache-hit telemetry (`exact_match | compatible_match | preview_fallback | generated_required`) becomes a first-class metric and a debuggable signal when costs jump.
 - **+** Compatible with ADR-008's identity-first model (retrieval queries are well-typed against `visual_assets`).
-- **−** Variant-compatibility matrix is product-shaped and currently unspecified — an implementer must invent it from PRD 04's variant lists.
+- **+** The variant-compatibility matrix is now defined (`docs/architecture/variant-compatibility-matrix.md`), so "variant match" is deterministic per-entity rather than implementer-invented.
 - **−** Lookup overhead on every generation call (small with proper indexes; ~1 ms expected at MVP volumes).
 - **−** Risk of staleness if visual identity changed but cache returned an old asset — invalidation rules (PRD 05 §11) must be respected.
+- **−** Product-safety filter (matrix §2 — "fallback must never visually contradict known world state") is a stub at MVP; growing it requires hints from the caller about scene state.
 
 ## Consequences
 
-- Every generation handler calls `assetRepository.find(identity_id, variant_key, version, style_profile_id)` before creating a `generation_job`.
-- `generation_jobs.cache_result` records the match type for telemetry.
-- The retrieval indexes on `visual_assets` (per `docs/db/initial_schema.sql`) must support the four-tier query without table scans.
-- The router (ADR-007) skips provider calls when retrieval returns exact/variant/fallback and the request didn't force regeneration.
+- Every generation handler calls the retrieval layer (which consults `docs/architecture/variant-compatibility-matrix.md`) before creating a `generation_job`.
+- `generation_jobs.cache_result` records the match type (`exact_match | compatible_match | preview_fallback | generated_required`) for telemetry.
+- Search and generation endpoints accept a `fallback_policy` (`none | compatible_only | preview_allowed | any_existing`) controlling which match types count as a hit.
+- The retrieval indexes on `visual_assets` (per `docs/db/initial_schema.sql`) must support the matrix-driven queries without table scans (composite index on `(visual_identity_id, variant_key, state_version)` plus the new `variant_family` and `compatibility_tags` filters).
+- The router (ADR-007) skips provider calls when retrieval returns exact or compatible match and the request didn't force regeneration. For `preview_fallback` it still creates the generation job *and* returns the fallback for immediate UI use.
 
 ## Revisit when
 
-- The variant-compatibility matrix becomes too coarse (assets being returned as "fallback" that the product wants to treat as cache miss) — formalize the matrix and version it.
+- ~~The variant-compatibility matrix becomes too coarse~~ — **matrix now exists** at `docs/architecture/variant-compatibility-matrix.md`. Revisit if a class of substitutions consistently produces user complaints (rule was too lax) or a class of generations should have been cache hits (rule was too strict). Treat the matrix as versioned data; rule changes are reviewed like ADRs.
 - Cache hit rate drops below a threshold despite no canonical changes (investigation: identity version churn, style profile churn, or variant_tags drift).
-- We add embedding-based fuzzy fallback for "best effort" retrieval — that becomes a fifth tier between fallback and generate.
+- We add embedding-based fuzzy fallback for "best effort" retrieval — that becomes a fifth match type (`embedding_match`) between `preview_fallback` and `generated_required`.
+- The product-safety filter (matrix §2) grows from a stub to a real check against world-state hints — that's an API + product decision, not a retrieval one.
 
 ---
 
 ## Confidence to Implement
 
-**Score: 85/100 — High**
+**Score: 92/100 — Very High** *(was 85; +7 after the variant-compatibility matrix landed at `docs/architecture/variant-compatibility-matrix.md`)*
 
-Concretely: every generation handler calls `assetRepository.find(identityID, variantKey, version, styleProfileID)` before creating a job; if found, return cached + skip the worker. The 4-tier match in PRD 05 (exact → variant → fallback → generate) maps to indexed queries on `visual_assets`. Cache-hit telemetry is straightforward. The point I'd negotiate: "variant match" needs a compatibility matrix between variant tags (which expressions / time-of-days are acceptable substitutes) — not specified here.
+Every generation handler calls the retrieval layer before creating a job; the retrieval layer is a deterministic function backed by the matrix table, returning one of four typed outcomes. SQL queries on `visual_assets` are well-defined. Cache-hit telemetry distinguishes exact / compatible / preview / generated. The previously-open question — "which variants substitute for which?" — is closed by the matrix. Remaining 8 points reflect the product-safety filter (matrix §2) being intentionally a stub at MVP — it grows over time as the product surfaces more world-state hints to the retrieval call.

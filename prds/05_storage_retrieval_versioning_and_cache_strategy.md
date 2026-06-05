@@ -147,50 +147,75 @@ Assets should be retrievable by:
 
 ## 8. Retrieval Algorithm
 
+The deterministic rules backing this section live in
+`docs/architecture/variant-compatibility-matrix.md`. That document defines
+the four match outcomes (`exact_match`, `compatible_match`,
+`preview_fallback`, `invalid_match`), the per-entity rules for characters /
+places / artifacts, the `fallback_policy` request field that controls which
+outcomes count as a hit, and the product-safety rule that overrides
+everything else.
+
 ### 8.1 Exact Match
 
 An exact match uses:
 
 - same entity id
 - same visual identity version
+- same `state_version`
 - same style profile version
-- same asset role
-- same variant tags
+- same asset role / variant_key
+- same variant tags (`expression`, `angle`, `time_of_day`, `weather`, etc.)
 - requested quality tier or better
 - active asset state
 
-If found, return it.
+If found, return `match_type = exact_match`.
 
-### 8.2 Variant Match
+### 8.2 Compatible Match
 
-A variant match allows nearby assets.
+A compatible match returns a stored asset that is **product-safe to
+substitute** under the variant compatibility matrix. Examples per the matrix:
 
-Examples:
+- requested `smiling` expression → return `warm_expression` (same family).
+- requested `serious` expression → return `tense` (same mild-emotion family).
+- requested `establishing_wide_day` → return `establishing_wide` for generic
+  place card.
+- requested clean artifact display → return the default clean variant.
 
-- requested serious expression but neutral is acceptable fallback
-- requested night place view but establishing view can be used until night view is generated
-- requested high-res but preview exists and can be returned first
+Returned without UX warning. Never used for strong-emotion character
+variants, day↔night place substitution, altered artifact states, or any
+substitution that would contradict known world state. Return
+`match_type = compatible_match` with `fallback_reason` naming the matrix
+rule.
 
-### 8.3 Fallback Match
+### 8.3 Preview Fallback
 
-A fallback match is used when the web app needs something quickly.
+A preview fallback is shown **temporarily** while the correct variant is
+generated. Only allowed when `fallback_policy ∈ {preview_allowed, any_existing}`.
+Examples per the matrix:
 
-Examples:
+- show `neutral_front` portrait while a mild expression variant generates.
+- show `establishing_wide` while a `night_view` generates.
+- show generic document artwork while the specific `signed_document`
+  variant generates.
 
-- profile icon crop from neutral portrait
-- establishing view for location
-- artifact placeholder if final is not ready
+UX must mark the result as provisional and refresh when the real asset
+lands. Return `match_type = preview_fallback`.
 
 ### 8.4 Generate Missing Asset
 
 Generate only if:
 
-- no suitable asset exists
-- current asset is rejected
-- identity version changed
-- style profile changed
-- user explicitly asks for regeneration
-- asset is missing required resolution tier
+- no suitable asset exists under §§8.1–8.3,
+- current asset is rejected,
+- identity version or `state_version` changed,
+- style profile changed,
+- user explicitly asks for regeneration,
+- asset is missing required resolution tier,
+- the matrix returns `invalid_match` for every candidate (strong-emotion
+  request, altered-state place, document-state mismatch, etc.).
+
+Return `match_type = generated_required` from the search endpoint and
+queue the generation per ADR-009.
 
 ## 9. Cache Strategy
 
@@ -312,35 +337,51 @@ Important principles:
 
 ## 14. Retrieval API Behavior
 
-The retrieval endpoints should allow `allow_fallback=true`.
+Retrieval endpoints take a `fallback_policy` (default `compatible_only`).
+Allowed values: `none`, `compatible_only`, `preview_allowed`, `any_existing`
+(admin/debug only). See
+`docs/architecture/variant-compatibility-matrix.md` §5 for semantics.
 
 Example:
 
 ```http
-GET /v1/characters/char_789/assets?asset_role=expression_serious&resolution=preview&allow_fallback=true
+POST /v1/assets/search
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "owner_type": "character",
+  "owner_id": "char_789",
+  "variant_key": "serious_expression",
+  "fallback_policy": "preview_allowed"
+}
 ```
 
-Possible response:
+Possible response (matrix returned a preview fallback):
 
 ```json
 {
-  "match_type": "variant_cache_hit",
-  "requested": {
-    "asset_role": "expression_serious",
-    "resolution": "preview"
-  },
-  "returned_asset": {
-    "asset_id": "asset_001",
-    "asset_role": "neutral_front_portrait",
-    "url": "https://..."
-  },
-  "generation_recommended": true,
-  "generation_request_hint": {
-    "endpoint": "/v1/characters/generate-pack",
-    "missing_roles": ["expression_serious"]
-  }
+  "match_type": "preview_fallback",
+  "compatibility_score": 0.45,
+  "fallback_reason": "character.expression.serious→neutral_front.preview_only",
+  "assets": [
+    {
+      "id": "asset_001",
+      "asset_type": "character_portrait",
+      "variant_key": "neutral_front",
+      "variant_family": "neutral",
+      "state_version": 1,
+      "low_res_url": "...",
+      "high_res_url": "..."
+    }
+  ],
+  "generation_recommended": true
 }
 ```
+
+The client renders the preview, displays it as provisional, and on the next
+poll (after generation completes) receives an `exact_match` with the real
+`serious_expression` asset.
 
 ## 15. Acceptance Criteria
 
