@@ -4,7 +4,12 @@ Every PRD/spec/ADR/schema/runbook in this repo carries a per-file confidence-to-
 
 **Changelog**
 
-- **2026-06-05 (latest)** — Variant compatibility matrix specified:
+- **2026-06-05 (latest)** — Benchmark corpus populated:
+  - `prds/schemas/benchmark_corpus_template.md` replaced with 100 real cases (25 characters, 25 places, 25 artifacts, 25 consistency stress tests), explicit 1–5 scoring rubric on 10 quality dimensions, 10-item operational pass/fail checklist, scoring policy with capability-mapping floors, result-row schema for the runner.
+  - All 100 JSON cases validate; benchmark_ids unique; `required_capability` distribution (25 identity_capable, 10 pack_capable, 65 scene_capable) ties cleanly to PRD 03 §8.
+  - Score shift: `prds/schemas/benchmark_corpus_template.md` **60 → 88**.
+  - See `frustration_log.md` entry 16.
+- **2026-06-05 (earlier)** — Variant compatibility matrix specified:
   - New `docs/architecture/variant-compatibility-matrix.md` — four match outcomes (`exact_match`, `compatible_match`, `preview_fallback`, `invalid_match`), five-step retrieval rule, `fallback_policy` enum (`none`, `compatible_only`, `preview_allowed`, `any_existing`), twelve variant dimensions, and per-entity rules for characters / places / artifacts.
   - The product-safety rule ("fallback must never visually contradict known world state") is now explicit and overrides every other matrix rule.
   - OpenAPI v0.4.0 adds `FallbackPolicy` and `MatchType` enums; six new fields on `VisualAsset` (`variant_family`, `state_version`, `compatibility_tags`, `fallback_allowed`, `fallback_rank`, `is_identity_anchor`); `fallback_policy` on `AssetSearchRequest` and the three generation request bodies; `match_type` / `compatibility_score` / `fallback_reason` on `AssetSearchResponse`. Breaking: `match_type` values renamed (e.g. `exact` → `exact_match`).
@@ -32,15 +37,15 @@ Score is "my confidence I could implement the file end-to-end without further hu
 
 | Group | Avg | Median | Min | Max | Files |
 |---|---:|---:|---:|---:|---:|
-| PRDs (`prds/`) | **86** | 88 | 60 | 95 | 10 (1 deprecated, excluded) |
+| PRDs (`prds/`) | **88** | 88 | 75 | 95 | 10 (1 deprecated, excluded) |
 | ADRs (`docs/adr/`) | **89** | 90 | 78 | 95 | 15 |
 | API specs (`docs/api/`) | **86** | 88 | 75 | 94 | 9 |
-| Architecture (`docs/architecture/`) | **86** | 88 | 78 | 90 | 10 (incl. admin-control-surface.md, variant-compatibility-matrix.md) |
+| Architecture (`docs/architecture/`) | **86** | 88 | 78 | 90 | 10 |
 | DB (`docs/db/`) | **85** | 85 | 85 | 85 | 1 |
 | Guidelines (`docs/guidelines/`) | **90** | 90 | 85 | 95 | 4 |
 | Runbooks (`docs/runbooks/`) | **87** | 88 | 80 | 90 | 5 |
 | Schemas (`docs/schemas/`) | **90** | 89 | 88 | 95 | 4 |
-| **All files** | **88** | 89 | 60 | 95 | **58** |
+| **All files** | **88** | 89 | 75 | 95 | **58** |
 
 ## Per-file scores
 
@@ -58,7 +63,7 @@ Score is "my confidence I could implement the file end-to-end without further hu
 | 85 | `07_superpowers_implementation_prompt.md` | Meta-build prompt; stack choice conflicts with docs |
 | _N/A_ | `schemas/image_platform_openapi_draft.yaml` | **DEPRECATED** — points at `docs/api/openapi.yaml` |
 | 90 | `schemas/image_platform_data_model.json` | Cleanest spec in pack; near-1:1 to DDL |
-| 60 | `schemas/benchmark_corpus_template.md` | Runner easy; corpus + scoring rubric under-specified |
+| **88** | `schemas/benchmark_corpus_template.md` | *(was 60)* 100 real cases + rubric + result-row schema |
 
 ### ADRs (`docs/adr/`)
 
@@ -154,11 +159,10 @@ All ADRs share a templated Context/Tradeoffs/Notes block; the *decision* sentenc
 
 ## Lowest-confidence items (work to do first)
 
-1. **`prds/schemas/benchmark_corpus_template.md` (60)** — needs real prompts + a scoring rubric (human or LLM-judge) before the runner is useful.
-2. **`docs/api/rate-limits.md` (75)** — `estimated_cost_per_day` requires a price book + pre-flight cost estimation pipeline. (Admin surface now documents the price-book endpoints; estimation pipeline is the remaining decision.)
-3. **`prds/06_delivery_pipeline_performance_cost_and_rollout.md` (75)** — preview-first only delivers UX value when the provider supports a true fast-preview path.
-4. **`docs/architecture/observability.md` (78)** — alert thresholds (what counts as "high"?) need numbers before they can be wired.
-5. **`docs/adr/010-preview-first-delivery.md` (78)** — same provider-capability dependency as PRD 06.
+1. **`docs/api/rate-limits.md` (75)** — `estimated_cost_per_day` requires a price book + pre-flight cost estimation pipeline. (Admin surface now documents the price-book endpoints; estimation pipeline is the remaining decision.)
+2. **`prds/06_delivery_pipeline_performance_cost_and_rollout.md` (75)** — preview-first only delivers UX value when the provider supports a true fast-preview path.
+3. **`docs/architecture/observability.md` (78)** — alert thresholds (what counts as "high"?) need numbers before they can be wired.
+4. **`docs/adr/010-preview-first-delivery.md` (78)** — same provider-capability dependency as PRD 06.
 
 ## Cross-cutting risks
 
