@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: DreamChat Image Platform API
-  version: 0.2.0
+  version: 0.3.0
   description: |
     Standalone API for generating, storing, retrieving, and versioning persistent visual assets for DreamChat worlds.
 
@@ -399,6 +399,490 @@ paths:
                       $ref: '#/components/schemas/ProviderModel'
         default:
           $ref: '#/components/responses/ErrorResponse'
+
+  # ==========================================================================
+  # Admin Control Surface — PLANNED
+  #
+  # All endpoints under /v1/admin/ are the required admin surface for
+  # implementation, referenced by the operational runbooks. NONE of them
+  # are served by the running service today. Marked with `**PLANNED**` in
+  # every description until implemented.
+  #
+  # See docs/architecture/admin-control-surface.md for design rationale,
+  # implementation order, and audit-event expectations.
+  # ==========================================================================
+  /v1/admin/providers:
+    get:
+      tags: [Admin]
+      summary: List providers and their status
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        Returns each provider model with current `status`, capability levels
+        (`ProviderCapability` enum), circuit-breaker state, and last failure
+        time. Used by the provider-failure runbook to identify what to
+        disable.
+      security:
+        - BearerAuth: [admin:providers]
+      responses:
+        '200':
+          description: Admin view of provider models
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [providers]
+                properties:
+                  providers:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminProviderModel'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/admin/providers/{provider_id}/disable:
+    post:
+      tags: [Admin]
+      summary: Disable a provider
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        Sets provider status to `disabled`. The router stops routing new jobs
+        to this provider. In-flight jobs continue. Emits
+        `admin.provider.disabled` audit event.
+      security:
+        - BearerAuth: [admin:providers]
+      parameters:
+        - name: provider_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminReasonBody'
+      responses:
+        '200':
+          description: Provider disabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminProviderModel'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/admin/providers/{provider_id}/enable:
+    post:
+      tags: [Admin]
+      summary: Re-enable a provider
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        Sets provider status back to `active`. Emits `admin.provider.enabled`
+        audit event.
+      security:
+        - BearerAuth: [admin:providers]
+      parameters:
+        - name: provider_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminReasonBody'
+      responses:
+        '200':
+          description: Provider enabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminProviderModel'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /v1/admin/routes:
+    get:
+      tags: [Admin]
+      summary: List provider routes
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        A route is the (provider × asset_type × quality_tier × latency_tier)
+        combination used by the router. Disabling a route is narrower than
+        disabling the whole provider.
+      security:
+        - BearerAuth: [admin:routes]
+      responses:
+        '200':
+          description: List of routes
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [routes]
+                properties:
+                  routes:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminRoute'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/admin/routes/{route_id}/disable:
+    post:
+      tags: [Admin]
+      summary: Disable a specific route
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        Disables a single (provider × asset_type × quality × latency) route
+        without disabling the whole provider. Emits `admin.route.disabled`.
+      security:
+        - BearerAuth: [admin:routes]
+      parameters:
+        - name: route_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminReasonBody'
+      responses:
+        '200':
+          description: Route disabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminRoute'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/admin/routes/{route_id}/enable:
+    post:
+      tags: [Admin]
+      summary: Re-enable a route
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        Emits `admin.route.enabled`.
+      security:
+        - BearerAuth: [admin:routes]
+      parameters:
+        - name: route_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminReasonBody'
+      responses:
+        '200':
+          description: Route enabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminRoute'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /v1/admin/jobs:
+    get:
+      tags: [Admin]
+      summary: List generation jobs with admin filters
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        Used by the failed-jobs runbook to find retryable or cancellable work.
+        Filters: status, provider_id, world_id, tenant_id, token_id,
+        created_after, created_before, error_code.
+      security:
+        - BearerAuth: [admin:jobs]
+      parameters:
+        - in: query
+          name: status
+          schema:
+            $ref: '#/components/schemas/GenerationJobStatus'
+        - in: query
+          name: provider_id
+          schema: { type: string }
+        - in: query
+          name: world_id
+          schema: { type: string }
+        - in: query
+          name: tenant_id
+          schema: { type: string }
+        - in: query
+          name: token_id
+          schema: { type: string }
+        - in: query
+          name: created_after
+          schema: { type: string, format: date-time }
+        - in: query
+          name: created_before
+          schema: { type: string, format: date-time }
+        - in: query
+          name: error_code
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 50, maximum: 500 }
+      responses:
+        '200':
+          description: List of jobs
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [jobs]
+                properties:
+                  jobs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/GenerationJob'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/admin/jobs/{job_id}/retry:
+    post:
+      tags: [Admin]
+      summary: Retry a failed job
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        Creates a new generation job that references the original. Returns the
+        new job_id. Emits `admin.job.retried` audit event. Should refuse for
+        non-retryable failure codes unless `force: true` is set.
+      security:
+        - BearerAuth: [admin:jobs]
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string }
+                force:
+                  type: boolean
+                  default: false
+                  description: Override the retryable check.
+      responses:
+        '202':
+          description: New job accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationJobAccepted'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/admin/jobs/{job_id}/cancel:
+    post:
+      tags: [Admin]
+      summary: Cancel a queued or running job
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        Transitions the job to `cancelled`. Emits `admin.job.cancelled`.
+      security:
+        - BearerAuth: [admin:jobs]
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminReasonBody'
+      responses:
+        '200':
+          description: Cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationJob'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /v1/admin/price-book:
+    get:
+      tags: [Admin]
+      summary: List price-book entries
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        Per (provider_model_id × operation) prices used for pre-flight cost
+        estimation. Supports the `estimated_cost_per_day` rate-limit
+        dimension (see `docs/api/rate-limits.md`).
+      security:
+        - BearerAuth: [admin:costs]
+      responses:
+        '200':
+          description: Price book
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [entries]
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PriceBookEntry'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/admin/price-book/{provider_model_id}:
+    put:
+      tags: [Admin]
+      summary: Upsert a price-book entry
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        Emits `admin.price_book.updated`.
+      security:
+        - BearerAuth: [admin:costs]
+      parameters:
+        - name: provider_model_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PriceBookEntryWrite'
+      responses:
+        '200':
+          description: Updated entry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PriceBookEntry'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /v1/admin/cost-budgets:
+    get:
+      tags: [Admin]
+      summary: List cost budgets
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        Budgets at per-tenant, per-world, per-token, and per-day scope. Used
+        by the cost-spike runbook to inspect and adjust caps.
+      security:
+        - BearerAuth: [admin:costs]
+      responses:
+        '200':
+          description: Cost budgets
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [budgets]
+                properties:
+                  budgets:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CostBudget'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/admin/cost-budgets/{budget_id}:
+    put:
+      tags: [Admin]
+      summary: Update a cost budget
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        Emits `admin.cost_budget.updated`.
+      security:
+        - BearerAuth: [admin:costs]
+      parameters:
+        - name: budget_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CostBudgetWrite'
+      responses:
+        '200':
+          description: Updated budget
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CostBudget'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/admin/cost-events:
+    get:
+      tags: [Admin]
+      summary: Query the cost-event log
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        Cost events with filters by token, provider, asset_type, world, time
+        range. Used by the cost-spike runbook for diagnosis.
+      security:
+        - BearerAuth: [admin:costs]
+      parameters:
+        - in: query
+          name: token_id
+          schema: { type: string }
+        - in: query
+          name: provider_id
+          schema: { type: string }
+        - in: query
+          name: model_id
+          schema: { type: string }
+        - in: query
+          name: world_id
+          schema: { type: string }
+        - in: query
+          name: tenant_id
+          schema: { type: string }
+        - in: query
+          name: created_after
+          schema: { type: string, format: date-time }
+        - in: query
+          name: created_before
+          schema: { type: string, format: date-time }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 100, maximum: 1000 }
+      responses:
+        '200':
+          description: Cost events
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events]
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CostEvent'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
 components:
   securitySchemes:
     BearerAuth:
@@ -763,24 +1247,178 @@ components:
         supports_preview: { type: boolean }
         supports_high_res: { type: boolean }
         status: { type: string, enum: [active, degraded, disabled] }
+    # ------------------------------------------------------------------------
+    # Admin schemas — PLANNED
+    # All admin schemas back endpoints under /v1/admin/ that are not yet
+    # served. See docs/architecture/admin-control-surface.md.
+    # ------------------------------------------------------------------------
+    AdminReasonBody:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          description: |
+            Human-readable reason for the admin action. Recorded on the
+            audit_event row. Required for every state-changing admin call.
+    AdminProviderModel:
+      allOf:
+        - $ref: '#/components/schemas/ProviderModel'
+        - type: object
+          properties:
+            circuit_breaker_state:
+              type: string
+              enum: [closed, half_open, open]
+              description: |
+                Current circuit-breaker state. `open` means the router has
+                stopped routing new jobs to this provider after too many
+                recent failures.
+            last_failure_at:
+              type: string
+              format: date-time
+            disabled_reason:
+              type: string
+              description: |
+                Reason text from the most recent admin disable action, if any.
+            disabled_by_token_id:
+              type: string
+            disabled_at:
+              type: string
+              format: date-time
+    AdminRoute:
+      type: object
+      required: [id, provider_model_id, asset_type, quality_tier, latency_tier, status]
+      properties:
+        id: { type: string }
+        provider_model_id: { type: string }
+        asset_type:
+          $ref: '#/components/schemas/AssetType'
+        quality_tier:
+          $ref: '#/components/schemas/QualityTier'
+        latency_tier:
+          $ref: '#/components/schemas/LatencyTier'
+        priority:
+          type: integer
+          description: Routing priority within ties. Higher wins.
+        status:
+          type: string
+          enum: [active, disabled]
+        disabled_reason: { type: string }
+        disabled_by_token_id: { type: string }
+        disabled_at: { type: string, format: date-time }
+    PriceBookEntry:
+      type: object
+      required: [provider_model_id, operation, estimated_cost_usd]
+      properties:
+        provider_model_id: { type: string }
+        operation:
+          type: string
+          description: |
+            Operation slug — e.g. `generate_preview`, `generate_final`,
+            `upscale`. Matches the `operation` field on cost_event rows.
+        estimated_cost_usd:
+          type: string
+          description: Fixed-decimal USD cost. String to preserve precision.
+        source:
+          type: string
+          description: |
+            Where the price came from (e.g. `provider_pricing_page`,
+            `internal_benchmark`).
+        notes: { type: string }
+        updated_at: { type: string, format: date-time }
+    PriceBookEntryWrite:
+      type: object
+      required: [operation, estimated_cost_usd]
+      properties:
+        operation: { type: string }
+        estimated_cost_usd: { type: string }
+        source: { type: string }
+        notes: { type: string }
+    CostBudget:
+      type: object
+      required: [id, scope, scope_id, amount_usd, window]
+      properties:
+        id: { type: string }
+        scope:
+          type: string
+          enum: [tenant, world, token, session, global]
+        scope_id:
+          type: string
+          description: |
+            Identifier for the scope (e.g. `tenant_abc`, `world_42`,
+            `tok_xyz`). Null when `scope=global`.
+          nullable: true
+        amount_usd: { type: string }
+        window:
+          type: string
+          enum: [hour, day, week, month]
+        soft_warning_pct:
+          type: integer
+          description: |
+            Percentage of budget at which soft warnings fire. Default 80.
+        hard_limit_pct:
+          type: integer
+          description: |
+            Percentage at which generation is denied or downgraded. Default 100.
+        downgrade_to_tier:
+          $ref: '#/components/schemas/QualityTier'
+        updated_at: { type: string, format: date-time }
+    CostBudgetWrite:
+      type: object
+      properties:
+        amount_usd: { type: string }
+        window:
+          type: string
+          enum: [hour, day, week, month]
+        soft_warning_pct: { type: integer }
+        hard_limit_pct: { type: integer }
+        downgrade_to_tier:
+          $ref: '#/components/schemas/QualityTier'
+    CostEvent:
+      type: object
+      required: [id, operation, status, created_at]
+      properties:
+        id: { type: string }
+        job_id: { type: string }
+        asset_id: { type: string }
+        token_id: { type: string }
+        provider_id: { type: string }
+        model_id: { type: string }
+        operation: { type: string }
+        estimated_cost_usd: { type: string }
+        actual_cost_usd: { type: string }
+        duration_ms: { type: integer }
+        status: { type: string }
+        created_at: { type: string, format: date-time }
 
 # ----------------------------------------------------------------------------
 # Confidence to Implement
 #
-# Score: 95/100 — Very High (was 88 before OpenAPI drift was resolved)
+# Score: 93/100 — Very High
 #
-# This is now the single canonical contract. All entity IDs are path
-# parameters, tenant_id is inferred from the bearer token (never in body),
-# every enum (GenerationJobStatus, QualityTier, AssetType, AssetStatus,
-# StyleMode, ProviderCapability, OwnerType, LatencyTier) lives in
-# `components.schemas` and is referenced by $ref so adding a new value is
-# a one-line edit. Bearer auth, RFC 7807 ProblemDetails, Idempotency-Key,
-# /openapi.json, and /docs are all defined. Spec passes openapi-spec-validator
-# against the OpenAPI 3.1.0 schema; all 76 internal $refs resolve.
+# v0.3.0 — adds the planned admin control surface (Admin tag) under
+# /v1/admin/{providers,routes,jobs,price-book,cost-budgets,cost-events}.
+# Those endpoints are marked **PLANNED** in every description; codegen
+# should generate them as TODO stubs returning 501 Not Implemented until
+# the implementation lands. See docs/architecture/admin-control-surface.md
+# for the design and implementation order.
 #
-# Suitable for direct codegen with oapi-codegen / ogen.
+# v0.2.0 — single canonical contract; entity IDs in path; tenant_id from
+# bearer token; centralized enums (GenerationJobStatus, QualityTier,
+# LatencyTier, AssetType, AssetStatus, StyleMode, ProviderCapability,
+# OwnerType) referenced via $ref; bearer auth + RFC 7807 ProblemDetails +
+# Idempotency-Key + /openapi.json + /docs all defined.
 #
-# Why not 100: `canonical_visual_traits` and VisualAsset.metadata remain
-# free-form `object` (intentional — PRDs 03 and 04 define their shape
-# loosely). That's the only ambiguity remaining for an implementer.
+# Spec passes openapi-spec-validator against the OpenAPI 3.1.0 schema;
+# all 118 internal $refs resolve.
+#
+# Suitable for direct codegen with oapi-codegen / ogen (with the admin
+# endpoints generated as not-yet-implemented stubs).
+#
+# Score nuance:
+#   + Canonical, well-typed, validated.
+#   − `canonical_visual_traits` and VisualAsset.metadata remain free-form
+#     `object` (intentional — PRDs 03 and 04 define shape loosely).
+#   − Admin endpoints are spec-only; until implementation, runbooks
+#     reference them via PLANNED markers and manual fallbacks.
 # ----------------------------------------------------------------------------

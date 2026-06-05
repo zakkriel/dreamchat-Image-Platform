@@ -86,3 +86,31 @@ Format per entry:
   - `docs/api/authentication.md` has a new "Tenant Inference" section.
 - Confidence shifts: canonical openapi.yaml **88 → 95**, PRD 02 **82 → 88**, PRD 05 **85 → 88**. PRD draft yaml is deprecated and excluded from aggregate.
 
+### Entry 12
+- **Trigger**: Superpowers documentation-confidence task — rewrite ADRs with real tradeoffs
+- **Category**: process (resolution)
+- **Note**: Entry 5's "all 15 ADRs share an identical templated Context/Tradeoffs block" risk is now resolved. Every ADR was rewritten with: Status / Context / Decision / Alternatives considered / Tradeoffs / Consequences / Revisit when. Alternatives are project-specific (e.g. ADR-002 names Node+NestJS, Python+FastAPI, and Rust with real reasoning per project shape; ADR-013 names NATS JetStream, Postgres-only queue, Kafka, RabbitMQ, SQS with the actual tradeoff for our scale). Implementation confidence per ADR didn't shift much — the decisions were already implementable — but doc-quality / decision-auditability is materially higher. Score-aggregate side effect: the cross-cutting risk is dropped from `CONFIDENCE_SCORES.md`.
+
+### Entry 13
+- **Trigger**: Superpowers documentation-confidence task — provider capability floor for PRD 03
+- **Category**: process (resolution)
+- **Note**: Entry 7 and the cross-cutting risk "visual consistency outcome ≠ consistency-system code" are now resolved at the doc level. PRD 03 §8 Provider Capability Floor:
+  - Pins minimum provider capability for recurring character generation (≥1 of: reference-image conditioning / image-to-image / multi-reference / LoRA / vendor identity feature).
+  - Pins minimum capability for recurring place generation (same list + seed-control-plus-strong-prompt-adherence as a sixth option, recognizing places tolerate more variance than faces).
+  - Defines `ProviderCapability` levels (`draft_only`, `scene_capable`, `identity_capable`, `pack_capable`, `production_capable`) matching the OpenAPI enum.
+  - Routing rules (§8.4): pure text-to-image is OK for drafts/artifacts/non-recurring, never for recurring NPCs unless `identity_capable`+; expression/angle packs require `pack_capable`+; production traffic requires `production_capable`.
+  - Acceptance tests (§8.5): 4-of-5 variant pass criterion (1 anchor + 5 variants, human reviewer scores 1–5, pass = ≥4 variants ≥4/5).
+  - Renumbered downstream sections (§9 Drift Detection, §10 Corrections, §11 Versioning, §12 API Implications, §13 Acceptance).
+  - PRD 03 confidence **65 → 82**.
+
+### Entry 14
+- **Trigger**: Superpowers documentation-confidence task — admin control surface
+- **Category**: process (resolution, partial)
+- **Note**: The "runbooks reference admin tooling that doesn't exist" risk is now resolved **at the spec level**. Created:
+  - `docs/architecture/admin-control-surface.md` — design rationale, audit-event expectations, implementation order, four-action-mapping rule (every runbook action maps to a documented endpoint OR a documented planned CLI OR a clearly marked **MANUAL** action).
+  - Planned admin endpoints in `docs/api/openapi.yaml` v0.3.0: `/v1/admin/{providers,routes,jobs,price-book,cost-budgets,cost-events}` with full schemas (`AdminProviderModel`, `AdminRoute`, `PriceBookEntry`, `CostBudget`, `CostEvent`, `AdminReasonBody`). All marked **PLANNED — required admin surface for implementation, not yet served.**
+  - Four new admin scopes documented in `docs/api/authentication.md`: `admin:providers`, `admin:routes`, `admin:jobs`, `admin:costs`, with mapping to runbooks.
+  - Three runbooks rewritten (provider-failure, failed-jobs, cost-spike) with: numbered procedure, exact endpoint + scope + example body + planned CLI + manual SQL fallback per action, audit-event table at the end.
+  - Runbook confidence shifts: provider-failure **75 → 85**, failed-jobs **78 → 88**, cost-spike **72 → 85**.
+- **Caveat**: This is a doc patch, not implementation. Codegen will produce admin handlers as TODO stubs returning 501 until the actual endpoints land. The runbooks rely on the manual SQL fallback in the interim.
+

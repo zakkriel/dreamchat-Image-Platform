@@ -30,10 +30,25 @@ jobs:read
 styles:read
 styles:write
 models:read
-admin:tokens
-admin:costs
-admin:providers
+
+admin:tokens       # issue, list, revoke API tokens
+admin:providers    # view, disable, re-enable provider models
+admin:routes       # view, disable, re-enable provider routes (PLANNED)
+admin:jobs         # view, retry, cancel generation jobs (PLANNED)
+admin:costs        # view/edit price book and cost budgets, view cost events (PLANNED)
 ```
+
+Admin scopes mapped to runbooks:
+
+- `admin:providers` → provider-failure runbook (`docs/runbooks/provider-failure.md`)
+- `admin:routes` → narrower route-level disabling (provider-failure runbook)
+- `admin:jobs` → failed-jobs runbook (`docs/runbooks/failed-jobs.md`)
+- `admin:costs` → cost-spike runbook (`docs/runbooks/cost-spike.md`)
+
+Endpoints requiring `admin:routes`, `admin:jobs`, and `admin:costs` are
+**PLANNED — required admin surface for implementation, not yet served.**
+See `docs/architecture/admin-control-surface.md` for the planned surface
+and implementation order.
 
 ## Example Request
 

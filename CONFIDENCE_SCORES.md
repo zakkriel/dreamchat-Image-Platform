@@ -4,6 +4,11 @@ Every PRD/spec/ADR/schema/runbook in this repo carries a per-file confidence-to-
 
 **Changelog**
 
+- **2026-06-05 (later)** — Doc-quality patches landed:
+  - All 15 ADRs rewritten with real Alternatives Considered + Tradeoffs + Revisit When sections (per the Superpowers documentation-confidence task). Cross-cutting "ADR boilerplate" risk resolved.
+  - PRD 03 Provider Capability Floor added (§8) — provider capability levels, routing rules, and 4-of-5 acceptance tests. PRD 03 score **65 → 82**.
+  - Admin Control Surface specified — new `docs/architecture/admin-control-surface.md`, planned admin endpoints in `docs/api/openapi.yaml` (v0.3.0), 4 new admin scopes documented in `docs/api/authentication.md`, runbooks rewritten with endpoint mappings + manual fallbacks + audit-event expectations. Runbook scores: provider-failure **75 → 85**, failed-jobs **78 → 88**, cost-spike **72 → 85**.
+  - See `frustration_log.md` entries 12–14.
 - **2026-06-05** — OpenAPI drift resolved. `docs/api/openapi.yaml` is canonical; `prds/schemas/image_platform_openapi_draft.yaml` is deprecated. Scores shifted: canonical openapi.yaml **88 → 95**, PRD 02 **82 → 88**, PRD 05 **85 → 88**. See `frustration_log.md` entry 11.
 
 **Rubric**
@@ -20,15 +25,15 @@ Score is "my confidence I could implement the file end-to-end without further hu
 
 | Group | Avg | Median | Min | Max | Files |
 |---|---:|---:|---:|---:|---:|
-| PRDs (`prds/`) | **83** | 85 | 60 | 95 | 10 (1 deprecated, excluded) |
+| PRDs (`prds/`) | **85** | 87 | 60 | 95 | 10 (1 deprecated, excluded) |
 | ADRs (`docs/adr/`) | **89** | 90 | 78 | 95 | 15 |
-| API specs (`docs/api/`) | **87** | 88 | 75 | 95 | 9 |
-| Architecture (`docs/architecture/`) | **85** | 85 | 78 | 90 | 8 |
+| API specs (`docs/api/`) | **86** | 88 | 75 | 93 | 9 |
+| Architecture (`docs/architecture/`) | **86** | 86 | 78 | 90 | 9 (incl. admin-control-surface.md) |
 | DB (`docs/db/`) | **85** | 85 | 85 | 85 | 1 |
 | Guidelines (`docs/guidelines/`) | **90** | 90 | 85 | 95 | 4 |
-| Runbooks (`docs/runbooks/`) | **79** | 78 | 72 | 90 | 5 |
+| Runbooks (`docs/runbooks/`) | **87** | 88 | 80 | 90 | 5 |
 | Schemas (`docs/schemas/`) | **90** | 89 | 88 | 95 | 4 |
-| **All files** | **86** | 88 | 60 | 95 | **56** |
+| **All files** | **88** | 89 | 60 | 95 | **57** |
 
 ## Per-file scores
 
@@ -38,10 +43,10 @@ Score is "my confidence I could implement the file end-to-end without further hu
 |---:|---|---|
 | 95 | `00_README.md` | Index doc; clear principle |
 | 90 | `01_image_platform_vision_and_scope.md` | Vision is sharp; some quality outcomes provider-dependent |
-| **88** | `02_standalone_image_generation_api_and_job_system.md` | *(was 82)* OpenAPI drift resolved; router policy still open |
-| 65 | `03_character_and_place_consistency_system.md` | Data model fine; visual consistency is provider-quality dependent |
+| 88 | `02_standalone_image_generation_api_and_job_system.md` | *(was 82)* OpenAPI drift resolved; router policy still open |
+| **82** | `03_character_and_place_consistency_system.md` | *(was 65)* Provider Capability Floor added; consistency now testable |
 | 80 | `04_asset_packs_variants_and_expressions.md` | Pack templates + asset roles enumerated; trigger thresholds open |
-| **88** | `05_storage_retrieval_versioning_and_cache_strategy.md` | *(was 85)* `match_type` now in canonical spec; variant compat matrix still open |
+| 88 | `05_storage_retrieval_versioning_and_cache_strategy.md` | *(was 85)* `match_type` now in canonical spec; variant compat matrix still open |
 | 75 | `06_delivery_pipeline_performance_cost_and_rollout.md` | Phased rollout solid; preview-first needs provider support |
 | 85 | `07_superpowers_implementation_prompt.md` | Meta-build prompt; stack choice conflicts with docs |
 | _N/A_ | `schemas/image_platform_openapi_draft.yaml` | **DEPRECATED** — points at `docs/api/openapi.yaml` |
@@ -74,8 +79,8 @@ All ADRs share a templated Context/Tradeoffs/Notes block; the *decision* sentenc
 
 | Score | File |
 |---:|---|
-| **95** | `openapi.yaml` *(was 88; canonical contract, OpenAPI 3.1.0 validated, 8 centralized enums, 76 refs resolve)* |
-| 90 | `authentication.md` *(now documents tenant inference)* |
+| **93** | `openapi.yaml` *(was 95; v0.3.0 adds planned admin surface; 29 paths, 31 schemas, 118 refs resolve, validates against OpenAPI 3.1.0)* |
+| 90 | `authentication.md` *(now documents tenant inference and admin scopes)* |
 | 92 | `errors.md` |
 | 85 | `idempotency.md` |
 | 90 | `jobs.md` |
@@ -96,6 +101,7 @@ All ADRs share a templated Context/Tradeoffs/Notes block; the *decision* sentenc
 | 82 | `provider-adapters.md` |
 | 82 | `asset-versioning.md` |
 | 85 | `security-and-auth.md` |
+| **88** | `admin-control-surface.md` *(new; planned admin endpoints + scopes + audit + CLI hooks)* |
 
 ### DB (`docs/db/`)
 
@@ -117,10 +123,10 @@ All ADRs share a templated Context/Tradeoffs/Notes block; the *decision* sentenc
 | Score | File |
 |---:|---|
 | 80 | `local-development.md` |
-| 75 | `provider-failure.md` |
-| 78 | `failed-jobs.md` |
+| **85** | `provider-failure.md` *(was 75)* |
+| **88** | `failed-jobs.md` *(was 78)* |
 | 90 | `token-rotation.md` |
-| 72 | `cost-spike.md` |
+| **85** | `cost-spike.md` *(was 72)* |
 
 ### Schemas (`docs/schemas/`)
 
@@ -141,16 +147,15 @@ All ADRs share a templated Context/Tradeoffs/Notes block; the *decision* sentenc
 ## Lowest-confidence items (work to do first)
 
 1. **`prds/schemas/benchmark_corpus_template.md` (60)** — needs real prompts + a scoring rubric (human or LLM-judge) before the runner is useful.
-2. **`prds/03_character_and_place_consistency_system.md` (65)** — pin a minimum provider capability (reference-image conditioning or LoRA) so the consistency claim is testable.
-3. **`docs/runbooks/cost-spike.md` (72)** — depends on cost-budget reservation + admin controls that don't exist yet.
-4. **`docs/runbooks/provider-failure.md` (75)** — needs admin endpoints/CLI to disable routes.
-5. **`docs/api/rate-limits.md` (75)** — `estimated_cost_per_day` requires a price book + pre-flight cost estimation pipeline.
-6. **`docs/runbooks/failed-jobs.md` (78)** — same admin-tooling gap as provider-failure.
-7. **`docs/architecture/observability.md` (78)** — alert thresholds (what counts as "high"?) need numbers before they can be wired.
+2. **`docs/api/rate-limits.md` (75)** — `estimated_cost_per_day` requires a price book + pre-flight cost estimation pipeline. (Admin surface now documents the price-book endpoints; estimation pipeline is the remaining decision.)
+3. **`prds/06_delivery_pipeline_performance_cost_and_rollout.md` (75)** — preview-first only delivers UX value when the provider supports a true fast-preview path.
+4. **`docs/architecture/observability.md` (78)** — alert thresholds (what counts as "high"?) need numbers before they can be wired.
+5. **`docs/architecture/asset-versioning.md` (82)** + **`prds/05` (88)** — variant-compatibility matrix between variant tags is unspecified. Implementer has to invent one.
 
 ## Cross-cutting risks
 
 - ~~**OpenAPI drift**~~ — **RESOLVED 2026-06-05**. `docs/api/openapi.yaml` is now the canonical contract; the PRD draft is a deprecated pointer. See `frustration_log.md` entry 11.
-- **All 15 ADRs share an identical templated Context/Tradeoffs section** — they read as auto-generated and don't capture alternatives considered. Useful to revisit with real tradeoff content. (See `frustration_log.md` entry 5.)
-- **Visual consistency outcome ≠ consistency-system code** — the platform can do everything right and the output can still drift if the chosen provider doesn't honor identity inputs. PRD 03 should specify a provider capability floor.
-- **Runbooks assume admin tooling that isn't built** — provider-failure / failed-jobs / cost-spike all reference admin actions (disable provider, requeue jobs, lower limits) without backing endpoints.
+- ~~**All 15 ADRs share an identical templated Context/Tradeoffs section**~~ — **RESOLVED 2026-06-05**. All 15 ADRs rewritten with project-specific Alternatives, Tradeoffs, and Revisit When sections. See `frustration_log.md` entry 12.
+- ~~**Visual consistency outcome ≠ consistency-system code**~~ — **RESOLVED 2026-06-05**. PRD 03 §8 Provider Capability Floor pins minimum provider capability + routing rules + 4-of-5 acceptance tests. See `frustration_log.md` entry 13.
+- ~~**Runbooks assume admin tooling that isn't built**~~ — **RESOLVED 2026-06-05** at the spec level. `docs/architecture/admin-control-surface.md` defines the surface; runbooks now map every action to a planned endpoint, planned CLI, or **MANUAL** fallback. Implementation of the endpoints is the remaining work. See `frustration_log.md` entry 14.
+- **Variant-compatibility matrix** (new top risk) — `docs/architecture/asset-versioning.md`, `prds/05`, and `docs/adr/009-retrieval-before-generation.md` all reference "variant match" but none specify which variants are acceptable substitutes for which (e.g. is `neutral_front` a valid fallback for `warm_expression`?). This is product-shaped and needs a decision.

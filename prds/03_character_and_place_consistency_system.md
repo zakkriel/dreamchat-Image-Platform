@@ -310,7 +310,100 @@ Combines:
 
 This should be the target design.
 
-## 8. Identity Drift Detection
+## 8. Provider Capability Floor
+
+The platform preserves visual identity inputs, but visual consistency depends on provider capability. A provider that cannot condition generation on identity, references, or controlled variants must not be used for consistency-critical character/place generation.
+
+This section makes the provider requirement explicit so the consistency claim is testable *before* a provider is selected, not litigated after assets ship drifted.
+
+### 8.1 Minimum capability for recurring character consistency
+
+A provider used for recurring character generation MUST support at least one of:
+
+- reference-image conditioning
+- image-to-image conditioning
+- multi-reference generation
+- LoRA / adapters
+- an explicit identity / character-consistency feature exposed by the provider
+
+A pure text-to-image provider with no reference/identity mechanism is **not eligible** for recurring character generation. It may still be used for disposable drafts (see §8.4 routing rule).
+
+### 8.2 Minimum capability for recurring place consistency
+
+A provider used for recurring place generation MUST support at least one of:
+
+- reference-image conditioning
+- image-to-image conditioning
+- multi-reference generation
+- LoRA / adapters
+- **seed control + strong prompt adherence** (places tolerate slightly more variance than faces; deterministic seeds plus prompts that survive re-rolls can be enough when reference conditioning isn't available)
+
+### 8.3 Provider capability levels
+
+Every provider model is classified with one or more of these levels. The values match the `ProviderCapability` enum in `docs/api/openapi.yaml`.
+
+| Level | Meaning |
+|---|---|
+| `draft_only` | Can generate disposable drafts. Not suitable for consistency-critical assets. |
+| `scene_capable` | Can generate scene / place visuals with acceptable repeatability across time-of-day / weather variants. |
+| `identity_capable` | Can generate recognizable recurring characters using identity inputs (references, seeds + identity prompts, LoRA, or vendor identity feature). |
+| `pack_capable` | Can generate multiple controlled variants (angles, expressions, outfits) from the same identity within one batch. Requires `identity_capable` plus reliable conditioning across the batch. |
+| `production_capable` | Supports identity, variants, metadata, predictable latency, cost telemetry, and acceptable failure rates under production volume. |
+
+`production_capable` implies `pack_capable` implies `identity_capable`. `scene_capable` is parallel to the identity axis (a model may be scene-capable but not identity-capable, or vice versa).
+
+### 8.4 Routing rules
+
+The provider router (ADR-007) enforces these constraints:
+
+- **Pure text-to-image providers (draft_only)** may be used for: early drafts, disposable artifacts, one-off scene mood images, and benchmark warm-up. They MUST NOT be used for: recurring character generation, character pack generation, or any asset attached to a `visual_identity` that is intended to recur.
+- **`identity_capable` or higher** is required for recurring NPC portrait packs and for any generation that references a `visual_identity_id` with `current_version >= 1`.
+- **`pack_capable` or higher** is required for character expression / angle pack generation (PRD 04 §4.4 character_expression_pack, character_full_reference_pack) where multiple variants must share an identity.
+- **`production_capable`** is required for any provider serving live production traffic (as opposed to internal experimentation or benchmark runs).
+
+The router records the routing decision and its capability rationale on `generation_jobs` for audit.
+
+### 8.5 Acceptance tests
+
+These tests validate that a candidate provider+model actually delivers the consistency the capability level claims. Run before a provider is promoted from experimental to production routing.
+
+#### Character consistency test
+
+1. Generate one character anchor image (neutral front portrait) using the candidate provider with full identity input (canonical traits, style profile, seed, and reference conditioning if supported).
+2. Using the same identity inputs, generate five variants:
+   - neutral 3/4 angle
+   - side angle
+   - warm expression
+   - tense expression
+   - one additional expression at the reviewer's choice
+3. A human reviewer scores each of the five variants 1–5 for identity consistency against the anchor (5 = clearly the same person, 1 = no recognizable identity carryover).
+4. **Pass condition:** at least 4 of 5 variants score ≥ 4/5.
+
+A provider that fails this test is downgraded from `identity_capable` until the failure mode is understood and re-tested.
+
+#### Place consistency test
+
+1. Generate one place anchor image (establishing wide view) using the candidate provider with full place identity input (canonical features, landmarks, palette, seed, references if supported).
+2. Using the same identity inputs, generate five variants:
+   - day view
+   - night view
+   - empty view
+   - crowded / busy view
+   - altered mood or weather at reviewer's choice
+3. A human reviewer scores each variant 1–5 for place consistency against the anchor (5 = clearly the same location, 1 = unrelated).
+4. **Pass condition:** at least 4 of 5 variants score ≥ 4/5.
+
+A provider that fails this test is downgraded from `scene_capable` until the failure mode is understood and re-tested.
+
+### 8.6 What this section does not promise
+
+The capability floor and acceptance tests catch the worst provider mismatches before they reach production. They do **not** guarantee:
+
+- Zero drift across long-running worlds (drift detection per §9 remains future work).
+- Cross-provider consistency (an asset generated by provider A and a variant generated by provider B may still drift; the router avoids this by pinning a `visual_identity_id` to one provider for its lifetime where possible).
+- Identical output across providers at the same capability level (capability is a floor, not a contract for visual style).
+
+## 9. Identity Drift Detection
 
 The first version may not need automated computer-vision verification.
 
@@ -325,7 +418,7 @@ Future checks may include:
 - human/user correction
 - manual “this does not look like them” feedback
 
-## 9. User and Creator Corrections
+## 10. User and Creator Corrections
 
 The user or creator should eventually be able to correct visual identity.
 
@@ -340,7 +433,7 @@ Corrections should update the visual identity record for future generation.
 
 They should not necessarily rewrite all existing assets.
 
-## 10. Versioning Rules
+## 11. Versioning Rules
 
 ### Same Version
 
@@ -372,7 +465,7 @@ Use new version when:
 - major style migration for a world
 - new persistent era/state
 
-## 11. API Implications
+## 12. API Implications
 
 The generation API should never accept only a raw prompt for recurring characters/places.
 
@@ -386,7 +479,7 @@ It should accept or resolve:
 - `anchor_asset_ids`
 - `reference_asset_ids`
 
-## 12. Acceptance Criteria
+## 13. Acceptance Criteria
 
 This PRD is implemented when:
 
@@ -403,12 +496,12 @@ This PRD is implemented when:
 
 ## Confidence to Implement
 
-**Score: 65/100 — Medium**
+**Score: 82/100 — High** *(was 65; +17 after §8 Provider Capability Floor added on 2026-06-05 — the visual-consistency outcome is now testable and the routing constraints prevent unsuitable providers from being used for recurring assets.)*
 
-Two distinct things are bundled here and they deserve different scores:
+The two split scores are now better aligned:
 
-1. **The consistency *system* (data model, identity records, versioning rules, hybrid reference strategy plumbing) — ~90/100.** Storing canonical traits, anchors, seeds, allowed/forbidden drift, and routing them into prompts is straightforward.
-2. **The actual *visual* consistency outcome — ~50/100.** Whether "the same character remains recognizable across asset pack outputs" is true depends on provider capabilities (does the model accept reference images? are seeds stable across calls? does it respect identity tokens?). Most current text-to-image providers are inconsistent across independent prompts; reference-image conditioning + LoRAs help but aren't universally available. This PRD even acknowledges this with the "first version may not need automated CV verification" hedge.
+1. **The consistency *system* (data model, identity records, versioning rules, hybrid reference strategy plumbing) — ~90/100.** Unchanged: storing canonical traits, anchors, seeds, allowed/forbidden drift, and routing them into prompts is straightforward.
+2. **The actual *visual* consistency outcome — ~75/100** (was ~50/100). The provider capability floor (§8) makes the "what does the provider have to support" question explicit, the `ProviderCapability` enum classifies providers concretely (`draft_only`, `scene_capable`, `identity_capable`, `pack_capable`, `production_capable`), routing rules (§8.4) block unsuitable providers from recurring-character or pack jobs, and the acceptance tests (§8.5) make consistency claims falsifiable before launch. What remains uncertain is the *long-tail quality* of any specific provider once accepted — even an `identity_capable` provider may still drift at the margins, which is why drift detection (§9) remains future work.
 
-I'm averaging to **65** to surface the second risk explicitly. The PRD should specify a *minimum* provider capability ("requires image-to-image with reference conditioning" or "requires per-identity LoRA training") to lift confidence; otherwise the acceptance criterion is partly a quality bet on the chosen provider — see `frustration_log.md` entry 7.
+The averaged score climbs to **82**. To reach 90+ the platform would need a working drift-detection pipeline (§9) so consistency holds over time, not just at acceptance.
 
