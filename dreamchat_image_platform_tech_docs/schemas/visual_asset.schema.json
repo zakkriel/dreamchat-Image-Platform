@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "VisualAsset",
+  "type": "object",
+  "required": ["id", "asset_type", "variant_key", "version", "status"],
+  "properties": {
+    "id": {"type": "string"},
+    "visual_identity_id": {"type": "string"},
+    "world_id": {"type": "string"},
+    "asset_type": {"type": "string"},
+    "variant_key": {"type": "string"},
+    "version": {"type": "integer"},
+    "status": {"type": "string", "enum": ["pending", "preview_ready", "ready", "failed", "archived"]},
+    "low_res_url": {"type": "string"},
+    "high_res_url": {"type": "string"},
+    "thumbnail_url": {"type": "string"},
+    "provider_id": {"type": "string"},
+    "model_id": {"type": "string"},
+    "prompt_hash": {"type": "string"},
+    "seed": {"type": "string"},
+    "metadata": {"type": "object"}
+  }
+}
