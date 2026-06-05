@@ -1,0 +1,568 @@
+openapi: 3.1.0
+info:
+  title: DreamChat Image Platform API
+  version: 0.1.0
+  description: |
+    Standalone API for generating, storing, retrieving, and versioning persistent visual assets for DreamChat worlds.
+servers:
+  - url: http://localhost:8080
+    description: Local development
+  - url: https://image-api.dreamchat.ai
+    description: Production
+security:
+  - BearerAuth: []
+tags:
+  - name: Health
+  - name: Characters
+  - name: Places
+  - name: Artifacts
+  - name: Assets
+  - name: Jobs
+  - name: Styles
+  - name: Models
+  - name: Admin
+paths:
+  /health:
+    get:
+      tags: [Health]
+      security: []
+      summary: Health check
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /v1/characters/{character_id}/visual-identity:
+    post:
+      tags: [Characters]
+      summary: Create or update character visual identity
+      security:
+        - BearerAuth: [images:write]
+      parameters:
+        - $ref: '#/components/parameters/CharacterId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateVisualIdentityRequest'
+      responses:
+        '200':
+          description: Visual identity created or updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VisualIdentity'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+    get:
+      tags: [Characters]
+      summary: Get character visual identity
+      security:
+        - BearerAuth: [images:read]
+      parameters:
+        - $ref: '#/components/parameters/CharacterId'
+      responses:
+        '200':
+          description: Visual identity
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VisualIdentity'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/characters/{character_id}/generate-pack:
+    post:
+      tags: [Characters]
+      summary: Generate character starter pack
+      security:
+        - BearerAuth: [images:write]
+      parameters:
+        - $ref: '#/components/parameters/CharacterId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenerateCharacterPackRequest'
+      responses:
+        '202':
+          description: Generation job accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationJobAccepted'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/places/{place_id}/visual-identity:
+    post:
+      tags: [Places]
+      summary: Create or update place visual identity
+      security:
+        - BearerAuth: [images:write]
+      parameters:
+        - $ref: '#/components/parameters/PlaceId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateVisualIdentityRequest'
+      responses:
+        '200':
+          description: Visual identity created or updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VisualIdentity'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+    get:
+      tags: [Places]
+      summary: Get place visual identity
+      security:
+        - BearerAuth: [images:read]
+      parameters:
+        - $ref: '#/components/parameters/PlaceId'
+      responses:
+        '200':
+          description: Visual identity
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VisualIdentity'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/places/{place_id}/generate-pack:
+    post:
+      tags: [Places]
+      summary: Generate place starter pack
+      security:
+        - BearerAuth: [images:write]
+      parameters:
+        - $ref: '#/components/parameters/PlaceId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GeneratePlacePackRequest'
+      responses:
+        '202':
+          description: Generation job accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationJobAccepted'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/artifacts/{artifact_id}/generate:
+    post:
+      tags: [Artifacts]
+      summary: Generate artifact image
+      security:
+        - BearerAuth: [images:write]
+      parameters:
+        - $ref: '#/components/parameters/ArtifactId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenerateArtifactRequest'
+      responses:
+        '202':
+          description: Generation job accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationJobAccepted'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/assets/search:
+    post:
+      tags: [Assets]
+      summary: Search reusable visual assets
+      security:
+        - BearerAuth: [images:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssetSearchRequest'
+      responses:
+        '200':
+          description: Asset search result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetSearchResponse'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/assets/{asset_id}:
+    get:
+      tags: [Assets]
+      summary: Get asset by ID
+      security:
+        - BearerAuth: [images:read]
+      parameters:
+        - $ref: '#/components/parameters/AssetId'
+      responses:
+        '200':
+          description: Visual asset
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VisualAsset'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/assets/{asset_id}/regenerate:
+    post:
+      tags: [Assets]
+      summary: Regenerate an asset as a new generation job
+      security:
+        - BearerAuth: [images:write]
+      parameters:
+        - $ref: '#/components/parameters/AssetId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: Generation job accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationJobAccepted'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/jobs/{job_id}:
+    get:
+      tags: [Jobs]
+      summary: Get generation job status
+      security:
+        - BearerAuth: [jobs:read]
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: Generation job
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationJob'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/styles:
+    get:
+      tags: [Styles]
+      summary: List style profiles
+      security:
+        - BearerAuth: [styles:read]
+      responses:
+        '200':
+          description: List of style profiles
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  styles:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/StyleProfile'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+    post:
+      tags: [Styles]
+      summary: Create style profile
+      security:
+        - BearerAuth: [styles:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateStyleProfileRequest'
+      responses:
+        '201':
+          description: Style profile created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StyleProfile'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/styles/{style_id}/preview:
+    post:
+      tags: [Styles]
+      summary: Generate style preview
+      security:
+        - BearerAuth: [images:write]
+      parameters:
+        - $ref: '#/components/parameters/StyleId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: Generation job accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationJobAccepted'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/models:
+    get:
+      tags: [Models]
+      summary: List available provider models
+      security:
+        - BearerAuth: [models:read]
+      responses:
+        '200':
+          description: Model list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  models:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProviderModel'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: API Token
+  parameters:
+    CharacterId:
+      name: character_id
+      in: path
+      required: true
+      schema: { type: string }
+    PlaceId:
+      name: place_id
+      in: path
+      required: true
+      schema: { type: string }
+    ArtifactId:
+      name: artifact_id
+      in: path
+      required: true
+      schema: { type: string }
+    AssetId:
+      name: asset_id
+      in: path
+      required: true
+      schema: { type: string }
+    JobId:
+      name: job_id
+      in: path
+      required: true
+      schema: { type: string }
+    StyleId:
+      name: style_id
+      in: path
+      required: true
+      schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema: { type: string, maxLength: 128 }
+  responses:
+    ErrorResponse:
+      description: Error response
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, example: ok }
+    ProblemDetails:
+      type: object
+      required: [type, title, status, detail, request_id]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        request_id: { type: string }
+    CreateVisualIdentityRequest:
+      type: object
+      required: [world_id, owner_type, owner_id, display_name, canonical_visual_traits, style_profile_id]
+      properties:
+        world_id: { type: string }
+        owner_type:
+          type: string
+          enum: [character, place, artifact]
+        owner_id: { type: string }
+        display_name: { type: string }
+        canonical_visual_traits:
+          type: object
+          additionalProperties: true
+        style_profile_id: { type: string }
+        consistency_key: { type: string }
+    VisualIdentity:
+      type: object
+      required: [id, world_id, owner_type, owner_id, display_name, style_profile_id, current_version, status]
+      properties:
+        id: { type: string }
+        world_id: { type: string }
+        owner_type: { type: string, enum: [character, place, artifact] }
+        owner_id: { type: string }
+        display_name: { type: string }
+        canonical_visual_traits:
+          type: object
+          additionalProperties: true
+        style_profile_id: { type: string }
+        consistency_key: { type: string }
+        anchor_asset_ids:
+          type: array
+          items: { type: string }
+        current_version: { type: integer }
+        status: { type: string, enum: [active, archived] }
+    GenerateCharacterPackRequest:
+      type: object
+      required: [world_id, style_profile_id]
+      properties:
+        world_id: { type: string }
+        style_profile_id: { type: string }
+        quality_tier: { type: string, enum: [draft, standard, high], default: standard }
+        latency_tier: { type: string, enum: [fast, balanced, quality], default: balanced }
+        variant_keys:
+          type: array
+          items: { type: string }
+    GeneratePlacePackRequest:
+      type: object
+      required: [world_id, style_profile_id]
+      properties:
+        world_id: { type: string }
+        style_profile_id: { type: string }
+        quality_tier: { type: string, enum: [draft, standard, high], default: standard }
+        latency_tier: { type: string, enum: [fast, balanced, quality], default: balanced }
+        variant_keys:
+          type: array
+          items: { type: string }
+    GenerateArtifactRequest:
+      type: object
+      required: [world_id, style_profile_id, description]
+      properties:
+        world_id: { type: string }
+        style_profile_id: { type: string }
+        description: { type: string }
+        quality_tier: { type: string, enum: [draft, standard, high], default: standard }
+        latency_tier: { type: string, enum: [fast, balanced, quality], default: balanced }
+    GenerationJobAccepted:
+      type: object
+      required: [job_id, status]
+      properties:
+        job_id: { type: string }
+        status: { type: string, enum: [queued] }
+    GenerationJob:
+      type: object
+      required: [id, status, job_type, created_at, updated_at]
+      properties:
+        id: { type: string }
+        status: { type: string, enum: [queued, running, preview_ready, completed, failed, cancelled] }
+        job_type: { type: string }
+        visual_identity_id: { type: string }
+        preview_asset_ids:
+          type: array
+          items: { type: string }
+        final_asset_ids:
+          type: array
+          items: { type: string }
+        error_code: { type: string }
+        error_message: { type: string }
+        retryable: { type: boolean }
+        cost_estimate_usd: { type: string }
+        actual_cost_usd: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    AssetSearchRequest:
+      type: object
+      properties:
+        world_id: { type: string }
+        owner_type: { type: string, enum: [character, place, artifact] }
+        owner_id: { type: string }
+        visual_identity_id: { type: string }
+        asset_type: { type: string }
+        variant_key: { type: string }
+        version: { type: integer }
+        style_profile_id: { type: string }
+    AssetSearchResponse:
+      type: object
+      required: [assets]
+      properties:
+        assets:
+          type: array
+          items:
+            $ref: '#/components/schemas/VisualAsset'
+    VisualAsset:
+      type: object
+      required: [id, asset_type, variant_key, version, status]
+      properties:
+        id: { type: string }
+        visual_identity_id: { type: string }
+        world_id: { type: string }
+        asset_type: { type: string }
+        variant_key: { type: string }
+        version: { type: integer }
+        status: { type: string, enum: [pending, preview_ready, ready, failed, archived] }
+        low_res_url: { type: string }
+        high_res_url: { type: string }
+        thumbnail_url: { type: string }
+        provider_id: { type: string }
+        model_id: { type: string }
+        prompt_hash: { type: string }
+        seed: { type: string }
+        metadata:
+          type: object
+          additionalProperties: true
+    CreateStyleProfileRequest:
+      type: object
+      required: [name, style_mode, positive_prompt]
+      properties:
+        name: { type: string }
+        style_mode: { type: string, enum: [open_prompt, preset, creator_pack] }
+        positive_prompt: { type: string }
+        negative_prompt: { type: string }
+        default_quality_tier: { type: string, enum: [draft, standard, high], default: standard }
+    StyleProfile:
+      type: object
+      required: [id, name, style_mode, positive_prompt]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        style_mode: { type: string, enum: [open_prompt, preset, creator_pack] }
+        positive_prompt: { type: string }
+        negative_prompt: { type: string }
+        default_quality_tier: { type: string, enum: [draft, standard, high] }
+        status: { type: string, enum: [active, archived] }
+    ProviderModel:
+      type: object
+      required: [id, provider_id, display_name, capabilities, status]
+      properties:
+        id: { type: string }
+        provider_id: { type: string }
+        display_name: { type: string }
+        capabilities:
+          type: array
+          items: { type: string }
+        supports_preview: { type: boolean }
+        supports_high_res: { type: boolean }
+        status: { type: string, enum: [active, degraded, disabled] }

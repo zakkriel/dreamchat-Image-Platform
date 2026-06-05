@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "StyleProfile",
+  "type": "object",
+  "required": ["id", "name", "style_mode", "positive_prompt"],
+  "properties": {
+    "id": {"type": "string"},
+    "name": {"type": "string"},
+    "style_mode": {"type": "string", "enum": ["open_prompt", "preset", "creator_pack"]},
+    "positive_prompt": {"type": "string"},
+    "negative_prompt": {"type": "string"},
+    "default_quality_tier": {"type": "string", "enum": ["draft", "standard", "high"]},
+    "status": {"type": "string", "enum": ["active", "archived"]}
+  }
+}

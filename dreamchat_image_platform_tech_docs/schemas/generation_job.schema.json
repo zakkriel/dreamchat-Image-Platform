@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GenerationJob",
+  "type": "object",
+  "required": ["id", "job_type", "status"],
+  "properties": {
+    "id": {"type": "string"},
+    "job_type": {"type": "string"},
+    "status": {"type": "string", "enum": ["queued", "running", "preview_ready", "completed", "failed", "cancelled"]},
+    "visual_identity_id": {"type": "string"},
+    "input_payload": {"type": "object"},
+    "preview_asset_ids": {"type": "array", "items": {"type": "string"}},
+    "final_asset_ids": {"type": "array", "items": {"type": "string"}},
+    "error_code": {"type": "string"},
+    "error_message": {"type": "string"},
+    "retryable": {"type": "boolean"},
+    "cost_estimate_usd": {"type": "string"},
+    "actual_cost_usd": {"type": "string"}
+  }
+}

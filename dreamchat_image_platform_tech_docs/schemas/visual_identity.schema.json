@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "VisualIdentity",
+  "type": "object",
+  "required": ["id", "world_id", "owner_type", "owner_id", "display_name", "style_profile_id", "current_version", "status"],
+  "properties": {
+    "id": {"type": "string"},
+    "world_id": {"type": "string"},
+    "owner_type": {"type": "string", "enum": ["character", "place", "artifact"]},
+    "owner_id": {"type": "string"},
+    "display_name": {"type": "string"},
+    "canonical_visual_traits": {"type": "object"},
+    "style_profile_id": {"type": "string"},
+    "consistency_key": {"type": "string"},
+    "anchor_asset_ids": {"type": "array", "items": {"type": "string"}},
+    "current_version": {"type": "integer"},
+    "status": {"type": "string", "enum": ["active", "archived"]}
+  }
+}
