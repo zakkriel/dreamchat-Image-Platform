@@ -64,3 +64,25 @@ Format per entry:
 - **Category**: doubt
 - **Note**: Runbooks describe "what to do when X breaks" but the code that enables that response (admin tooling, cost aggregation queries, circuit-breaker controls, queue introspection) is largely absent from the specs. So the runbook *narrative* is implementable, but only after backing services are built. I'm scoring runbooks based on whether I could implement the supporting code from current docs, not whether the operational text reads well.
 
+### Entry 10
+- **Trigger**: User feedback after first session — "wait did you just implemented everything? where the fuck was the brainstorming?"
+- **Category**: process / drift
+- **Note**: The user reacted negatively to the volume of changes from the first turn (62 files committed). They expected `/brainstorming` to mean *exploratory discussion first*, not direct execution. I interpreted the literal asks (read zip, score files, create frustration log) as the request, and noted the `/brainstorming` ambiguity in entry 1 but proceeded anyway. **Mistake**: when a command/skill name is unknown, the cost of asking is small; the cost of charging ahead is a destination the user didn't sign off on. Next time `/<something>` isn't recognized, **stop and ask** before touching files — even if the rest of the request looks executable. The pattern is "execute literal → ask about ambiguous label" but it should be "ask about ambiguous label → execute literal."
+
+### Entry 11
+- **Trigger**: User issued explicit decision to resolve OpenAPI drift
+- **Category**: process (resolution)
+- **Note**: OpenAPI drift (entry 6) is now fully resolved. `docs/api/openapi.yaml` is canonical at v0.2.0:
+  - All entity IDs are path parameters; tenant_id is inferred from bearer token and removed from bodies.
+  - 8 reusable enums centralized in `components.schemas`: `GenerationJobStatus`, `QualityTier`, `LatencyTier`, `AssetType`, `AssetStatus`, `StyleMode`, `ProviderCapability`, `OwnerType` — every usage is `$ref`'d.
+  - `StyleMode` updated to `open_prompt | preset_style | creator_style | provider_native` (was `open_prompt | preset | creator_pack`).
+  - `AssetType` enum added (was free-form string).
+  - `ProviderCapability` enum replaces the previous freeform `capabilities` strings.
+  - `AssetSearchResponse` now exposes `match_type` and `generation_recommended` (PRD 05's telemetry).
+  - `/openapi.json` and `/docs` paths documented.
+  - Bearer auth, RFC 7807 ProblemDetails, Idempotency-Key all explicit.
+  - Spec passes `openapi-spec-validator` against the OpenAPI 3.1.0 schema with 0 errors; all 76 internal `$ref`s resolve.
+  - `prds/schemas/image_platform_openapi_draft.yaml` is replaced with a pointer stub.
+  - `docs/api/authentication.md` has a new "Tenant Inference" section.
+- Confidence shifts: canonical openapi.yaml **88 → 95**, PRD 02 **82 → 88**, PRD 05 **85 → 88**. PRD draft yaml is deprecated and excluded from aggregate.
+

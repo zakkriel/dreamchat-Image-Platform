@@ -2,6 +2,10 @@
 
 Every PRD/spec/ADR/schema/runbook in this repo carries a per-file confidence-to-implement score (added at the bottom of each markdown/YAML/SQL file; for JSON schemas it lives in a sibling `*.confidence.md`). This file is the index.
 
+**Changelog**
+
+- **2026-06-05** — OpenAPI drift resolved. `docs/api/openapi.yaml` is canonical; `prds/schemas/image_platform_openapi_draft.yaml` is deprecated. Scores shifted: canonical openapi.yaml **88 → 95**, PRD 02 **82 → 88**, PRD 05 **85 → 88**. See `frustration_log.md` entry 11.
+
 **Rubric**
 
 - 90–100 — **Very High**: Spec is concrete, primitives are mature, low novel logic, would ship without follow-up questions.
@@ -16,15 +20,15 @@ Score is "my confidence I could implement the file end-to-end without further hu
 
 | Group | Avg | Median | Min | Max | Files |
 |---|---:|---:|---:|---:|---:|
-| PRDs (`prds/`) | **80** | 83 | 60 | 95 | 11 |
+| PRDs (`prds/`) | **83** | 85 | 60 | 95 | 10 (1 deprecated, excluded) |
 | ADRs (`docs/adr/`) | **89** | 90 | 78 | 95 | 15 |
-| API specs (`docs/api/`) | **86** | 88 | 75 | 92 | 9 |
+| API specs (`docs/api/`) | **87** | 88 | 75 | 95 | 9 |
 | Architecture (`docs/architecture/`) | **85** | 85 | 78 | 90 | 8 |
 | DB (`docs/db/`) | **85** | 85 | 85 | 85 | 1 |
 | Guidelines (`docs/guidelines/`) | **90** | 90 | 85 | 95 | 4 |
 | Runbooks (`docs/runbooks/`) | **79** | 78 | 72 | 90 | 5 |
 | Schemas (`docs/schemas/`) | **90** | 89 | 88 | 95 | 4 |
-| **All files** | **85** | 88 | 60 | 95 | **57** |
+| **All files** | **86** | 88 | 60 | 95 | **56** |
 
 ## Per-file scores
 
@@ -34,13 +38,13 @@ Score is "my confidence I could implement the file end-to-end without further hu
 |---:|---|---|
 | 95 | `00_README.md` | Index doc; clear principle |
 | 90 | `01_image_platform_vision_and_scope.md` | Vision is sharp; some quality outcomes provider-dependent |
-| 82 | `02_standalone_image_generation_api_and_job_system.md` | API + job lifecycle concrete; diverges from docs/ spec |
+| **88** | `02_standalone_image_generation_api_and_job_system.md` | *(was 82)* OpenAPI drift resolved; router policy still open |
 | 65 | `03_character_and_place_consistency_system.md` | Data model fine; visual consistency is provider-quality dependent |
 | 80 | `04_asset_packs_variants_and_expressions.md` | Pack templates + asset roles enumerated; trigger thresholds open |
-| 85 | `05_storage_retrieval_versioning_and_cache_strategy.md` | Solid; variant compatibility matrix not given |
+| **88** | `05_storage_retrieval_versioning_and_cache_strategy.md` | *(was 85)* `match_type` now in canonical spec; variant compat matrix still open |
 | 75 | `06_delivery_pipeline_performance_cost_and_rollout.md` | Phased rollout solid; preview-first needs provider support |
 | 85 | `07_superpowers_implementation_prompt.md` | Meta-build prompt; stack choice conflicts with docs |
-| 80 | `schemas/image_platform_openapi_draft.yaml` | OpenAPI draft; diverges from docs OpenAPI |
+| _N/A_ | `schemas/image_platform_openapi_draft.yaml` | **DEPRECATED** — points at `docs/api/openapi.yaml` |
 | 90 | `schemas/image_platform_data_model.json` | Cleanest spec in pack; near-1:1 to DDL |
 | 60 | `schemas/benchmark_corpus_template.md` | Runner easy; corpus + scoring rubric under-specified |
 
@@ -70,8 +74,8 @@ All ADRs share a templated Context/Tradeoffs/Notes block; the *decision* sentenc
 
 | Score | File |
 |---:|---|
-| 88 | `openapi.yaml` |
-| 90 | `authentication.md` |
+| **95** | `openapi.yaml` *(was 88; canonical contract, OpenAPI 3.1.0 validated, 8 centralized enums, 76 refs resolve)* |
+| 90 | `authentication.md` *(now documents tenant inference)* |
 | 92 | `errors.md` |
 | 85 | `idempotency.md` |
 | 90 | `jobs.md` |
@@ -141,10 +145,12 @@ All ADRs share a templated Context/Tradeoffs/Notes block; the *decision* sentenc
 3. **`docs/runbooks/cost-spike.md` (72)** — depends on cost-budget reservation + admin controls that don't exist yet.
 4. **`docs/runbooks/provider-failure.md` (75)** — needs admin endpoints/CLI to disable routes.
 5. **`docs/api/rate-limits.md` (75)** — `estimated_cost_per_day` requires a price book + pre-flight cost estimation pipeline.
+6. **`docs/runbooks/failed-jobs.md` (78)** — same admin-tooling gap as provider-failure.
+7. **`docs/architecture/observability.md` (78)** — alert thresholds (what counts as "high"?) need numbers before they can be wired.
 
 ## Cross-cutting risks
 
-- **OpenAPI drift between `prds/schemas/image_platform_openapi_draft.yaml` and `docs/api/openapi.yaml`** — entity-id in body vs. path, tenant_id presence, status enum, quality tier names all differ. Reconcile before code generation. (See `frustration_log.md` entry 6.)
+- ~~**OpenAPI drift**~~ — **RESOLVED 2026-06-05**. `docs/api/openapi.yaml` is now the canonical contract; the PRD draft is a deprecated pointer. See `frustration_log.md` entry 11.
 - **All 15 ADRs share an identical templated Context/Tradeoffs section** — they read as auto-generated and don't capture alternatives considered. Useful to revisit with real tradeoff content. (See `frustration_log.md` entry 5.)
 - **Visual consistency outcome ≠ consistency-system code** — the platform can do everything right and the output can still drift if the chosen provider doesn't honor identity inputs. PRD 03 should specify a provider capability floor.
 - **Runbooks assume admin tooling that isn't built** — provider-failure / failed-jobs / cost-spike all reference admin actions (disable provider, requeue jobs, lower limits) without backing endpoints.

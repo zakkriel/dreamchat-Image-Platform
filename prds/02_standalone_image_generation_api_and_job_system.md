@@ -462,7 +462,7 @@ The PRD is implemented when:
 
 ## Confidence to Implement
 
-**Score: 82/100 — High**
+**Score: 88/100 — High** *(was 82; +6 after OpenAPI drift resolved on 2026-06-05 — `docs/api/openapi.yaml` is now the single canonical contract; this PRD's textual descriptions remain as background but are not the source of truth for shapes.)*
 
-The API surface, request/response envelopes, job lifecycle, and provider-capability metadata are all concrete enough to translate to handlers, services, and DB tables. Async-job + retrieval-only + partial-success flows are standard patterns. Two sources of friction lower the score: (1) this PRD's endpoint shapes diverge from `docs/api/openapi.yaml` (entity_id in body vs. in path; richer status enum; `tenant_id` vs. world-only) — see `frustration_log.md` entry 6 — so an implementer has to pick a winner first; (2) "decide which backend to use" + cost/latency tiers imply a router whose policies aren't fully specified (thresholds, fallback rules, downgrade behavior). The latter is implementable as a stub with explicit TODOs.
+The API surface, request/response envelopes, job lifecycle, and provider-capability metadata are all concrete enough to translate to handlers, services, and DB tables. Async-job + retrieval-only + partial-success flows are standard patterns. The earlier "implementer has to pick a winner" risk has been eliminated by promoting `docs/api/openapi.yaml` to canonical. The remaining friction: "decide which backend to use" + cost/latency tiers imply a router whose policies aren't fully specified (thresholds, fallback rules, downgrade behavior). Implementable as a stub with explicit TODOs.
 

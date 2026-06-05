@@ -1,9 +1,37 @@
 openapi: 3.1.0
 info:
   title: DreamChat Image Platform API
-  version: 0.1.0
+  version: 0.2.0
   description: |
     Standalone API for generating, storing, retrieving, and versioning persistent visual assets for DreamChat worlds.
+
+    ## Canonical contract
+
+    This file is the single source of truth for the DreamChat Image Platform API.
+    Any other OpenAPI fragment (for example in `prds/schemas/`) is illustrative only
+    and must defer to this contract.
+
+    ## Tenant handling
+
+    For normal API calls, `tenant_id` is **inferred from the bearer token** and must
+    NOT be passed in request bodies. The auth middleware resolves token → tenant on
+    every request. Admin endpoints may accept `tenant_id` as an optional filter.
+
+    ## Resource scoping
+
+    Entity IDs (`character_id`, `place_id`, `artifact_id`, `asset_id`, `job_id`,
+    `style_id`) are path parameters for resource-scoped operations. They must not
+    be duplicated in request bodies.
+
+    ## Idempotency
+
+    Generation endpoints accept `Idempotency-Key` so client retries do not create
+    duplicate jobs. See `idempotency.md`.
+
+    ## Docs
+
+    The service serves this contract at `GET /openapi.json` and a Swagger UI at
+    `GET /docs` (see ADR-015).
 servers:
   - url: http://localhost:8080
     description: Local development
@@ -13,6 +41,7 @@ security:
   - BearerAuth: []
 tags:
   - name: Health
+  - name: Docs
   - name: Characters
   - name: Places
   - name: Artifacts
@@ -34,6 +63,37 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HealthResponse'
+  /openapi.json:
+    get:
+      tags: [Docs]
+      security: []
+      summary: Canonical OpenAPI contract (JSON)
+      description: |
+        Returns this OpenAPI document as JSON. Public in local/dev. In production
+        this endpoint is gated behind admin auth or a feature flag (see ADR-015).
+      responses:
+        '200':
+          description: OpenAPI document
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /docs:
+    get:
+      tags: [Docs]
+      security: []
+      summary: Swagger UI for the canonical contract
+      description: |
+        Serves a Swagger UI (or Redoc) page rendered from `/openapi.json`.
+        Public in local/dev; gated in production.
+      responses:
+        '200':
+          description: HTML documentation page
+          content:
+            text/html:
+              schema:
+                type: string
   /v1/characters/{character_id}/visual-identity:
     post:
       tags: [Characters]
@@ -272,6 +332,7 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [styles]
                 properties:
                   styles:
                     type: array
@@ -330,6 +391,7 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [models]
                 properties:
                   models:
                     type: array
@@ -343,6 +405,11 @@ components:
       type: http
       scheme: bearer
       bearerFormat: API Token
+      description: |
+        DreamChat API token in `Authorization: Bearer <token>` form. Tokens carry
+        scopes (`images:read`, `images:write`, `jobs:read`, `styles:read`,
+        `styles:write`, `models:read`, `admin:*`). The auth middleware resolves
+        token → tenant_id; clients must not send `tenant_id` in request bodies.
   parameters:
     CharacterId:
       name: character_id
@@ -379,14 +446,94 @@ components:
       in: header
       required: false
       schema: { type: string, maxLength: 128 }
+      description: |
+        Client-generated idempotency key. The same key + token + endpoint + body
+        hash returns the same job. Same key + different body returns 409.
+        See `idempotency.md`.
   responses:
     ErrorResponse:
-      description: Error response
+      description: Error response (RFC 7807 Problem Details)
       content:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/ProblemDetails'
   schemas:
+    # ------------------------------------------------------------------------
+    # Canonical reusable enums. All endpoints and schemas reference these by
+    # $ref instead of inlining enum values. Any new enum value must be added
+    # here first.
+    # ------------------------------------------------------------------------
+    GenerationJobStatus:
+      type: string
+      description: Lifecycle status of a generation job.
+      enum:
+        - queued
+        - running
+        - preview_ready
+        - completed
+        - failed
+        - cancelled
+    QualityTier:
+      type: string
+      description: Output quality tier requested for generation.
+      enum:
+        - draft
+        - standard
+        - high
+      default: standard
+    LatencyTier:
+      type: string
+      description: Latency preference for provider routing.
+      enum:
+        - fast
+        - balanced
+        - quality
+      default: balanced
+    AssetType:
+      type: string
+      description: Kind of visual asset.
+      enum:
+        - character_portrait
+        - place_scene
+        - artifact
+        - expression
+        - angle_variant
+    AssetStatus:
+      type: string
+      description: Lifecycle status of a stored visual asset.
+      enum:
+        - pending
+        - preview_ready
+        - ready
+        - failed
+        - archived
+    StyleMode:
+      type: string
+      description: How a style profile is sourced.
+      enum:
+        - open_prompt
+        - preset_style
+        - creator_style
+        - provider_native
+    ProviderCapability:
+      type: string
+      description: Capability tier of a provider model used by the router.
+      enum:
+        - draft_only
+        - scene_capable
+        - identity_capable
+        - pack_capable
+        - production_capable
+    OwnerType:
+      type: string
+      description: Owning entity of a visual identity.
+      enum:
+        - character
+        - place
+        - artifact
+    # ------------------------------------------------------------------------
+    # Health & error
+    # ------------------------------------------------------------------------
     HealthResponse:
       type: object
       required: [status]
@@ -401,14 +548,16 @@ components:
         status: { type: integer }
         detail: { type: string }
         request_id: { type: string }
+    # ------------------------------------------------------------------------
+    # Visual identity
+    # ------------------------------------------------------------------------
     CreateVisualIdentityRequest:
       type: object
       required: [world_id, owner_type, owner_id, display_name, canonical_visual_traits, style_profile_id]
       properties:
         world_id: { type: string }
         owner_type:
-          type: string
-          enum: [character, place, artifact]
+          $ref: '#/components/schemas/OwnerType'
         owner_id: { type: string }
         display_name: { type: string }
         canonical_visual_traits:
@@ -422,7 +571,8 @@ components:
       properties:
         id: { type: string }
         world_id: { type: string }
-        owner_type: { type: string, enum: [character, place, artifact] }
+        owner_type:
+          $ref: '#/components/schemas/OwnerType'
         owner_id: { type: string }
         display_name: { type: string }
         canonical_visual_traits:
@@ -435,14 +585,19 @@ components:
           items: { type: string }
         current_version: { type: integer }
         status: { type: string, enum: [active, archived] }
+    # ------------------------------------------------------------------------
+    # Generation requests
+    # ------------------------------------------------------------------------
     GenerateCharacterPackRequest:
       type: object
       required: [world_id, style_profile_id]
       properties:
         world_id: { type: string }
         style_profile_id: { type: string }
-        quality_tier: { type: string, enum: [draft, standard, high], default: standard }
-        latency_tier: { type: string, enum: [fast, balanced, quality], default: balanced }
+        quality_tier:
+          $ref: '#/components/schemas/QualityTier'
+        latency_tier:
+          $ref: '#/components/schemas/LatencyTier'
         variant_keys:
           type: array
           items: { type: string }
@@ -452,8 +607,10 @@ components:
       properties:
         world_id: { type: string }
         style_profile_id: { type: string }
-        quality_tier: { type: string, enum: [draft, standard, high], default: standard }
-        latency_tier: { type: string, enum: [fast, balanced, quality], default: balanced }
+        quality_tier:
+          $ref: '#/components/schemas/QualityTier'
+        latency_tier:
+          $ref: '#/components/schemas/LatencyTier'
         variant_keys:
           type: array
           items: { type: string }
@@ -464,20 +621,28 @@ components:
         world_id: { type: string }
         style_profile_id: { type: string }
         description: { type: string }
-        quality_tier: { type: string, enum: [draft, standard, high], default: standard }
-        latency_tier: { type: string, enum: [fast, balanced, quality], default: balanced }
+        quality_tier:
+          $ref: '#/components/schemas/QualityTier'
+        latency_tier:
+          $ref: '#/components/schemas/LatencyTier'
+    # ------------------------------------------------------------------------
+    # Jobs
+    # ------------------------------------------------------------------------
     GenerationJobAccepted:
       type: object
       required: [job_id, status]
       properties:
         job_id: { type: string }
-        status: { type: string, enum: [queued] }
+        status:
+          type: string
+          enum: [queued]
     GenerationJob:
       type: object
       required: [id, status, job_type, created_at, updated_at]
       properties:
         id: { type: string }
-        status: { type: string, enum: [queued, running, preview_ready, completed, failed, cancelled] }
+        status:
+          $ref: '#/components/schemas/GenerationJobStatus'
         job_type: { type: string }
         visual_identity_id: { type: string }
         preview_asset_ids:
@@ -493,14 +658,19 @@ components:
         actual_cost_usd: { type: string }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+    # ------------------------------------------------------------------------
+    # Assets
+    # ------------------------------------------------------------------------
     AssetSearchRequest:
       type: object
       properties:
         world_id: { type: string }
-        owner_type: { type: string, enum: [character, place, artifact] }
+        owner_type:
+          $ref: '#/components/schemas/OwnerType'
         owner_id: { type: string }
         visual_identity_id: { type: string }
-        asset_type: { type: string }
+        asset_type:
+          $ref: '#/components/schemas/AssetType'
         variant_key: { type: string }
         version: { type: integer }
         style_profile_id: { type: string }
@@ -508,6 +678,19 @@ components:
       type: object
       required: [assets]
       properties:
+        match_type:
+          type: string
+          description: |
+            Telemetry hint describing how the best result was found. `exact` means
+            owner+variant+version+style all matched; `variant` means a compatible
+            variant was substituted; `fallback` means a usable but non-matching
+            asset was returned; `miss` means nothing matched.
+          enum: [exact, variant, fallback, miss]
+        generation_recommended:
+          type: boolean
+          description: |
+            True when the client should follow up with a generate-pack request
+            (e.g. because only a fallback or variant was returned).
         assets:
           type: array
           items:
@@ -519,10 +702,12 @@ components:
         id: { type: string }
         visual_identity_id: { type: string }
         world_id: { type: string }
-        asset_type: { type: string }
+        asset_type:
+          $ref: '#/components/schemas/AssetType'
         variant_key: { type: string }
         version: { type: integer }
-        status: { type: string, enum: [pending, preview_ready, ready, failed, archived] }
+        status:
+          $ref: '#/components/schemas/AssetStatus'
         low_res_url: { type: string }
         high_res_url: { type: string }
         thumbnail_url: { type: string }
@@ -533,26 +718,36 @@ components:
         metadata:
           type: object
           additionalProperties: true
+    # ------------------------------------------------------------------------
+    # Styles
+    # ------------------------------------------------------------------------
     CreateStyleProfileRequest:
       type: object
       required: [name, style_mode, positive_prompt]
       properties:
         name: { type: string }
-        style_mode: { type: string, enum: [open_prompt, preset, creator_pack] }
+        style_mode:
+          $ref: '#/components/schemas/StyleMode'
         positive_prompt: { type: string }
         negative_prompt: { type: string }
-        default_quality_tier: { type: string, enum: [draft, standard, high], default: standard }
+        default_quality_tier:
+          $ref: '#/components/schemas/QualityTier'
     StyleProfile:
       type: object
       required: [id, name, style_mode, positive_prompt]
       properties:
         id: { type: string }
         name: { type: string }
-        style_mode: { type: string, enum: [open_prompt, preset, creator_pack] }
+        style_mode:
+          $ref: '#/components/schemas/StyleMode'
         positive_prompt: { type: string }
         negative_prompt: { type: string }
-        default_quality_tier: { type: string, enum: [draft, standard, high] }
+        default_quality_tier:
+          $ref: '#/components/schemas/QualityTier'
         status: { type: string, enum: [active, archived] }
+    # ------------------------------------------------------------------------
+    # Provider models
+    # ------------------------------------------------------------------------
     ProviderModel:
       type: object
       required: [id, provider_id, display_name, capabilities, status]
@@ -562,7 +757,9 @@ components:
         display_name: { type: string }
         capabilities:
           type: array
-          items: { type: string }
+          description: Capability tiers this model satisfies (used by the router).
+          items:
+            $ref: '#/components/schemas/ProviderCapability'
         supports_preview: { type: boolean }
         supports_high_res: { type: boolean }
         status: { type: string, enum: [active, degraded, disabled] }
@@ -570,21 +767,20 @@ components:
 # ----------------------------------------------------------------------------
 # Confidence to Implement
 #
-# Score: 88/100 — High
+# Score: 95/100 — Very High (was 88 before OpenAPI drift was resolved)
 #
-# This is the more concrete of the two OpenAPI specs in the repo. Entity IDs
-# are in the path, bearer auth + scopes are baked in via the BearerAuth
-# securityScheme, the GenerationJob lifecycle matches the in-repo job
-# spec, and error responses point at a Problem Details schema. Suitable for
-# direct code generation with oapi-codegen / ogen.
+# This is now the single canonical contract. All entity IDs are path
+# parameters, tenant_id is inferred from the bearer token (never in body),
+# every enum (GenerationJobStatus, QualityTier, AssetType, AssetStatus,
+# StyleMode, ProviderCapability, OwnerType, LatencyTier) lives in
+# `components.schemas` and is referenced by $ref so adding a new value is
+# a one-line edit. Bearer auth, RFC 7807 ProblemDetails, Idempotency-Key,
+# /openapi.json, and /docs are all defined. Spec passes openapi-spec-validator
+# against the OpenAPI 3.1.0 schema; all 76 internal $refs resolve.
 #
-# Why not higher:
-#   - Several request bodies use `canonical_visual_traits` as a free-form
-#     object (additionalProperties: true). Implementer must choose whether to
-#     enforce shape downstream (PRD 03 gives example fields but they aren't
-#     typed here).
-#   - The PRD draft (prds/schemas/image_platform_openapi_draft.yaml) carries
-#     extra fields (tenant_id, match_type on search responses, richer status
-#     enum) that aren't here. Implementer must decide whether to merge them
-#     up before generating clients (frustration_log.md entry 6).
+# Suitable for direct codegen with oapi-codegen / ogen.
+#
+# Why not 100: `canonical_visual_traits` and VisualAsset.metadata remain
+# free-form `object` (intentional — PRDs 03 and 04 define their shape
+# loosely). That's the only ambiguity remaining for an implementer.
 # ----------------------------------------------------------------------------

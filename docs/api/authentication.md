@@ -44,6 +44,14 @@ curl -X POST "https://image-api.dreamchat.ai/v1/assets/search" \
   -d '{"owner_type":"character","owner_id":"char_123"}'
 ```
 
+## Tenant Inference
+
+For normal API calls, `tenant_id` is **inferred from the bearer token**. Every API token belongs to exactly one tenant, and the auth middleware resolves token → tenant on every request before any handler runs.
+
+Clients must **not** send `tenant_id` in request bodies for generation, asset search, style, or job endpoints. Doing so should be rejected as `400 Bad Request` or silently ignored, depending on policy.
+
+Admin endpoints (`admin:*` scopes) may accept `tenant_id` as an **optional filter** for cross-tenant operations.
+
 ## Token Storage
 
 Tokens are shown only once.

@@ -361,7 +361,7 @@ This PRD is implemented when:
 
 ## Confidence to Implement
 
-**Score: 85/100 — High**
+**Score: 88/100 — High** *(was 85; +3 after `AssetSearchResponse` was updated in the canonical OpenAPI on 2026-06-05 to expose `match_type` and `generation_recommended` — the cache-hit telemetry the PRD asks for is now in the wire contract.)*
 
-Storage layout, asset metadata schema, the retrieval algorithm (exact → variant → fallback → generate), cache hit types, asset states, and invalidation rules are all spelled out concretely enough to translate into repository code and SQL. The data model maps cleanly to the `visual_assets` table in `docs/db/initial_schema.sql`. Subtracting a few points because "variant match" semantics ("serious expression but neutral is acceptable fallback") imply a *compatibility matrix* between variant tags that isn't given — an implementer has to invent or extract it from product judgment. Also, the example `AssetQueryResponse` with `generation_recommended` + `generation_request_hint` is a nice idea but the docs spec (`docs/api/openapi.yaml`) doesn't expose it — another reconciliation gap.
+Storage layout, asset metadata schema, the retrieval algorithm (exact → variant → fallback → generate), cache hit types, asset states, and invalidation rules are all spelled out concretely enough to translate into repository code and SQL. The data model maps cleanly to the `visual_assets` table in `docs/db/initial_schema.sql`. Remaining friction: "variant match" semantics ("serious expression but neutral is acceptable fallback") imply a *compatibility matrix* between variant tags that isn't given — an implementer has to invent or extract it from product judgment. This is the natural next low-confidence item to address.
 
