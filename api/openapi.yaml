@@ -1,0 +1,1917 @@
+openapi: 3.1.0
+info:
+  title: DreamChat Image Platform API
+  version: 0.5.0
+  description: |
+    Standalone API for generating, storing, retrieving, and versioning persistent visual assets for DreamChat worlds.
+
+    ## Canonical contract
+
+    This file is the single source of truth for the DreamChat Image Platform API.
+    Any other OpenAPI fragment (for example in `prds/schemas/`) is illustrative only
+    and must defer to this contract.
+
+    ## Tenant handling
+
+    For normal API calls, `tenant_id` is **inferred from the bearer token** and must
+    NOT be passed in request bodies. The auth middleware resolves token → tenant on
+    every request. Admin endpoints may accept `tenant_id` as an optional filter.
+
+    ## Resource scoping
+
+    Entity IDs (`character_id`, `place_id`, `artifact_id`, `asset_id`, `job_id`,
+    `style_id`) are path parameters for resource-scoped operations. They must not
+    be duplicated in request bodies.
+
+    ## Idempotency
+
+    Generation endpoints accept `Idempotency-Key` so client retries do not create
+    duplicate jobs. See `idempotency.md`.
+
+    ## Docs
+
+    The service serves this contract at `GET /openapi.json` and a Swagger UI at
+    `GET /docs` (see ADR-015).
+servers:
+  - url: http://localhost:8080
+    description: Local development
+  - url: https://image-api.dreamchat.ai
+    description: Production
+security:
+  - BearerAuth: []
+tags:
+  - name: Health
+  - name: Docs
+  - name: Characters
+  - name: Places
+  - name: Artifacts
+  - name: Assets
+  - name: Jobs
+  - name: Styles
+  - name: Models
+  - name: Admin
+paths:
+  /health:
+    get:
+      tags: [Health]
+      security: []
+      summary: Health check
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /openapi.json:
+    get:
+      tags: [Docs]
+      security: []
+      summary: Canonical OpenAPI contract (JSON)
+      description: |
+        Returns this OpenAPI document as JSON. Public in local/dev. In production
+        this endpoint is gated behind admin auth or a feature flag (see ADR-015).
+      responses:
+        '200':
+          description: OpenAPI document
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /docs:
+    get:
+      tags: [Docs]
+      security: []
+      summary: Swagger UI for the canonical contract
+      description: |
+        Serves a Swagger UI (or Redoc) page rendered from `/openapi.json`.
+        Public in local/dev; gated in production.
+      responses:
+        '200':
+          description: HTML documentation page
+          content:
+            text/html:
+              schema:
+                type: string
+  /v1/characters/{character_id}/visual-identity:
+    post:
+      tags: [Characters]
+      summary: Create or update character visual identity
+      security:
+        - BearerAuth: [images:write]
+      parameters:
+        - $ref: '#/components/parameters/CharacterId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateVisualIdentityRequest'
+      responses:
+        '200':
+          description: Visual identity created or updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VisualIdentity'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+    get:
+      tags: [Characters]
+      summary: Get character visual identity
+      security:
+        - BearerAuth: [images:read]
+      parameters:
+        - $ref: '#/components/parameters/CharacterId'
+      responses:
+        '200':
+          description: Visual identity
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VisualIdentity'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/characters/{character_id}/generate-pack:
+    post:
+      tags: [Characters]
+      summary: Generate character starter pack
+      security:
+        - BearerAuth: [images:write]
+      parameters:
+        - $ref: '#/components/parameters/CharacterId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenerateCharacterPackRequest'
+      responses:
+        '202':
+          description: Generation job accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationJobAccepted'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/places/{place_id}/visual-identity:
+    post:
+      tags: [Places]
+      summary: Create or update place visual identity
+      security:
+        - BearerAuth: [images:write]
+      parameters:
+        - $ref: '#/components/parameters/PlaceId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateVisualIdentityRequest'
+      responses:
+        '200':
+          description: Visual identity created or updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VisualIdentity'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+    get:
+      tags: [Places]
+      summary: Get place visual identity
+      security:
+        - BearerAuth: [images:read]
+      parameters:
+        - $ref: '#/components/parameters/PlaceId'
+      responses:
+        '200':
+          description: Visual identity
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VisualIdentity'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/places/{place_id}/generate-pack:
+    post:
+      tags: [Places]
+      summary: Generate place starter pack
+      security:
+        - BearerAuth: [images:write]
+      parameters:
+        - $ref: '#/components/parameters/PlaceId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GeneratePlacePackRequest'
+      responses:
+        '202':
+          description: Generation job accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationJobAccepted'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/artifacts/{artifact_id}/generate:
+    post:
+      tags: [Artifacts]
+      summary: Generate artifact image
+      security:
+        - BearerAuth: [images:write]
+      parameters:
+        - $ref: '#/components/parameters/ArtifactId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenerateArtifactRequest'
+      responses:
+        '202':
+          description: Generation job accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationJobAccepted'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/assets/search:
+    post:
+      tags: [Assets]
+      summary: Search reusable visual assets
+      security:
+        - BearerAuth: [images:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssetSearchRequest'
+      responses:
+        '200':
+          description: Asset search result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetSearchResponse'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/assets/{asset_id}:
+    get:
+      tags: [Assets]
+      summary: Get asset by ID
+      security:
+        - BearerAuth: [images:read]
+      parameters:
+        - $ref: '#/components/parameters/AssetId'
+      responses:
+        '200':
+          description: Visual asset
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VisualAsset'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/assets/{asset_id}/regenerate:
+    post:
+      tags: [Assets]
+      summary: Regenerate an asset as a new generation job
+      security:
+        - BearerAuth: [images:write]
+      parameters:
+        - $ref: '#/components/parameters/AssetId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: Generation job accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationJobAccepted'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/jobs/{job_id}:
+    get:
+      tags: [Jobs]
+      summary: Get generation job status
+      security:
+        - BearerAuth: [jobs:read]
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: Generation job
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationJob'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/styles:
+    get:
+      tags: [Styles]
+      summary: List style profiles
+      security:
+        - BearerAuth: [styles:read]
+      responses:
+        '200':
+          description: List of style profiles
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [styles]
+                properties:
+                  styles:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/StyleProfile'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+    post:
+      tags: [Styles]
+      summary: Create style profile
+      security:
+        - BearerAuth: [styles:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateStyleProfileRequest'
+      responses:
+        '201':
+          description: Style profile created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StyleProfile'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/styles/{style_id}/preview:
+    post:
+      tags: [Styles]
+      summary: Generate style preview
+      security:
+        - BearerAuth: [images:write]
+      parameters:
+        - $ref: '#/components/parameters/StyleId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: Generation job accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationJobAccepted'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/models:
+    get:
+      tags: [Models]
+      summary: List available provider models
+      security:
+        - BearerAuth: [models:read]
+      responses:
+        '200':
+          description: Model list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [models]
+                properties:
+                  models:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProviderModel'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  # ==========================================================================
+  # Admin Control Surface — PLANNED
+  #
+  # All endpoints under /v1/admin/ are the required admin surface for
+  # implementation, referenced by the operational runbooks. NONE of them
+  # are served by the running service today. Marked with `**PLANNED**` in
+  # every description until implemented.
+  #
+  # See docs/architecture/admin-control-surface.md for design rationale,
+  # implementation order, and audit-event expectations.
+  # ==========================================================================
+  /v1/admin/providers:
+    get:
+      tags: [Admin]
+      summary: List providers and their status
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        Returns each provider model with current `status`, capability levels
+        (`ProviderCapability` enum), circuit-breaker state, and last failure
+        time. Used by the provider-failure runbook to identify what to
+        disable.
+      security:
+        - BearerAuth: [admin:providers]
+      responses:
+        '200':
+          description: Admin view of provider models
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [providers]
+                properties:
+                  providers:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminProviderModel'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/admin/providers/{provider_id}/disable:
+    post:
+      tags: [Admin]
+      summary: Disable a provider
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        Sets provider status to `disabled`. The router stops routing new jobs
+        to this provider. In-flight jobs continue. Emits
+        `admin.provider.disabled` audit event.
+      security:
+        - BearerAuth: [admin:providers]
+      parameters:
+        - name: provider_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminReasonBody'
+      responses:
+        '200':
+          description: Provider disabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminProviderModel'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/admin/providers/{provider_id}/enable:
+    post:
+      tags: [Admin]
+      summary: Re-enable a provider
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        Sets provider status back to `active`. Emits `admin.provider.enabled`
+        audit event.
+      security:
+        - BearerAuth: [admin:providers]
+      parameters:
+        - name: provider_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminReasonBody'
+      responses:
+        '200':
+          description: Provider enabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminProviderModel'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /v1/admin/routes:
+    get:
+      tags: [Admin]
+      summary: List provider routes
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        A route is the (provider × asset_type × quality_tier × latency_tier)
+        combination used by the router. Disabling a route is narrower than
+        disabling the whole provider.
+      security:
+        - BearerAuth: [admin:routes]
+      responses:
+        '200':
+          description: List of routes
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [routes]
+                properties:
+                  routes:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminRoute'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/admin/routes/{route_id}/disable:
+    post:
+      tags: [Admin]
+      summary: Disable a specific route
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        Disables a single (provider × asset_type × quality × latency) route
+        without disabling the whole provider. Emits `admin.route.disabled`.
+      security:
+        - BearerAuth: [admin:routes]
+      parameters:
+        - name: route_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminReasonBody'
+      responses:
+        '200':
+          description: Route disabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminRoute'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/admin/routes/{route_id}/enable:
+    post:
+      tags: [Admin]
+      summary: Re-enable a route
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        Emits `admin.route.enabled`.
+      security:
+        - BearerAuth: [admin:routes]
+      parameters:
+        - name: route_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminReasonBody'
+      responses:
+        '200':
+          description: Route enabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminRoute'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /v1/admin/jobs:
+    get:
+      tags: [Admin]
+      summary: List generation jobs with admin filters
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        Used by the failed-jobs runbook to find retryable or cancellable work.
+        Filters: status, provider_id, world_id, tenant_id, token_id,
+        created_after, created_before, error_code.
+      security:
+        - BearerAuth: [admin:jobs]
+      parameters:
+        - in: query
+          name: status
+          schema:
+            $ref: '#/components/schemas/GenerationJobStatus'
+        - in: query
+          name: provider_id
+          schema: { type: string }
+        - in: query
+          name: world_id
+          schema: { type: string }
+        - in: query
+          name: tenant_id
+          schema: { type: string }
+        - in: query
+          name: token_id
+          schema: { type: string }
+        - in: query
+          name: created_after
+          schema: { type: string, format: date-time }
+        - in: query
+          name: created_before
+          schema: { type: string, format: date-time }
+        - in: query
+          name: error_code
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 50, maximum: 500 }
+      responses:
+        '200':
+          description: List of jobs
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [jobs]
+                properties:
+                  jobs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/GenerationJob'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/admin/jobs/{job_id}/retry:
+    post:
+      tags: [Admin]
+      summary: Retry a failed job
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        Creates a new generation job that references the original. Returns the
+        new job_id. Emits `admin.job.retried` audit event. Should refuse for
+        non-retryable failure codes unless `force: true` is set.
+      security:
+        - BearerAuth: [admin:jobs]
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string }
+                force:
+                  type: boolean
+                  default: false
+                  description: Override the retryable check.
+      responses:
+        '202':
+          description: New job accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationJobAccepted'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/admin/jobs/{job_id}/cancel:
+    post:
+      tags: [Admin]
+      summary: Cancel a queued or running job
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        Transitions the job to `cancelled`. Emits `admin.job.cancelled`.
+      security:
+        - BearerAuth: [admin:jobs]
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminReasonBody'
+      responses:
+        '200':
+          description: Cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationJob'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /v1/admin/price-book:
+    get:
+      tags: [Admin]
+      summary: List provider_model_price entries
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        Returns `provider_model_price` rows used by the pre-flight cost
+        estimation pipeline (`docs/architecture/cost-control.md`). Multiple
+        entries per (provider × model × operation_type) are allowed; entries
+        are dated via `effective_from`/`effective_to` and selected with
+        `is_active`. Supports the `daily_cost_usd` rate-limit dimension
+        (see `docs/api/rate-limits.md`).
+      security:
+        - BearerAuth: [admin:costs]
+      parameters:
+        - in: query
+          name: provider_id
+          schema: { type: string }
+        - in: query
+          name: model_id
+          schema: { type: string }
+        - in: query
+          name: operation_type
+          schema:
+            $ref: '#/components/schemas/PriceOperationType'
+        - in: query
+          name: only_active
+          schema: { type: boolean, default: true }
+      responses:
+        '200':
+          description: Price book entries
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [entries]
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProviderModelPrice'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+    post:
+      tags: [Admin]
+      summary: Create a new provider_model_price entry
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        Creates a new price entry. Implementations should auto-set
+        `effective_to` on the previously-active entry for the same
+        (provider × model × operation_type) to avoid overlapping active
+        prices. Emits `admin.price_book.created`.
+      security:
+        - BearerAuth: [admin:costs]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProviderModelPriceWrite'
+      responses:
+        '201':
+          description: Created entry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderModelPrice'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/admin/price-book/{price_id}:
+    get:
+      tags: [Admin]
+      summary: Get one provider_model_price entry
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+      security:
+        - BearerAuth: [admin:costs]
+      parameters:
+        - name: price_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Price entry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderModelPrice'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+    put:
+      tags: [Admin]
+      summary: Update mutable fields on a provider_model_price entry
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        Allowed mutations: `effective_to`, `is_active`, `notes`. To change
+        price_per_unit, POST a new entry. Emits `admin.price_book.updated`.
+      security:
+        - BearerAuth: [admin:costs]
+      parameters:
+        - name: price_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProviderModelPriceMutable'
+      responses:
+        '200':
+          description: Updated entry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderModelPrice'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /v1/admin/cost-reservations:
+    get:
+      tags: [Admin]
+      summary: List cost reservations
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        Cost reservations created during the pre-flight estimation pipeline
+        (`docs/architecture/cost-control.md` §3 step 7). Useful for the
+        cost-spike runbook to inspect what's currently held against budgets
+        and what has been committed vs. released.
+      security:
+        - BearerAuth: [admin:costs]
+      parameters:
+        - in: query
+          name: tenant_id
+          schema: { type: string }
+        - in: query
+          name: status
+          schema:
+            $ref: '#/components/schemas/CostReservationStatus'
+        - in: query
+          name: created_after
+          schema: { type: string, format: date-time }
+        - in: query
+          name: created_before
+          schema: { type: string, format: date-time }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 100, maximum: 1000 }
+      responses:
+        '200':
+          description: Cost reservations
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [reservations]
+                properties:
+                  reservations:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CostReservation'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /v1/admin/cost-budgets:
+    get:
+      tags: [Admin]
+      summary: List cost budgets
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        Budgets at `tenant`, `token`, `world`, or `user` scope, daily or
+        monthly period. Used by the cost-spike runbook to inspect and adjust
+        caps. See `docs/architecture/cost-control.md` for semantics.
+      security:
+        - BearerAuth: [admin:costs]
+      parameters:
+        - in: query
+          name: tenant_id
+          schema: { type: string }
+        - in: query
+          name: scope_type
+          schema:
+            $ref: '#/components/schemas/BudgetScopeType'
+        - in: query
+          name: scope_id
+          schema: { type: string }
+      responses:
+        '200':
+          description: Cost budgets
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [budgets]
+                properties:
+                  budgets:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CostBudget'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+    post:
+      tags: [Admin]
+      summary: Create a cost budget
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        Emits `admin.cost_budget.created`.
+      security:
+        - BearerAuth: [admin:costs]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CostBudgetWrite'
+      responses:
+        '201':
+          description: Created budget
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CostBudget'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/admin/cost-budgets/{budget_id}:
+    put:
+      tags: [Admin]
+      summary: Update a cost budget
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        Mutable: `limit_amount`, `status`. `reserved_amount` and
+        `spent_amount` are computed by the platform and not editable.
+        Emits `admin.cost_budget.updated`.
+      security:
+        - BearerAuth: [admin:costs]
+      parameters:
+        - name: budget_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CostBudgetMutable'
+      responses:
+        '200':
+          description: Updated budget
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CostBudget'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/admin/cost-events:
+    get:
+      tags: [Admin]
+      summary: Query the cost-event log
+      description: |
+        **PLANNED — required admin surface for implementation, not yet served.**
+
+        Cost events with filters by token, provider, asset_type, world, time
+        range. Used by the cost-spike runbook for diagnosis.
+      security:
+        - BearerAuth: [admin:costs]
+      parameters:
+        - in: query
+          name: token_id
+          schema: { type: string }
+        - in: query
+          name: provider_id
+          schema: { type: string }
+        - in: query
+          name: model_id
+          schema: { type: string }
+        - in: query
+          name: world_id
+          schema: { type: string }
+        - in: query
+          name: tenant_id
+          schema: { type: string }
+        - in: query
+          name: created_after
+          schema: { type: string, format: date-time }
+        - in: query
+          name: created_before
+          schema: { type: string, format: date-time }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 100, maximum: 1000 }
+      responses:
+        '200':
+          description: Cost events
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events]
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CostEvent'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: API Token
+      description: |
+        DreamChat API token in `Authorization: Bearer <token>` form. Tokens carry
+        scopes (`images:read`, `images:write`, `jobs:read`, `styles:read`,
+        `styles:write`, `models:read`, `admin:*`). The auth middleware resolves
+        token → tenant_id; clients must not send `tenant_id` in request bodies.
+  parameters:
+    CharacterId:
+      name: character_id
+      in: path
+      required: true
+      schema: { type: string }
+    PlaceId:
+      name: place_id
+      in: path
+      required: true
+      schema: { type: string }
+    ArtifactId:
+      name: artifact_id
+      in: path
+      required: true
+      schema: { type: string }
+    AssetId:
+      name: asset_id
+      in: path
+      required: true
+      schema: { type: string }
+    JobId:
+      name: job_id
+      in: path
+      required: true
+      schema: { type: string }
+    StyleId:
+      name: style_id
+      in: path
+      required: true
+      schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema: { type: string, maxLength: 128 }
+      description: |
+        Client-generated idempotency key. The same key + token + endpoint + body
+        hash returns the same job. Same key + different body returns 409.
+        See `idempotency.md`.
+  responses:
+    ErrorResponse:
+      description: Error response (RFC 7807 Problem Details)
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+  schemas:
+    # ------------------------------------------------------------------------
+    # Canonical reusable enums. All endpoints and schemas reference these by
+    # $ref instead of inlining enum values. Any new enum value must be added
+    # here first.
+    # ------------------------------------------------------------------------
+    GenerationJobStatus:
+      type: string
+      description: Lifecycle status of a generation job.
+      enum:
+        - queued
+        - running
+        - preview_ready
+        - completed
+        - failed
+        - cancelled
+    QualityTier:
+      type: string
+      description: Output quality tier requested for generation.
+      enum:
+        - draft
+        - standard
+        - high
+      default: standard
+    LatencyTier:
+      type: string
+      description: Latency preference for provider routing.
+      enum:
+        - fast
+        - balanced
+        - quality
+      default: balanced
+    AssetType:
+      type: string
+      description: Kind of visual asset.
+      enum:
+        - character_portrait
+        - place_scene
+        - artifact
+        - expression
+        - angle_variant
+    AssetStatus:
+      type: string
+      description: Lifecycle status of a stored visual asset.
+      enum:
+        - pending
+        - preview_ready
+        - ready
+        - failed
+        - archived
+    StyleMode:
+      type: string
+      description: How a style profile is sourced.
+      enum:
+        - open_prompt
+        - preset_style
+        - creator_style
+        - provider_native
+    ProviderCapability:
+      type: string
+      description: Capability tier of a provider model used by the router.
+      enum:
+        - draft_only
+        - scene_capable
+        - identity_capable
+        - pack_capable
+        - production_capable
+    OwnerType:
+      type: string
+      description: Owning entity of a visual identity.
+      enum:
+        - character
+        - place
+        - artifact
+    FallbackPolicy:
+      type: string
+      description: |
+        Controls which retrieval outcomes count as a usable hit vs. forcing
+        generation. Default `compatible_only`. See
+        `docs/architecture/variant-compatibility-matrix.md` §5.
+      enum:
+        - none
+        - compatible_only
+        - preview_allowed
+        - any_existing
+      default: compatible_only
+    MatchType:
+      type: string
+      description: |
+        How the retrieval layer resolved a request against stored assets,
+        per the variant compatibility matrix
+        (`docs/architecture/variant-compatibility-matrix.md` §3).
+      enum:
+        - exact_match
+        - compatible_match
+        - preview_fallback
+        - generated_required
+    PreviewCapability:
+      type: string
+      description: |
+        Whether the provider model can return a fast low-cost preview
+        before the final asset. See ADR-010 and PRD 06 §3.4.
+        - `true_preview`: provider has a separate fast-preview path; the
+          preview asset lands meaningfully before the final asset.
+        - `derived_preview`: provider only returns one image; the platform
+          downscales it for thumbnail/preview tiers but generation latency
+          is unchanged (no UX wait-time benefit).
+        - `no_preview`: no preview support; the API returns progress
+          state (and a placeholder) until the final asset lands.
+      enum:
+        - true_preview
+        - derived_preview
+        - no_preview
+    # ------------------------------------------------------------------------
+    # Health & error
+    # ------------------------------------------------------------------------
+    HealthResponse:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, example: ok }
+    ProblemDetails:
+      type: object
+      required: [type, title, status, detail, request_id]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        request_id: { type: string }
+    # ------------------------------------------------------------------------
+    # Visual identity
+    # ------------------------------------------------------------------------
+    CreateVisualIdentityRequest:
+      type: object
+      required: [world_id, owner_type, owner_id, display_name, canonical_visual_traits, style_profile_id]
+      properties:
+        world_id: { type: string }
+        owner_type:
+          $ref: '#/components/schemas/OwnerType'
+        owner_id: { type: string }
+        display_name: { type: string }
+        canonical_visual_traits:
+          type: object
+          additionalProperties: true
+        style_profile_id: { type: string }
+        consistency_key: { type: string }
+    VisualIdentity:
+      type: object
+      required: [id, world_id, owner_type, owner_id, display_name, style_profile_id, current_version, status]
+      properties:
+        id: { type: string }
+        world_id: { type: string }
+        owner_type:
+          $ref: '#/components/schemas/OwnerType'
+        owner_id: { type: string }
+        display_name: { type: string }
+        canonical_visual_traits:
+          type: object
+          additionalProperties: true
+        style_profile_id: { type: string }
+        consistency_key: { type: string }
+        anchor_asset_ids:
+          type: array
+          items: { type: string }
+        current_version: { type: integer }
+        status: { type: string, enum: [active, archived] }
+    # ------------------------------------------------------------------------
+    # Generation requests
+    # ------------------------------------------------------------------------
+    GenerateCharacterPackRequest:
+      type: object
+      required: [world_id, style_profile_id]
+      properties:
+        world_id: { type: string }
+        style_profile_id: { type: string }
+        quality_tier:
+          $ref: '#/components/schemas/QualityTier'
+        latency_tier:
+          $ref: '#/components/schemas/LatencyTier'
+        variant_keys:
+          type: array
+          items: { type: string }
+        fallback_policy:
+          $ref: '#/components/schemas/FallbackPolicy'
+          description: |
+            Controls whether the retrieval-before-generation step (ADR-009)
+            short-circuits the pack job. `none` always generates; the
+            default `compatible_only` skips generation when an exact or
+            compatible asset already exists per the variant compatibility
+            matrix.
+    GeneratePlacePackRequest:
+      type: object
+      required: [world_id, style_profile_id]
+      properties:
+        world_id: { type: string }
+        style_profile_id: { type: string }
+        quality_tier:
+          $ref: '#/components/schemas/QualityTier'
+        latency_tier:
+          $ref: '#/components/schemas/LatencyTier'
+        variant_keys:
+          type: array
+          items: { type: string }
+        fallback_policy:
+          $ref: '#/components/schemas/FallbackPolicy'
+          description: |
+            See GenerateCharacterPackRequest.fallback_policy.
+    GenerateArtifactRequest:
+      type: object
+      required: [world_id, style_profile_id, description]
+      properties:
+        world_id: { type: string }
+        style_profile_id: { type: string }
+        description: { type: string }
+        quality_tier:
+          $ref: '#/components/schemas/QualityTier'
+        latency_tier:
+          $ref: '#/components/schemas/LatencyTier'
+        fallback_policy:
+          $ref: '#/components/schemas/FallbackPolicy'
+          description: |
+            See GenerateCharacterPackRequest.fallback_policy.
+    # ------------------------------------------------------------------------
+    # Jobs
+    # ------------------------------------------------------------------------
+    GenerationJobAccepted:
+      type: object
+      required: [job_id, status]
+      properties:
+        job_id: { type: string }
+        status:
+          type: string
+          enum: [queued]
+        estimated_cost_usd:
+          type: string
+          description: |
+            Pre-flight cost estimate from the price book, in USD. Returned
+            when the route has at least one matching `provider_model_price`
+            entry. Null when the route allows an unpriced provider for
+            internal testing (`allow_unpriced_provider=true` per
+            `docs/architecture/cost-control.md`).
+        currency:
+          type: string
+          default: USD
+        cost_reservation_id:
+          type: string
+          description: |
+            ID of the `cost_reservation` row created for this job. The
+            reservation is committed against the budget on job success and
+            released on failure/cancel.
+    GenerationJob:
+      type: object
+      required: [id, status, job_type, created_at, updated_at]
+      properties:
+        id: { type: string }
+        status:
+          $ref: '#/components/schemas/GenerationJobStatus'
+        job_type: { type: string }
+        visual_identity_id: { type: string }
+        preview_asset_ids:
+          type: array
+          items: { type: string }
+        final_asset_ids:
+          type: array
+          items: { type: string }
+        error_code: { type: string }
+        error_message: { type: string }
+        retryable: { type: boolean }
+        cost_estimate_usd: { type: string }
+        actual_cost_usd: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    # ------------------------------------------------------------------------
+    # Assets
+    # ------------------------------------------------------------------------
+    AssetSearchRequest:
+      type: object
+      properties:
+        world_id: { type: string }
+        owner_type:
+          $ref: '#/components/schemas/OwnerType'
+        owner_id: { type: string }
+        visual_identity_id: { type: string }
+        asset_type:
+          $ref: '#/components/schemas/AssetType'
+        variant_key: { type: string }
+        variant_family:
+          type: string
+          description: |
+            Filter / matrix-lookup family for the request. See
+            `docs/architecture/variant-compatibility-matrix.md` §6.
+        version: { type: integer }
+        state_version:
+          type: integer
+          description: |
+            Requested state version for the entity. Defaults to current.
+            Set explicitly when requesting historical/flashback assets.
+        style_profile_id: { type: string }
+        fallback_policy:
+          $ref: '#/components/schemas/FallbackPolicy'
+    AssetSearchResponse:
+      type: object
+      required: [assets]
+      properties:
+        match_type:
+          $ref: '#/components/schemas/MatchType'
+        compatibility_score:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          description: |
+            0.0–1.0 confidence that the returned asset is a safe substitution
+            for the requested variant. `1.0` for `exact_match`. Combines the
+            matrix rule's intrinsic confidence with the asset's `fallback_rank`.
+        fallback_reason:
+          type: string
+          description: |
+            When `match_type` is `compatible_match` or `preview_fallback`,
+            the matrix rule that allowed the substitution (e.g.
+            `character.expression.warm→smiling.compatible`,
+            `place.time_of_day.day↔night.preview_only`). Useful for audit
+            and debugging.
+        generation_recommended:
+          type: boolean
+          description: |
+            True when the client should follow up with a generate-pack
+            request (e.g. because only a compatible_match or
+            preview_fallback was returned, or `generated_required` was the
+            outcome).
+        assets:
+          type: array
+          items:
+            $ref: '#/components/schemas/VisualAsset'
+    VisualAsset:
+      type: object
+      required: [id, asset_type, variant_key, version, status]
+      properties:
+        id: { type: string }
+        visual_identity_id: { type: string }
+        world_id: { type: string }
+        asset_type:
+          $ref: '#/components/schemas/AssetType'
+        variant_key: { type: string }
+        variant_family:
+          type: string
+          description: |
+            Grouping used by the variant compatibility matrix
+            (e.g. `neutral`, `warm`, `strong_emotion`, `establishing`,
+            `document_clean`). See
+            `docs/architecture/variant-compatibility-matrix.md` §6.
+        version: { type: integer }
+        state_version:
+          type: integer
+          description: |
+            State version for the underlying entity at generation time
+            (independent of `visual_identity_version`, which is identity-level).
+            Used by the variant compatibility matrix to enforce strict
+            state boundaries (e.g. a destroyed-place asset is never a
+            fallback for an intact-place request).
+        compatibility_tags:
+          type: array
+          description: |
+            Tags consulted by the variant compatibility matrix
+            (e.g. `generic_presence`, `preview_safe`,
+            `identity_anchor_eligible`).
+          items: { type: string }
+        fallback_allowed:
+          type: boolean
+          description: |
+            Whether this asset may be returned as `preview_fallback` for
+            other variants. Default `false` for strong-emotion targets and
+            altered-state documents/artifacts.
+        fallback_rank:
+          type: integer
+          description: |
+            Lower = preferred fallback within its compatibility tier. Used
+            to pick the best candidate when several would qualify.
+        is_identity_anchor:
+          type: boolean
+          description: |
+            True for anchor assets used as reference inputs. Anchor assets
+            must never be returned as a `compatible_match` for a non-anchor
+            display request — they are reference inputs, not display assets.
+        status:
+          $ref: '#/components/schemas/AssetStatus'
+        low_res_url: { type: string }
+        high_res_url: { type: string }
+        thumbnail_url: { type: string }
+        provider_id: { type: string }
+        model_id: { type: string }
+        prompt_hash: { type: string }
+        seed: { type: string }
+        metadata:
+          type: object
+          additionalProperties: true
+    # ------------------------------------------------------------------------
+    # Styles
+    # ------------------------------------------------------------------------
+    CreateStyleProfileRequest:
+      type: object
+      required: [name, style_mode, positive_prompt]
+      properties:
+        name: { type: string }
+        style_mode:
+          $ref: '#/components/schemas/StyleMode'
+        positive_prompt: { type: string }
+        negative_prompt: { type: string }
+        default_quality_tier:
+          $ref: '#/components/schemas/QualityTier'
+    StyleProfile:
+      type: object
+      required: [id, name, style_mode, positive_prompt]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        style_mode:
+          $ref: '#/components/schemas/StyleMode'
+        positive_prompt: { type: string }
+        negative_prompt: { type: string }
+        default_quality_tier:
+          $ref: '#/components/schemas/QualityTier'
+        status: { type: string, enum: [active, archived] }
+    # ------------------------------------------------------------------------
+    # Provider models
+    # ------------------------------------------------------------------------
+    ProviderModel:
+      type: object
+      required: [id, provider_id, display_name, capabilities, status]
+      properties:
+        id: { type: string }
+        provider_id: { type: string }
+        display_name: { type: string }
+        capabilities:
+          type: array
+          description: Capability tiers this model satisfies (used by the router).
+          items:
+            $ref: '#/components/schemas/ProviderCapability'
+        preview_capability:
+          $ref: '#/components/schemas/PreviewCapability'
+        supports_preview:
+          type: boolean
+          description: |
+            **Deprecated**, prefer `preview_capability`. Treat as
+            `preview_capability != no_preview`.
+        supports_high_res: { type: boolean }
+        status: { type: string, enum: [active, degraded, disabled] }
+    # ------------------------------------------------------------------------
+    # Admin schemas — PLANNED
+    # All admin schemas back endpoints under /v1/admin/ that are not yet
+    # served. See docs/architecture/admin-control-surface.md.
+    # ------------------------------------------------------------------------
+    AdminReasonBody:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          description: |
+            Human-readable reason for the admin action. Recorded on the
+            audit_event row. Required for every state-changing admin call.
+    AdminProviderModel:
+      allOf:
+        - $ref: '#/components/schemas/ProviderModel'
+        - type: object
+          properties:
+            circuit_breaker_state:
+              type: string
+              enum: [closed, half_open, open]
+              description: |
+                Current circuit-breaker state. `open` means the router has
+                stopped routing new jobs to this provider after too many
+                recent failures.
+            last_failure_at:
+              type: string
+              format: date-time
+            disabled_reason:
+              type: string
+              description: |
+                Reason text from the most recent admin disable action, if any.
+            disabled_by_token_id:
+              type: string
+            disabled_at:
+              type: string
+              format: date-time
+    AdminRoute:
+      type: object
+      required: [id, provider_model_id, asset_type, quality_tier, latency_tier, status]
+      properties:
+        id: { type: string }
+        provider_model_id: { type: string }
+        asset_type:
+          $ref: '#/components/schemas/AssetType'
+        quality_tier:
+          $ref: '#/components/schemas/QualityTier'
+        latency_tier:
+          $ref: '#/components/schemas/LatencyTier'
+        priority:
+          type: integer
+          description: Routing priority within ties. Higher wins.
+        status:
+          type: string
+          enum: [active, disabled]
+        disabled_reason: { type: string }
+        disabled_by_token_id: { type: string }
+        disabled_at: { type: string, format: date-time }
+    PriceOperationType:
+      type: string
+      description: |
+        What kind of provider call a price entry covers.
+      enum:
+        - text_to_image
+        - image_to_image
+        - upscale
+        - variant_pack
+        - edit
+    PriceUnitType:
+      type: string
+      description: |
+        Unit that `price_per_unit` is denominated in.
+      enum:
+        - image
+        - megapixel
+        - second
+        - credit
+        - request
+    BudgetScopeType:
+      type: string
+      description: |
+        Scope at which a cost budget applies. Budgets at narrower scopes
+        (token, world, user) sit inside the parent tenant's budget; both
+        must permit a reservation for it to succeed.
+      enum:
+        - tenant
+        - token
+        - world
+        - user
+    BudgetPeriod:
+      type: string
+      description: Reset period for a cost budget.
+      enum:
+        - daily
+        - monthly
+    BudgetStatus:
+      type: string
+      description: |
+        Live status of a cost budget.
+        - active: enforcing normally.
+        - paused: enforcement disabled (e.g. for migration); reservations
+          still record but do not deny requests.
+        - exceeded: hard limit reached; new reservations rejected until
+          period reset or limit raised.
+      enum:
+        - active
+        - paused
+        - exceeded
+    CostReservationStatus:
+      type: string
+      description: |
+        Lifecycle of a cost reservation. `reserved` is created pre-flight;
+        `committed` on job success with `actual_amount`; `released` on
+        job cancel/failure to return budget; `failed` if the reservation
+        itself could not be created (e.g. budget exceeded).
+      enum:
+        - reserved
+        - committed
+        - released
+        - failed
+    ProviderModelPrice:
+      type: object
+      required: [id, provider_id, model_id, operation_type, unit_type, price_per_unit, currency, effective_from, is_active]
+      properties:
+        id: { type: string }
+        provider_id: { type: string }
+        model_id: { type: string }
+        operation_type:
+          $ref: '#/components/schemas/PriceOperationType'
+        unit_type:
+          $ref: '#/components/schemas/PriceUnitType'
+        price_per_unit:
+          type: string
+          description: |
+            Fixed-decimal price in `currency` per `unit_type`. String to
+            preserve precision (e.g. "0.0140").
+        currency:
+          type: string
+          default: USD
+          description: ISO 4217 code.
+        effective_from:
+          type: string
+          format: date-time
+        effective_to:
+          type: string
+          format: date-time
+          nullable: true
+          description: |
+            Null while the entry is the active price for its
+            (provider × model × operation_type). Set when superseded.
+        is_active:
+          type: boolean
+          description: |
+            Convenience flag for "this is the currently quoted price."
+            Implementations must keep `is_active` synchronized with
+            `effective_from <= now < effective_to` (or `effective_to` null).
+        source:
+          type: string
+          description: |
+            Provenance of the price (e.g. `provider_pricing_page`,
+            `internal_benchmark`, `incident_review_2026_06_05`).
+        notes: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    ProviderModelPriceWrite:
+      type: object
+      required: [provider_id, model_id, operation_type, unit_type, price_per_unit, effective_from]
+      properties:
+        provider_id: { type: string }
+        model_id: { type: string }
+        operation_type:
+          $ref: '#/components/schemas/PriceOperationType'
+        unit_type:
+          $ref: '#/components/schemas/PriceUnitType'
+        price_per_unit: { type: string }
+        currency: { type: string, default: USD }
+        effective_from: { type: string, format: date-time }
+        effective_to:
+          type: string
+          format: date-time
+          nullable: true
+        source: { type: string }
+        notes: { type: string }
+    ProviderModelPriceMutable:
+      type: object
+      description: |
+        Fields editable on an existing price entry. To change
+        `price_per_unit`, POST a new entry instead — the old one is
+        retained for audit.
+      properties:
+        effective_to:
+          type: string
+          format: date-time
+          nullable: true
+        is_active: { type: boolean }
+        notes: { type: string }
+    CostBudget:
+      type: object
+      required: [id, tenant_id, scope_type, scope_id, period, limit_amount, currency, status]
+      properties:
+        id: { type: string }
+        tenant_id: { type: string }
+        scope_type:
+          $ref: '#/components/schemas/BudgetScopeType'
+        scope_id:
+          type: string
+          description: |
+            Identifier within the scope (e.g. `tenant_abc`, `tok_xyz`,
+            `world_42`, `user_7`). For `scope_type=tenant`, equal to
+            `tenant_id`.
+        period:
+          $ref: '#/components/schemas/BudgetPeriod'
+        limit_amount:
+          type: string
+          description: Hard cap in `currency` per `period`.
+        reserved_amount:
+          type: string
+          description: |
+            Sum of currently-held reservations for the current period
+            (status `reserved`). Read-only; computed by the platform.
+        spent_amount:
+          type: string
+          description: |
+            Sum of committed actuals for the current period (status
+            `committed`). Read-only; computed by the platform.
+        currency:
+          type: string
+          default: USD
+        status:
+          $ref: '#/components/schemas/BudgetStatus'
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    CostBudgetWrite:
+      type: object
+      required: [scope_type, scope_id, period, limit_amount]
+      properties:
+        tenant_id:
+          type: string
+          description: |
+            Required for non-tenant-scope budgets. For `scope_type=tenant`,
+            equal to `scope_id`.
+        scope_type:
+          $ref: '#/components/schemas/BudgetScopeType'
+        scope_id: { type: string }
+        period:
+          $ref: '#/components/schemas/BudgetPeriod'
+        limit_amount: { type: string }
+        currency: { type: string, default: USD }
+        status:
+          $ref: '#/components/schemas/BudgetStatus'
+    CostBudgetMutable:
+      type: object
+      description: Fields editable on an existing budget.
+      properties:
+        limit_amount: { type: string }
+        status:
+          $ref: '#/components/schemas/BudgetStatus'
+    CostReservation:
+      type: object
+      required: [id, generation_job_id, tenant_id, estimated_amount, reserved_amount, currency, status, created_at]
+      properties:
+        id: { type: string }
+        generation_job_id: { type: string }
+        tenant_id: { type: string }
+        estimated_amount:
+          type: string
+          description: |
+            Pre-flight cost estimate calculated from the price book.
+        reserved_amount:
+          type: string
+          description: |
+            Amount actually held against the budget. Normally equal to
+            `estimated_amount`; may exceed it slightly if the price book
+            includes a safety margin.
+        actual_amount:
+          type: string
+          nullable: true
+          description: |
+            Committed cost from provider reporting. Null until the job
+            terminates and is reconciled.
+        currency:
+          type: string
+          default: USD
+        status:
+          $ref: '#/components/schemas/CostReservationStatus'
+        failure_reason:
+          type: string
+          description: |
+            Populated when `status = failed` (e.g. `budget_exceeded`,
+            `no_price_entry`).
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    CostEvent:
+      type: object
+      required: [id, operation, status, created_at]
+      properties:
+        id: { type: string }
+        job_id: { type: string }
+        asset_id: { type: string }
+        token_id: { type: string }
+        provider_id: { type: string }
+        model_id: { type: string }
+        operation: { type: string }
+        estimated_cost_usd: { type: string }
+        actual_cost_usd: { type: string }
+        duration_ms: { type: integer }
+        status: { type: string }
+        created_at: { type: string, format: date-time }
+
+# ----------------------------------------------------------------------------
+# Confidence to Implement
+#
+# Score: 94/100 — Very High
+#
+# v0.5.0 — adds cost-control + preview-capability spec:
+#   * Replaces `PriceBookEntry`/`PriceBookEntryWrite` with the richer
+#     `ProviderModelPrice` model: operation_type enum, unit_type enum,
+#     effective_from/effective_to dating, is_active flag. Splits write
+#     into `ProviderModelPriceWrite` (create) and
+#     `ProviderModelPriceMutable` (allowed edits). Adds POST endpoint
+#     and per-id GET/PUT under /v1/admin/price-book.
+#   * `CostBudget` rebuilt to spec: scope_type (tenant/token/world/user),
+#     period (daily/monthly), limit_amount + reserved_amount +
+#     spent_amount, status (active/paused/exceeded). Adds POST endpoint
+#     for creation; PUT body restricted to `CostBudgetMutable`.
+#   * New `CostReservation` entity with full lifecycle
+#     (reserved/committed/released/failed) plus
+#     `GET /v1/admin/cost-reservations` for incident inspection.
+#   * `GenerationJobAccepted` now returns `estimated_cost_usd` and
+#     `cost_reservation_id` on the 202 response so callers know the
+#     pre-flight estimate.
+#   * `PreviewCapability` enum (true_preview / derived_preview /
+#     no_preview) added to `ProviderModel` so the router can enforce
+#     PRD 06 / ADR-010 preview-first contract honestly.
+#
+# v0.4.0 — adds variant-compatibility-matrix support: `FallbackPolicy` and
+# `MatchType` enums; new fields on VisualAsset (`variant_family`,
+# `state_version`, `compatibility_tags`, `fallback_allowed`, `fallback_rank`,
+# `is_identity_anchor`); `fallback_policy` on AssetSearchRequest and the
+# three generation request bodies; `match_type` / `compatibility_score` /
+# `fallback_reason` on AssetSearchResponse. The previously-vague "variant
+# match" is now a typed, deterministic lookup backed by
+# docs/architecture/variant-compatibility-matrix.md. Breaking change:
+# AssetSearchResponse.match_type values renamed from
+# {exact,variant,fallback,miss} to {exact_match,compatible_match,
+# preview_fallback,generated_required}.
+#
+# v0.3.0 — adds the planned admin control surface (Admin tag) under
+# /v1/admin/{providers,routes,jobs,price-book,cost-budgets,cost-events}.
+# Those endpoints are marked **PLANNED** in every description; codegen
+# should generate them as TODO stubs returning 501 Not Implemented until
+# the implementation lands. See docs/architecture/admin-control-surface.md
+# for the design and implementation order.
+#
+# v0.2.0 — single canonical contract; entity IDs in path; tenant_id from
+# bearer token; centralized enums (GenerationJobStatus, QualityTier,
+# LatencyTier, AssetType, AssetStatus, StyleMode, ProviderCapability,
+# OwnerType) referenced via $ref; bearer auth + RFC 7807 ProblemDetails +
+# Idempotency-Key + /openapi.json + /docs all defined.
+#
+# Spec passes openapi-spec-validator against the OpenAPI 3.1.0 schema.
+#
+# Suitable for direct codegen with oapi-codegen / ogen (with the admin
+# endpoints generated as not-yet-implemented stubs).
+#
+# Score nuance:
+#   + Canonical, well-typed, validated.
+#   + Variant matching is now deterministic and product-safe.
+#   − `canonical_visual_traits` and VisualAsset.metadata remain free-form
+#     `object` (intentional — PRDs 03 and 04 define shape loosely).
+#   − Admin endpoints are spec-only; until implementation, runbooks
+#     reference them via PLANNED markers and manual fallbacks.
+#   − Product-safety filter (matrix §2) is a stub at MVP — grows as the
+#     product surfaces more world-state hints to the retrieval call.
+# ----------------------------------------------------------------------------

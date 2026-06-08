@@ -1,0 +1,94 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: go build ./...
+
+      - name: go test
+        run: go test ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.5.0
+
+  openapi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install validator
+        run: pip install "openapi-spec-validator==0.7.1"
+      - name: validate openapi
+        run: openapi-spec-validator docs/api/openapi.yaml
+      - name: validate openapi mirror
+        run: openapi-spec-validator api/openapi.yaml
+      - name: assert mirror matches source
+        run: diff -q docs/api/openapi.yaml api/openapi.yaml
+
+  sqlc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install sqlc
+        run: |
+          curl -fsSL https://github.com/sqlc-dev/sqlc/releases/download/v1.27.0/sqlc_1.27.0_linux_amd64.tar.gz \
+            | tar -xz -C /usr/local/bin sqlc
+      - name: sqlc vet
+        run: sqlc vet
+
+  migrations:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: image_platform
+          POSTGRES_PASSWORD: image_platform
+          POSTGRES_DB: image_platform
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U image_platform"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: apply migration
+        env:
+          PGPASSWORD: image_platform
+        run: |
+          psql -h localhost -U image_platform -d image_platform \
+               -v ON_ERROR_STOP=1 -f migrations/0001_initial.up.sql
+      - name: assert all expected tables exist
+        env:
+          PGPASSWORD: image_platform
+        run: |
+          count=$(psql -h localhost -U image_platform -d image_platform -tAc \
+            "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'")
+          echo "table count: $count"
+          test "$count" = "17"
