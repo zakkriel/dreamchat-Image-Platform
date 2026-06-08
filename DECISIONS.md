@@ -70,6 +70,7 @@ S3_REGION
 S3_ENDPOINT                  # full URL; configurable so MinIO/R2 work
 S3_ACCESS_KEY_ID
 S3_SECRET_ACCESS_KEY
+S3_USE_PATH_STYLE            # true for MinIO/local; false/default for AWS S3/R2 virtual-hosted style
 
 IMAGE_PROVIDER               # mock | bfl  — the single provider switch
 BFL_API_KEY                  # only required when IMAGE_PROVIDER=bfl
