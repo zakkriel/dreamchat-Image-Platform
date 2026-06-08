@@ -59,8 +59,10 @@ build:
 	go build ./...
 
 generate:
-	@echo "Phase 0 has no codegen sources yet. Wire oapi-codegen and sqlc in Phase 1+."
-	@echo "Skipping (intentional)."
+	@echo "Running oapi-codegen..."
+	go tool oapi-codegen -config oapi-codegen.yaml api/openapi.yaml
+	@echo "Running sqlc generate..."
+	sqlc generate
 
 fmt:
 	gofmt -w .

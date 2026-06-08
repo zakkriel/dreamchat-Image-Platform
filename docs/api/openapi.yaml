@@ -1086,11 +1086,11 @@ components:
         See `idempotency.md`.
   responses:
     ErrorResponse:
-      description: Error response (RFC 7807 Problem Details)
+      description: Standard error response. Content type is `application/problem+json`.
       content:
         application/problem+json:
           schema:
-            $ref: '#/components/schemas/ProblemDetails'
+            $ref: '#/components/schemas/Error'
   schemas:
     # ------------------------------------------------------------------------
     # Canonical reusable enums. All endpoints and schemas reference these by
@@ -1212,14 +1212,18 @@ components:
       required: [status]
       properties:
         status: { type: string, example: ok }
-    ProblemDetails:
+    Error:
       type: object
-      required: [type, title, status, detail, request_id]
+      required: [code, message, request_id]
+      description: |
+        Standard error body returned for all non-2xx responses. Served with
+        content type `application/problem+json`. `code` is a stable, lowercase
+        machine-readable identifier (e.g. `unauthorized`, `forbidden`,
+        `internal_error`); `message` is human-readable; `request_id` matches
+        the `X-Request-Id` response header.
       properties:
-        type: { type: string, format: uri }
-        title: { type: string }
-        status: { type: integer }
-        detail: { type: string }
+        code: { type: string, example: unauthorized }
+        message: { type: string }
         request_id: { type: string }
     # ------------------------------------------------------------------------
     # Visual identity

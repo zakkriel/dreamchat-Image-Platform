@@ -2,17 +2,20 @@
 
 ## Standard Error Shape
 
-Use RFC 7807-style problem details.
+All non-2xx responses use the `Error` schema in `openapi.yaml` and are
+served with `Content-Type: application/problem+json`.
 
 ```json
 {
-  "type": "https://docs.dreamchat.ai/errors/invalid-style-profile",
-  "title": "Invalid style profile",
-  "status": 400,
-  "detail": "The requested style profile does not exist.",
+  "code": "unauthorized",
+  "message": "invalid or missing bearer token",
   "request_id": "req_123"
 }
 ```
+
+`code` is a stable, lowercase, machine-readable identifier. `message` is a
+short human-readable detail. `request_id` matches the `X-Request-Id`
+response header and links the error back to logs.
 
 ## Common Errors
 
