@@ -4,7 +4,14 @@ Every PRD/spec/ADR/schema/runbook in this repo carries a per-file confidence-to-
 
 **Changelog**
 
-- **2026-06-05 (latest)** — Cost-control + preview-capability + observability thresholds:
+- **2026-06-05 (latest)** — SQL schema gap closed:
+  - `docs/db/initial_schema.sql` rewritten to match the OpenAPI v0.5.0 data model end-to-end. 17 tables (was 9), 42 indexes, 35 CHECK constraints. Adds the 7 missing tables (`asset_packs`, `asset_pack_items`, `provider_attempts`, `provider_model_prices`, `cost_budgets`, `cost_reservations`, `provider_routes`) plus `visual_identity_versions` for canonical-version audit.
+  - Existing tables extended: `tenant_id` on every tenant-scoped table; `visual_assets` gains `variant_family`, `state_version`, `compatibility_tags`, `fallback_allowed`, `fallback_rank`, `is_identity_anchor` (variant-compatibility-matrix v1 fields are now first-class columns, not JSONB); `provider_models` gains `preview_capability`; `generation_jobs` gains `cost_reservation_id` (FK added via ALTER after `cost_reservations` is created), `fallback_policy`, `cache_result`.
+  - Indexes target the seven hot paths: tenant-scoped lookups, generation_jobs by status, visual_identity owner lookup, asset retrieval by `(visual_identity_id, variant_key, state_version)`, cost budget lookup, active price-book lookup (partial unique index on `is_active`), active provider routes, idempotency-key lookup, provider attempts by job.
+  - Schema passes `pglast` (Postgres grammar parser) without errors.
+  - Score shift: `docs/db/initial_schema.sql` **85 → 92**. Aggregate stays at **89**; minimum file score floor unchanged at 80.
+  - See `frustration_log.md` entry 18.
+- **2026-06-05 (earlier)** — Cost-control + preview-capability + observability thresholds:
   - New `docs/architecture/cost-control.md` — price book, budgets, reservations, 11-step pre-flight estimation pipeline, behavior rules, failure modes. `daily_cost_usd` rate-limit dimension now has a defined backing model.
   - `docs/api/rate-limits.md` rewritten with six distinct limit dimensions (request rate, concurrent jobs, daily cost, monthly cost, provider-specific, token-specific), each tied to a concrete data structure. Score **75 → 90**.
   - `docs/api/openapi.yaml` v0.5.0: replaces `PriceBookEntry` with full `ProviderModelPrice` (operation_type / unit_type enums, effective dating, is_active); rebuilds `CostBudget` to spec (scope_type / period / limit_amount / reserved_amount / spent_amount / status); adds `CostReservation` with full lifecycle + `GET /v1/admin/cost-reservations`; adds `PreviewCapability` enum on `ProviderModel`; returns `estimated_cost_usd` and `cost_reservation_id` on `GenerationJobAccepted`. Splits price-book endpoints into POST/GET/PUT-by-id. Adds POST for cost-budgets.
@@ -51,7 +58,7 @@ Score is "my confidence I could implement the file end-to-end without further hu
 | ADRs (`docs/adr/`) | **90** | 90 | 85 | 95 | 15 |
 | API specs (`docs/api/`) | **88** | 90 | 85 | 94 | 9 |
 | Architecture (`docs/architecture/`) | **88** | 88 | 85 | 90 | 11 (incl. cost-control.md) |
-| DB (`docs/db/`) | **85** | 85 | 85 | 85 | 1 |
+| DB (`docs/db/`) | **92** | 92 | 92 | 92 | 1 |
 | Guidelines (`docs/guidelines/`) | **90** | 90 | 85 | 95 | 4 |
 | Runbooks (`docs/runbooks/`) | **87** | 88 | 80 | 90 | 5 |
 | Schemas (`docs/schemas/`) | **90** | 89 | 88 | 95 | 4 |
@@ -131,7 +138,7 @@ All ADRs share a templated Context/Tradeoffs/Notes block; the *decision* sentenc
 
 | Score | File |
 |---:|---|
-| 85 | `initial_schema.sql` |
+| **92** | `initial_schema.sql` *(was 85; 17 tables matching v0.5.0 data model, 42 indexes, 35 CHECK constraints, pglast-validated)* |
 
 ### Guidelines (`docs/guidelines/`)
 
@@ -170,11 +177,10 @@ All ADRs share a templated Context/Tradeoffs/Notes block; the *decision* sentenc
 
 ## Lowest-confidence items (work to do first)
 
-1. **`docs/db/initial_schema.sql` (85)** — DB schema lags the data model; missing `asset_packs`, `provider_attempts`, `provider_model_price`, `cost_budget`, `cost_reservation`, `route` tables. Mostly mechanical work.
-2. **`docs/architecture/asset-versioning.md` (82)** + variant_family promotion to a proper column — currently in JSONB.
-3. **`docs/architecture/provider-adapters.md` (82)** — the router policy is still prose; once we have benchmark results we can encode it as a rule table.
+1. **`docs/architecture/asset-versioning.md` (82)** — variant_family is now a proper column in the SQL schema, but the doc still describes it as a JSONB tag. Prose update follow-up.
+2. **`docs/architecture/provider-adapters.md` (82)** — the router policy is still prose; once we have benchmark results we can encode it as a rule table.
 
-No remaining item is below **80**.
+No remaining item is below **82**. The documentation phase is effectively complete.
 
 ## Cross-cutting risks
 

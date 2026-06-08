@@ -151,3 +151,22 @@ Format per entry:
 - Score shifts: rate-limits **75 → 90**, observability **78 → 88**, PRD 06 **75 → 85**, ADR-010 **78 → 88**, new `cost-control.md` at **90**. Aggregate **88 → 89**; minimum file score floor is now **80** (was 75).
 - **Open**: per-tier default values for rate limits (60/min, 5 concurrent jobs) are placeholders pending real traffic; configurable safety margin on cost reservations needs a default; cross-period reset semantics (UTC vs. tenant-local midnight) noted as a follow-up; provider-reported cost reconciliation worker not specified.
 
+### Entry 18
+- **Trigger**: Superpowers documentation-confidence task — close SQL schema gap before implementation
+- **Category**: process (resolution)
+- **Note**: `docs/db/initial_schema.sql` rewritten to match the v0.5.0 data model end-to-end. The last remaining gap between docs and "ready to implement" is closed.
+  - Added 7 required tables: `asset_packs`, `asset_pack_items`, `provider_attempts`, `provider_model_prices`, `cost_budgets`, `cost_reservations`, `provider_routes`. Plus `visual_identity_versions` (canonical version history per the data model — wasn't on the user's list but is referenced by `docs/architecture/data-model.md` and PRD 03 §10).
+  - Existing tables updated: every tenant-scoped table now has `tenant_id NOT NULL`. `visual_assets` gains `variant_family`, `state_version`, `compatibility_tags`, `fallback_allowed`, `fallback_rank`, `is_identity_anchor` as first-class columns (variant-compatibility-matrix v1) — moved off JSONB so retrieval queries can index them. `provider_models` gains `preview_capability`. `generation_jobs` gains `tenant_id`, `cost_reservation_id` (FK added via ALTER after `cost_reservations` exists), `fallback_policy`, `cache_result`, `asset_pack_id`, `queue_duration_ms`, `generation_duration_ms`.
+  - Enum-shaped columns enforced via 35 CHECK constraints that mirror the OpenAPI enums; the schema header lists every canonical enum and where it's enforced.
+  - 42 indexes covering: tenant-scoped lookups (every `tenant_id` column), `generation_jobs(tenant_id, status)`, `visual_identities(world_id, owner_type, owner_id)`, `visual_assets(visual_identity_id, variant_key, state_version)`, `visual_assets USING GIN (compatibility_tags)` for variant fallback search, anchor lookup `(visual_identity_id) WHERE is_identity_anchor`, `cost_budgets(tenant_id, scope_type, scope_id, period)`, partial unique index on active price-book entries, active provider routes, idempotency keys, provider attempts by job, cost events by tenant/token/provider/job for cost-spike investigations.
+  - Money columns are NUMERIC(14,4) for budgets/jobs and NUMERIC(14,6) for `provider_model_prices.price_per_unit` (per-unit prices may be sub-cent).
+  - Forward-reference between `generation_jobs.cost_reservation_id` and `cost_reservations` resolved by creating both tables and then `ALTER TABLE generation_jobs ADD CONSTRAINT ... FOREIGN KEY (cost_reservation_id) REFERENCES cost_reservations(id)`.
+  - Schema passes pglast (Postgres grammar parser) with zero errors.
+  - Score: 85 → 92.
+- **Caveats / known follow-ups (deferred, not blockers)**:
+  - Row-level security (RLS) policies not added; tenant isolation relies on the application layer for MVP. Future hardening pass once the API stabilizes.
+  - `pack_type` is free text — should become a CHECK or lookup table once PRD 04 template list stabilizes.
+  - Some loose-schema JSONB columns (canonical_visual_traits, allowed_variation, forbidden_drift, asset metadata) defer validation to the app per the PRDs.
+  - `visual_assets.generation_job_id` and `asset_packs.created_by_job_id` are soft FKs (no constraint) to avoid chicken-and-egg with the array-shaped reverse refs.
+- **Implication**: the "are we ready to implement?" answer is now an unqualified yes. Phases 0–7 of the plan can run against this schema without further migrations until handler implementation surfaces a real gap.
+
