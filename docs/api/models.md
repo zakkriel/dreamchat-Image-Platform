@@ -42,3 +42,11 @@ They should provide:
 - latency tier
 
 The provider router chooses the backend.
+
+---
+
+## Confidence to Implement
+
+**Score: 88/100 — High**
+
+Listing rows from a `provider_models` table is trivial. The interesting part — the router that consumes capability metadata to pick a backend — lives behind ADR-007 and `docs/architecture/provider-adapters.md`, both of which sketch but don't fully specify the policy. Sufficient for a first-pass router with simple rules (e.g. "prefer fast/cheap when latency_tier=fast"); refinement comes from the benchmark corpus.

@@ -70,3 +70,11 @@ images:write
 Regeneration should create a new job.
 
 It should not overwrite the existing asset unless explicitly requested by a future admin-only operation.
+
+---
+
+## Confidence to Implement
+
+**Score: 85/100 — High**
+
+`POST /v1/assets/search` maps to an indexed query on `visual_assets` (owner_type, owner_id, variant_key, version, style_profile_id). `GET /v1/assets/{id}` is a one-row read. `POST /v1/assets/{id}/regenerate` creates a new generation_job that references the existing asset. Subtracting points because the search endpoint doesn't expose the `match_type` telemetry (exact/variant/fallback) that PRD 05 emphasizes — the search response is a flat list of assets without saying which was an exact hit vs. a fallback. Implementer should add that field before web-app integration.

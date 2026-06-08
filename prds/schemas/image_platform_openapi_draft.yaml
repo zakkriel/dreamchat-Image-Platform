@@ -1,0 +1,36 @@
+# ============================================================================
+# DEPRECATED — this draft has been superseded.
+#
+# The canonical DreamChat Image Platform API contract lives at:
+#
+#     docs/api/openapi.yaml
+#
+# That file is the single source of truth: any code generation, client SDK,
+# Swagger UI, or CI schema check must use it. The earlier draft that lived
+# here diverged from the canonical contract on entity-id placement, tenant
+# handling, status enums, and style mode names; those decisions were
+# reconciled into `docs/api/openapi.yaml` (v0.2.0).
+#
+# Per-decision summary of what was resolved:
+#
+#   - Entity IDs (character/place/artifact/asset/job/style) are PATH params,
+#     never duplicated in the request body.
+#   - `tenant_id` is inferred from the bearer token and must NOT be passed
+#     in normal request bodies. Admin endpoints may accept it as a filter.
+#   - GenerationJobStatus = queued | running | preview_ready | completed
+#                         | failed | cancelled
+#   - QualityTier = draft | standard | high
+#   - AssetType = character_portrait | place_scene | artifact | expression
+#               | angle_variant
+#   - StyleMode = open_prompt | preset_style | creator_style | provider_native
+#   - ProviderCapability = draft_only | scene_capable | identity_capable
+#                        | pack_capable | production_capable
+#   - Bearer auth, RFC 7807 problem details, Idempotency-Key header,
+#     /openapi.json, and /docs are all defined in the canonical file.
+#
+# Do not extend this file. Open a PR against `docs/api/openapi.yaml` instead.
+# ============================================================================
+
+# Minimal stub so the file is still valid YAML if anything tries to parse it.
+deprecated: true
+canonical_contract: ../../docs/api/openapi.yaml

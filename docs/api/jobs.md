@@ -51,3 +51,11 @@ Example response:
   "retryable": true
 }
 ```
+
+---
+
+## Confidence to Implement
+
+**Score: 90/100 — Very High**
+
+Status enum, sample success and failure responses, and the `jobs:read` scope are all explicit. The handler is a one-row lookup against `generation_jobs` plus serialization. Polling cadence (recommend 1–2 s during `running`, exponential backoff after) is a client concern not a server one.

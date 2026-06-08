@@ -103,6 +103,14 @@ Before generating a new asset, the platform should search existing assets:
 4. generation required
 ```
 
+The "compatible variant" step is governed by the deterministic rules in
+`docs/architecture/variant-compatibility-matrix.md`. That document defines the
+four outcomes (`exact_match`, `compatible_match`, `preview_fallback`,
+`invalid_match`), the retrieval algorithm in detail, the `fallback_policy`
+request field, and the per-entity rules for characters, places, and
+artifacts. The product-safety rule from the matrix overrides every other rule
+here: **fallback must never visually contradict known world state.**
+
 ## Invalidation Rules
 
 Create a new version when:
@@ -134,3 +142,11 @@ Hash input should include:
 - provider model ID
 
 This supports deduplication and reproducibility.
+
+---
+
+## Confidence to Implement
+
+**Score: 82/100 — High**
+
+Variant vs. version distinction is the right split and the rules ("scar = version", "angry expression = variant") are intuitive. Starter packs and retrieval order are concrete. The prompt-hash recipe is precise enough to make deterministic. The two soft spots: (a) the "compatible variant" step in retrieval needs a compatibility matrix that isn't given (which variants substitute for which?); (b) "consistency key" + "anchor assets when provider supports references" depends on provider capabilities. Both are normal product-design work, not unknowns.

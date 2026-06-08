@@ -53,3 +53,11 @@ Initial runbooks:
 - failed jobs
 - token rotation
 - cost spike
+
+---
+
+## Confidence to Implement
+
+**Score: 95/100 — Very High**
+
+Documentation is a policy doc, not a buildable thing — "implementing" it means following the checklist (each endpoint has purpose/scope/body/error/idempotency/curl example, each major decision has an ADR, OpenAPI is served, runbooks exist). The current `docs/api/*.md` files already follow this template well.

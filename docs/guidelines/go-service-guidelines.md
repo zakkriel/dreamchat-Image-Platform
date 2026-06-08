@@ -68,3 +68,11 @@ Use explicit SQL migrations.
 ## Generated OpenAPI Types
 
 If using OpenAPI code generation, generated code should be isolated in a generated package and not manually edited.
+
+---
+
+## Confidence to Implement
+
+**Score: 92/100 — Very High**
+
+Standard idiomatic Go layout (cmd/+internal/), correct dependency direction (HTTP→Service→Repo/Provider), `context.Context` everywhere, env-var config, typed domain errors mapped at the HTTP boundary, explicit migrations. Nothing here is unusual. Only minor uncertainty is whether to use `sqlc` vs. hand-written queries vs. an ORM — choosable.

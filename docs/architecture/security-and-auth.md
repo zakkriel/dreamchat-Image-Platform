@@ -113,3 +113,11 @@ GET /openapi.json
 ```
 
 For production, docs should be protected or intentionally public with no sensitive examples.
+
+---
+
+## Confidence to Implement
+
+**Score: 85/100 — High**
+
+End-to-end auth pipeline is well laid out: parse → prefix lookup → constant-time hash compare → status/expiry → scope set → rate limit → continue. The pepper + prefix split is sensible. The recommendation to mix Argon2id (for user-created keys) with HMAC-SHA256 (for high-throughput service tokens) is realistic. Subtracting points because the pepper rotation procedure isn't described and "be careful with prompts" (since prompts may contain user/private content) implies a logging-policy + access-control decision that isn't pinned down.

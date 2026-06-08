@@ -69,3 +69,11 @@ provider_capacity_error
 provider_invalid_request
 provider_unknown_error
 ```
+
+---
+
+## Confidence to Implement
+
+**Score: 92/100 — Very High**
+
+Problem Details + the listed HTTP status mapping is standard, and the provider-error normalization vocabulary is complete. The remaining work is purely mechanical: a Go errors package with typed errors per code, an HTTP middleware that converts them to Problem Details, and per-adapter mapping tables. No design decisions left.
