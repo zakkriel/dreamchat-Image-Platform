@@ -1,0 +1,129 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: image_platform
+      POSTGRES_PASSWORD: image_platform
+      POSTGRES_DB: image_platform
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U image_platform -d image_platform"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+
+  minio:
+    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  minio-init:
+    image: minio/mc:RELEASE.2024-10-08T09-37-26Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc mb --ignore-existing local/image-platform &&
+      mc anonymous set download local/image-platform &&
+      echo 'bucket ready'
+      "
+    restart: "no"
+
+  image-platform-api:
+    build:
+      context: .
+      args:
+        BINARY: api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      APP_PORT: "8080"
+      ENVIRONMENT: dev
+      LOG_LEVEL: info
+      WORKER_CONCURRENCY: "4"
+      POSTGRES_DSN: postgres://image_platform:image_platform@postgres:5432/image_platform?sslmode=disable
+      REDIS_ADDR: redis:6379
+      S3_BUCKET: image-platform
+      S3_REGION: us-east-1
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY_ID: minioadmin
+      S3_SECRET_ACCESS_KEY: minioadmin
+      S3_USE_PATH_STYLE: "true"
+      IMAGE_PROVIDER: mock
+      API_TOKEN_PEPPER: dev-pepper-change-me
+      OPENAPI_DOCS_ENABLED: "true"
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  image-platform-worker:
+    build:
+      context: .
+      args:
+        BINARY: worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      ENVIRONMENT: dev
+      LOG_LEVEL: info
+      WORKER_CONCURRENCY: "4"
+      POSTGRES_DSN: postgres://image_platform:image_platform@postgres:5432/image_platform?sslmode=disable
+      REDIS_ADDR: redis:6379
+      S3_BUCKET: image-platform
+      S3_REGION: us-east-1
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY_ID: minioadmin
+      S3_SECRET_ACCESS_KEY: minioadmin
+      S3_USE_PATH_STYLE: "true"
+      IMAGE_PROVIDER: mock
+      API_TOKEN_PEPPER: dev-pepper-change-me
+      OPENAPI_DOCS_ENABLED: "true"
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
