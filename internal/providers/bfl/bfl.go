@@ -1,3 +1,16 @@
+// Package bfl is the Phase 0 skeleton for the Black Forest Labs provider
+// adapter. BFL is the first real provider target, but this adapter is Phase 0
+// skeleton only: Generate, PollStatus, and Upscale return
+// providers.ErrNotImplemented. Capabilities() advertises the
+// provider-capability floor — draft_only with no preview and no high-res —
+// and MUST only be upgraded after the real integration lands AND the
+// benchmark pass produces evidence for the higher tier. Do not claim
+// identity_capable, pack_capable, or production_capable here without that
+// evidence.
+//
+// Planned aspect ratios once the integration ships (not advertised today):
+//
+//	1:1, 16:9, 9:16, 4:3, 3:4
 package bfl
 
 import (
@@ -8,7 +21,9 @@ import (
 
 const (
 	ProviderID = "bfl"
-	ModelName  = "flux"
+	// ModelName is intentionally generic until the integration picks a
+	// concrete FLUX model variant.
+	ModelName = "bfl-integration-pending"
 )
 
 type Provider struct {
@@ -24,14 +39,12 @@ func (p *Provider) Capabilities() providers.ProviderCapabilities {
 		ProviderID: ProviderID,
 		ModelName:  ModelName,
 		Capabilities: []providers.Capability{
-			providers.CapabilitySceneCapable,
-			providers.CapabilityIdentityCapable,
-			providers.CapabilityProductionCapable,
+			providers.CapabilityDraftOnly,
 		},
-		PreviewCapability: providers.PreviewCapabilityDerived,
-		SupportsHighRes:   true,
+		PreviewCapability: providers.PreviewCapabilityNone,
+		SupportsHighRes:   false,
 		MaxBatchSize:      1,
-		SupportedAspects:  []string{"1:1", "16:9", "9:16", "4:3", "3:4"},
+		SupportedAspects:  nil,
 	}
 }
 
