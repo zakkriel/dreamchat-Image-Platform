@@ -16,7 +16,9 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/auth"
 	"github.com/zakkriel/drchat-image-platform/internal/config"
+	"github.com/zakkriel/drchat-image-platform/internal/idempotency"
 	"github.com/zakkriel/drchat-image-platform/internal/identities"
+	"github.com/zakkriel/drchat-image-platform/internal/jobs"
 	"github.com/zakkriel/drchat-image-platform/internal/styles"
 )
 
@@ -49,6 +51,55 @@ type noopAssetsRepo struct{}
 func (noopAssetsRepo) GetByIDForTenant(context.Context, string, string) (assets.VisualAsset, error) {
 	return assets.VisualAsset{}, assets.ErrNotFound
 }
+
+func (noopAssetsRepo) Insert(context.Context, assets.InsertParams) (assets.VisualAsset, error) {
+	return assets.VisualAsset{}, nil
+}
+
+type noopJobsRepo struct{}
+
+func (noopJobsRepo) Insert(context.Context, jobs.InsertParams) (jobs.Job, error) {
+	return jobs.Job{Status: "queued"}, nil
+}
+func (noopJobsRepo) GetByIDForTenant(context.Context, string, string) (jobs.Job, error) {
+	return jobs.Job{}, jobs.ErrNotFound
+}
+func (noopJobsRepo) GetByID(context.Context, string) (jobs.Job, error) {
+	return jobs.Job{}, jobs.ErrNotFound
+}
+func (noopJobsRepo) MarkRunning(context.Context, string, string) (jobs.Job, error) {
+	return jobs.Job{}, nil
+}
+func (noopJobsRepo) MarkCompleted(context.Context, string, string, []string) (jobs.Job, error) {
+	return jobs.Job{}, nil
+}
+func (noopJobsRepo) MarkFailed(context.Context, string, string, string, string, bool) (jobs.Job, error) {
+	return jobs.Job{}, nil
+}
+func (noopJobsRepo) InsertProviderAttempt(context.Context, jobs.ProviderAttemptInsertParams) (jobs.ProviderAttempt, error) {
+	return jobs.ProviderAttempt{}, nil
+}
+func (noopJobsRepo) MarkProviderAttemptSucceeded(context.Context, string, int32) error { return nil }
+func (noopJobsRepo) MarkProviderAttemptFailed(context.Context, string, string, string, int32) error {
+	return nil
+}
+func (noopJobsRepo) CountProviderAttempts(context.Context, string) (int32, error) { return 1, nil }
+func (noopJobsRepo) InsertCostEvent(context.Context, jobs.CostEventInsertParams) error {
+	return nil
+}
+
+type noopIdempRepo struct{}
+
+func (noopIdempRepo) Get(context.Context, string, string) (idempotency.Record, error) {
+	return idempotency.Record{}, idempotency.ErrNotFound
+}
+func (noopIdempRepo) Insert(_ context.Context, rec idempotency.Record) (idempotency.Record, bool, error) {
+	return rec, true, nil
+}
+
+type noopEnqueuer struct{}
+
+func (noopEnqueuer) EnqueueGenerateArtifact(context.Context, string) error { return nil }
 
 const (
 	testPepper      = "test-pepper"
@@ -114,6 +165,16 @@ func newPhase2Deps(t *testing.T, repo *stubRepo) Deps {
 	deps.IdentitiesRepo = &noopIdentitiesRepo{}
 	deps.AssetsRepo = &noopAssetsRepo{}
 	return deps
+}
+
+func withPhase3Stubs(d Deps) Deps {
+	d.JobsRepo = &noopJobsRepo{}
+	d.IdempotencyRepo = &noopIdempRepo{}
+	d.Enqueuer = &noopEnqueuer{}
+	if d.Config != nil {
+		d.Config.ImageProvider = config.ProviderMock
+	}
+	return d
 }
 
 func TestHealthEndpoint(t *testing.T) {
@@ -308,5 +369,49 @@ func TestV1VisualIdentityPostRequiresImagesWrite(t *testing.T) {
 	r.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestV1ArtifactGenerateRequiresImagesWrite(t *testing.T) {
+	repo := newStubRepo()
+	repo.token.Scopes = []string{"images:read"}
+	deps := newPhase2Deps(t, repo)
+	deps = withPhase3Stubs(deps)
+	r := NewRouter(deps)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/artifacts/art_1/generate", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer "+testPrefix+"_"+testSecret)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestV1JobsGetRequiresJobsRead(t *testing.T) {
+	repo := newStubRepo()
+	repo.token.Scopes = []string{"images:read"}
+	deps := withPhase3Stubs(newPhase2Deps(t, repo))
+	r := NewRouter(deps)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/jobs/job_abc", nil)
+	req.Header.Set("Authorization", "Bearer "+testPrefix+"_"+testSecret)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestV1ArtifactGenerateWithoutAuthReturns401(t *testing.T) {
+	deps := withPhase3Stubs(newPhase2Deps(t, newStubRepo()))
+	r := NewRouter(deps)
+	req := httptest.NewRequest(http.MethodPost, "/v1/artifacts/art_1/generate", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
 	}
 }
