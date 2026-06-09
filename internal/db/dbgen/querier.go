@@ -9,8 +9,19 @@ import (
 )
 
 type Querier interface {
+	CreateStyleProfile(ctx context.Context, arg CreateStyleProfileParams) (StyleProfile, error)
 	GetActiveAPITokenByPrefix(ctx context.Context, tokenPrefix string) (GetActiveAPITokenByPrefixRow, error)
+	GetStyleProfileByID(ctx context.Context, arg GetStyleProfileByIDParams) (StyleProfile, error)
+	GetVisualAssetByID(ctx context.Context, arg GetVisualAssetByIDParams) (VisualAsset, error)
+	GetVisualIdentityByID(ctx context.Context, arg GetVisualIdentityByIDParams) (VisualIdentity, error)
+	GetVisualIdentityByOwner(ctx context.Context, arg GetVisualIdentityByOwnerParams) (VisualIdentity, error)
+	GetVisualIdentityByOwnerAcrossWorlds(ctx context.Context, arg GetVisualIdentityByOwnerAcrossWorldsParams) (VisualIdentity, error)
+	GetVisualIdentityByOwnerForUpdate(ctx context.Context, arg GetVisualIdentityByOwnerForUpdateParams) (VisualIdentity, error)
+	InsertVisualIdentity(ctx context.Context, arg InsertVisualIdentityParams) (VisualIdentity, error)
+	InsertVisualIdentityVersion(ctx context.Context, arg InsertVisualIdentityVersionParams) error
+	ListStyleProfilesByTenant(ctx context.Context, tenantID string) ([]StyleProfile, error)
 	TouchAPITokenLastUsed(ctx context.Context, id string) error
+	UpdateVisualIdentityWithVersionBump(ctx context.Context, arg UpdateVisualIdentityWithVersionBumpParams) (VisualIdentity, error)
 }
 
 var _ Querier = (*Queries)(nil)
