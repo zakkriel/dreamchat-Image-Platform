@@ -107,3 +107,61 @@ func TestIdempotencyDifferentEndpointSameKeyReturns409(t *testing.T) {
 	second := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/artifacts/art_2/generate", tenantA, []string{"images:write"}, body, headers)
 	assertError(t, second, http.StatusConflict, "idempotency_conflict")
 }
+
+// The next three tests pin the replay-status behavior: a replay must echo
+// the job's *current* status, not a hard-coded "queued".
+
+func TestIdempotencyReplayReportsQueuedForFreshJob(t *testing.T) {
+	creator := newStubCreator()
+	router := newArtifactsRouter(creator, seededStyles(), config.ProviderMock)
+	headers := map[string]string{idempotency.HeaderKey: "phase3-replay-queued"}
+	body := map[string]any{"world_id": "w1", "style_profile_id": "sty_ok", "description": "A bronze key"}
+
+	_ = sendJSONWithHeaders(t, router, http.MethodPost, "/v1/artifacts/art_1/generate", tenantA, []string{"images:write"}, body, headers)
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/artifacts/art_1/generate", tenantA, []string{"images:write"}, body, headers)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	body2 := decode[map[string]any](t, rec)
+	if body2["status"] != "queued" {
+		t.Fatalf("expected status=queued for replay of fresh job, got %v", body2["status"])
+	}
+}
+
+func TestIdempotencyReplayReportsCompletedWhenJobCompleted(t *testing.T) {
+	creator := newStubCreator()
+	router := newArtifactsRouter(creator, seededStyles(), config.ProviderMock)
+	headers := map[string]string{idempotency.HeaderKey: "phase3-replay-completed"}
+	body := map[string]any{"world_id": "w1", "style_profile_id": "sty_ok", "description": "A bronze key"}
+
+	_ = sendJSONWithHeaders(t, router, http.MethodPost, "/v1/artifacts/art_1/generate", tenantA, []string{"images:write"}, body, headers)
+	creator.setReplayStatus("tok_test", "phase3-replay-completed", "completed")
+
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/artifacts/art_1/generate", tenantA, []string{"images:write"}, body, headers)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	body2 := decode[map[string]any](t, rec)
+	if body2["status"] != "completed" {
+		t.Fatalf("expected status=completed on replay, got %v", body2["status"])
+	}
+}
+
+func TestIdempotencyReplayReportsFailedWhenJobFailed(t *testing.T) {
+	creator := newStubCreator()
+	router := newArtifactsRouter(creator, seededStyles(), config.ProviderMock)
+	headers := map[string]string{idempotency.HeaderKey: "phase3-replay-failed"}
+	body := map[string]any{"world_id": "w1", "style_profile_id": "sty_ok", "description": "A bronze key"}
+
+	_ = sendJSONWithHeaders(t, router, http.MethodPost, "/v1/artifacts/art_1/generate", tenantA, []string{"images:write"}, body, headers)
+	creator.setReplayStatus("tok_test", "phase3-replay-failed", "failed")
+
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/artifacts/art_1/generate", tenantA, []string{"images:write"}, body, headers)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	body2 := decode[map[string]any](t, rec)
+	if body2["status"] != "failed" {
+		t.Fatalf("expected status=failed on replay of enqueue-failed job, got %v", body2["status"])
+	}
+}

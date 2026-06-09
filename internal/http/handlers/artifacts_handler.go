@@ -153,7 +153,11 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusAccepted, artifactGenerateResponse{JobID: result.JobID, Status: "queued"})
+	status := result.Status
+	if status == "" {
+		status = "queued"
+	}
+	writeJSON(w, http.StatusAccepted, artifactGenerateResponse{JobID: result.JobID, Status: status})
 }
 
 // readRawJSONBody is the body-reading half of readJSONBody — the handler

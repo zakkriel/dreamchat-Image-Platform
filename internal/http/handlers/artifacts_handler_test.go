@@ -25,12 +25,15 @@ var jobIDRe = regexp.MustCompile(`^job_[0-9a-f]{16}$`)
 // stubCreator simulates the jobs.Service contract in-process. It supports
 // the idempotency flow the handler depends on: same (token, key, endpoint,
 // body) returns the same job_id with Replayed=true; same (token, key) +
-// different endpoint or body returns ErrIdempotencyConflict.
+// different endpoint or body returns ErrIdempotencyConflict. statusByJobID
+// lets tests force a particular live status on replay so they can assert
+// the handler reports it instead of hard-coding "queued".
 type stubCreator struct {
-	mu      sync.Mutex
-	calls   []jobs.CreateAndEnqueueParams
-	byKey   map[string]storedKey
-	failErr error
+	mu            sync.Mutex
+	calls         []jobs.CreateAndEnqueueParams
+	byKey         map[string]storedKey
+	statusByJobID map[string]string
+	failErr       error
 }
 
 type storedKey struct {
@@ -40,7 +43,20 @@ type storedKey struct {
 }
 
 func newStubCreator() *stubCreator {
-	return &stubCreator{byKey: map[string]storedKey{}}
+	return &stubCreator{
+		byKey:         map[string]storedKey{},
+		statusByJobID: map[string]string{},
+	}
+}
+
+// setReplayStatus forces a particular live status on the next replay of an
+// existing (token, key). The handler should echo it instead of "queued".
+func (s *stubCreator) setReplayStatus(tokenID, key, status string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if existing, ok := s.byKey[tokenID+"|"+key]; ok {
+		s.statusByJobID[existing.jobID] = status
+	}
 }
 
 func (s *stubCreator) CreateAndEnqueue(_ context.Context, params jobs.CreateAndEnqueueParams) (jobs.CreateResult, error) {
@@ -51,18 +67,22 @@ func (s *stubCreator) CreateAndEnqueue(_ context.Context, params jobs.CreateAndE
 	defer s.mu.Unlock()
 	s.calls = append(s.calls, params)
 	if params.IdempotencyKey == "" {
-		return jobs.CreateResult{JobID: ids.NewGenerationJobID()}, nil
+		return jobs.CreateResult{JobID: ids.NewGenerationJobID(), Status: "queued"}, nil
 	}
 	k := params.RequestedByTokenID + "|" + params.IdempotencyKey
 	if existing, ok := s.byKey[k]; ok {
 		if existing.endpoint != params.Endpoint || existing.requestHash != params.RequestHash {
 			return jobs.CreateResult{}, jobs.ErrIdempotencyConflict
 		}
-		return jobs.CreateResult{JobID: existing.jobID, Replayed: true}, nil
+		status := s.statusByJobID[existing.jobID]
+		if status == "" {
+			status = "queued"
+		}
+		return jobs.CreateResult{JobID: existing.jobID, Status: status, Replayed: true}, nil
 	}
 	jobID := ids.NewGenerationJobID()
 	s.byKey[k] = storedKey{jobID: jobID, endpoint: params.Endpoint, requestHash: params.RequestHash}
-	return jobs.CreateResult{JobID: jobID}, nil
+	return jobs.CreateResult{JobID: jobID, Status: "queued"}, nil
 }
 
 func newArtifactsRouter(creator jobs.Creator, stylesRepo styles.Repository, provider config.Provider) chi.Router {

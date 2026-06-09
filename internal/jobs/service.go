@@ -54,8 +54,12 @@ type CreateAndEnqueueParams struct {
 // CreateResult is the service's return shape. Replayed is true when the
 // idempotency layer found a prior row and the caller should report the
 // existing job_id instead of treating the response as a fresh insert.
+// Status is the current generation_jobs.status — "queued" for fresh
+// inserts, and the live status for replays (so a replay of a
+// since-failed job reports "failed", not "queued").
 type CreateResult struct {
 	JobID    string
+	Status   string
 	Replayed bool
 }
 
@@ -108,7 +112,7 @@ func (s *Service) CreateAndEnqueue(ctx context.Context, params CreateAndEnqueueP
 		if err := s.enqueue(ctx, jobID, params.TenantID); err != nil {
 			return CreateResult{}, err
 		}
-		return CreateResult{JobID: jobID}, nil
+		return CreateResult{JobID: jobID, Status: "queued"}, nil
 	}
 
 	jobID := ids.NewGenerationJobID()
@@ -147,7 +151,7 @@ func (s *Service) CreateAndEnqueue(ctx context.Context, params CreateAndEnqueueP
 		if err := s.enqueue(ctx, jobID, params.TenantID); err != nil {
 			return CreateResult{}, err
 		}
-		return CreateResult{JobID: jobID}, nil
+		return CreateResult{JobID: jobID, Status: "queued"}, nil
 	case errors.Is(err, pgx.ErrNoRows):
 		// Race: another writer committed first. Roll back our speculative
 		// job insert and read the winner's row from a fresh connection.
@@ -162,7 +166,8 @@ func (s *Service) CreateAndEnqueue(ctx context.Context, params CreateAndEnqueueP
 }
 
 func (s *Service) replayExisting(ctx context.Context, params CreateAndEnqueueParams) (CreateResult, error) {
-	existing, err := dbgen.New(s.pool).GetIdempotencyKey(ctx, dbgen.GetIdempotencyKeyParams{
+	q := dbgen.New(s.pool)
+	existing, err := q.GetIdempotencyKey(ctx, dbgen.GetIdempotencyKeyParams{
 		TokenID: params.RequestedByTokenID,
 		Key:     params.IdempotencyKey,
 	})
@@ -178,7 +183,11 @@ func (s *Service) replayExisting(ctx context.Context, params CreateAndEnqueuePar
 	if existing.GenerationJobID == nil {
 		return CreateResult{}, errors.New("jobs: idempotency record missing job id")
 	}
-	return CreateResult{JobID: *existing.GenerationJobID, Replayed: true}, nil
+	job, err := q.GetGenerationJobByIDUnchecked(ctx, *existing.GenerationJobID)
+	if err != nil {
+		return CreateResult{}, fmt.Errorf("load replayed job: %w", err)
+	}
+	return CreateResult{JobID: job.ID, Status: job.Status, Replayed: true}, nil
 }
 
 func (s *Service) insertJob(ctx context.Context, q *dbgen.Queries, jobID string, params CreateAndEnqueueParams, payload []byte) error {

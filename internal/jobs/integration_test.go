@@ -406,3 +406,74 @@ func TestEnqueueFailureMarksJobFailedAndReturns500(t *testing.T) {
 		t.Fatalf("expected error_code=enqueue_failed, got %v", errorCode)
 	}
 }
+
+// TestIdempotencyReplayEchoesCurrentJobStatus pins the end-to-end behavior:
+// after an enqueue failure, the original 500 leaves the job at status=failed.
+// A replay of the same Idempotency-Key must not lie about the job's status —
+// it must return 202 with status=failed and the same job_id, never create a
+// new job, and never enqueue.
+func TestIdempotencyReplayEchoesCurrentJobStatus(t *testing.T) {
+	pool := openTestPool(t)
+	defer pool.Close()
+	cleanup(t, pool)
+	defer cleanup(t, pool)
+	seedFixtures(t, pool)
+
+	jobsRepo := jobs.NewRepository(pool)
+	stylesRepo := styles.NewRepository(pool)
+	enq := newRecordingEnqueuer()
+	enq.failOn["*"] = true
+	svc := jobs.NewService(pool, enq)
+	r := mountTestRouter(svc, stylesRepo, jobsRepo)
+
+	body := map[string]any{
+		"world_id": "w1", "style_profile_id": itStyleID, "description": "A bronze key",
+	}
+	const key = "phase3-replay-failed-integration"
+
+	first := sendArtifactRequest(t, r, body, key)
+	if first.Code != http.StatusInternalServerError {
+		t.Fatalf("first: expected 500 on forced enqueue failure, got %d body=%s", first.Code, first.Body.String())
+	}
+
+	// Inspect the failed job to capture its id for cross-checking.
+	var jobID, jobStatus string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT id, status FROM generation_jobs WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 1`,
+		itTenant,
+	).Scan(&jobID, &jobStatus); err != nil {
+		t.Fatalf("read job: %v", err)
+	}
+	if jobStatus != "failed" {
+		t.Fatalf("expected status=failed after enqueue failure, got %q", jobStatus)
+	}
+
+	// Replay with the same key + body + endpoint.
+	second := sendArtifactRequest(t, r, body, key)
+	if second.Code != http.StatusAccepted {
+		t.Fatalf("replay: expected 202, got %d body=%s", second.Code, second.Body.String())
+	}
+	var replayBody map[string]any
+	_ = json.Unmarshal(second.Body.Bytes(), &replayBody)
+	if replayBody["job_id"] != jobID {
+		t.Fatalf("replay: expected same job_id=%s, got %v", jobID, replayBody["job_id"])
+	}
+	if replayBody["status"] != "failed" {
+		t.Fatalf("replay: expected status=failed (the job's live status), got %v", replayBody["status"])
+	}
+
+	// No new job row, no second enqueue attempt (the first call exhausted
+	// the failOn["*"] path; the recorder still has zero successful
+	// enqueues recorded).
+	var jobCount int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM generation_jobs WHERE tenant_id = $1`, itTenant).Scan(&jobCount); err != nil {
+		t.Fatalf("count jobs: %v", err)
+	}
+	if jobCount != 1 {
+		t.Fatalf("expected exactly one job row across original + replay, got %d", jobCount)
+	}
+	if got := enq.snapshot(); len(got) != 0 {
+		t.Fatalf("expected zero successful enqueues, got %d: %v", len(got), got)
+	}
+}
