@@ -18,6 +18,8 @@ const (
 	CodeInternalError       = "internal_error"
 	CodeInvalidRequest      = "invalid_request"
 	CodeInvalidStyleProfile = "invalid_style_profile"
+	CodeIdempotencyConflict = "idempotency_conflict"
+	CodeProviderUnavailable = "provider_unavailable"
 )
 
 type Body struct {
