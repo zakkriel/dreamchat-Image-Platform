@@ -61,3 +61,9 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(body)
 }
+
+// newJSONDecoder is a small wrapper so handlers that have already read the
+// raw bytes (e.g. for hashing) can decode them without re-reading the body.
+func newJSONDecoder(raw []byte) *json.Decoder {
+	return json.NewDecoder(bytes.NewReader(raw))
+}

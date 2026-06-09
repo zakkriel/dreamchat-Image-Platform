@@ -12,7 +12,6 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/config"
 	"github.com/zakkriel/drchat-image-platform/internal/http/handlers"
 	"github.com/zakkriel/drchat-image-platform/internal/httperr"
-	"github.com/zakkriel/drchat-image-platform/internal/idempotency"
 	"github.com/zakkriel/drchat-image-platform/internal/identities"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
 	"github.com/zakkriel/drchat-image-platform/internal/styles"
@@ -22,15 +21,14 @@ import (
 // middlewares and handlers. The router does not own these objects; the
 // caller manages their lifecycle.
 type Deps struct {
-	Logger          *slog.Logger
-	Config          *config.Config
-	AuthRepo        auth.Repository
-	StylesRepo      styles.Repository
-	IdentitiesRepo  identities.Repository
-	AssetsRepo      assets.Repository
-	JobsRepo        jobs.Repository
-	IdempotencyRepo idempotency.Repository
-	Enqueuer        handlers.Enqueuer
+	Logger         *slog.Logger
+	Config         *config.Config
+	AuthRepo       auth.Repository
+	StylesRepo     styles.Repository
+	IdentitiesRepo identities.Repository
+	AssetsRepo     assets.Repository
+	JobsRepo       jobs.Repository
+	JobsService    jobs.Creator
 }
 
 type HealthResponse struct {
@@ -155,12 +153,11 @@ func mountAssets(v1 chi.Router, deps Deps) {
 }
 
 func mountArtifacts(v1 chi.Router, deps Deps) {
-	if deps.JobsRepo == nil || deps.StylesRepo == nil || deps.Enqueuer == nil {
+	if deps.JobsService == nil || deps.StylesRepo == nil {
 		return
 	}
-	h := handlers.NewArtifactsHandler(deps.JobsRepo, deps.StylesRepo, deps.Enqueuer, deps.Config.ImageProvider)
-	idemMW := idempotency.Middleware(idempotency.Deps{Repo: deps.IdempotencyRepo})
-	v1.With(auth.RequireScopes("images:write"), idemMW).Post("/artifacts/{artifact_id}/generate", h.Generate)
+	h := handlers.NewArtifactsHandler(deps.JobsService, deps.StylesRepo, deps.Config.ImageProvider)
+	v1.With(auth.RequireScopes("images:write")).Post("/artifacts/{artifact_id}/generate", h.Generate)
 }
 
 func mountJobs(v1 chi.Router, deps Deps) {

@@ -1,8 +1,9 @@
 package handlers
 
 import (
-	"context"
+	"bytes"
 	"errors"
+	"io"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -12,31 +13,25 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/http/apigen"
 	"github.com/zakkriel/drchat-image-platform/internal/httperr"
 	"github.com/zakkriel/drchat-image-platform/internal/idempotency"
-	"github.com/zakkriel/drchat-image-platform/internal/ids"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
 	"github.com/zakkriel/drchat-image-platform/internal/styles"
 )
 
-// Enqueuer is the subset of the asynq client wrapper the handler needs.
-type Enqueuer interface {
-	EnqueueGenerateArtifact(ctx context.Context, jobID string) error
-}
-
+// ArtifactsHandler accepts artifact generation requests and delegates the
+// transactional job-create + idempotency-row + enqueue work to a
+// jobs.Creator service. The handler itself is responsible only for
+// authorization, validation, and shaping the 202/4xx/5xx response.
 type ArtifactsHandler struct {
-	Jobs     jobs.Repository
+	Service  jobs.Creator
 	Styles   styles.Repository
-	Enqueuer Enqueuer
 	Provider config.Provider
-	NewID    func() string
 }
 
-func NewArtifactsHandler(jobsRepo jobs.Repository, stylesRepo styles.Repository, enqueuer Enqueuer, provider config.Provider) *ArtifactsHandler {
+func NewArtifactsHandler(service jobs.Creator, stylesRepo styles.Repository, provider config.Provider) *ArtifactsHandler {
 	return &ArtifactsHandler{
-		Jobs:     jobsRepo,
+		Service:  service,
 		Styles:   stylesRepo,
-		Enqueuer: enqueuer,
 		Provider: provider,
-		NewID:    ids.NewGenerationJobID,
 	}
 }
 
@@ -46,7 +41,9 @@ type artifactGenerateResponse struct {
 }
 
 func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
-	// Bail out before any state changes for unsupported providers.
+	// Provider gate runs first. Per the Phase 3 corrections, this must
+	// reject before any idempotency row, job row, or queue task is created
+	// or attempted.
 	if h.Provider != config.ProviderMock {
 		httperr.Write(w, r, http.StatusServiceUnavailable, httperr.CodeProviderUnavailable, "configured image provider is not available in this phase")
 		return
@@ -64,8 +61,13 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	raw, ok := readRawJSONBody(w, r)
+	if !ok {
+		return
+	}
+
 	var req apigen.GenerateArtifactRequest
-	if !readJSONBody(w, r, &req) {
+	if !decodeFromRaw(w, r, raw, &req) {
 		return
 	}
 
@@ -103,18 +105,11 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jobID := idempotency.ReservedJobIDFromContext(r.Context())
-	if jobID == "" {
-		jobID = h.NewID()
-	}
-
 	fallback := string(apigen.CompatibleOnly)
 	if req.FallbackPolicy != nil {
 		fallback = string(*req.FallbackPolicy)
 	}
 	cacheResult := "generated_required"
-	worldID := req.WorldId
-	tokenID := principal.TokenID
 
 	payload := map[string]any{
 		"artifact_id":      artifactID,
@@ -130,26 +125,64 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		payload["latency_tier"] = string(*req.LatencyTier)
 	}
 
-	if _, err := h.Jobs.Insert(r.Context(), jobs.InsertParams{
-		ID:                 jobID,
+	params := jobs.CreateAndEnqueueParams{
 		TenantID:           principal.TenantID,
-		WorldID:            &worldID,
+		RequestedByTokenID: principal.TokenID,
 		JobType:            "artifact",
-		RequestedByTokenID: &tokenID,
+		WorldID:            req.WorldId,
 		InputPayload:       payload,
-		FallbackPolicy:     &fallback,
-		CacheResult:        &cacheResult,
-	}); err != nil {
-		httperr.Write(w, r, http.StatusInternalServerError, httperr.CodeInternalError, "could not create generation job")
+		FallbackPolicy:     fallback,
+		CacheResult:        cacheResult,
+	}
+	if key := r.Header.Get(idempotency.HeaderKey); key != "" {
+		params.IdempotencyKey = key
+		params.Endpoint = r.Method + " " + r.URL.Path
+		params.RequestHash = jobs.HashRequestBody(raw)
+	}
+
+	result, err := h.Service.CreateAndEnqueue(r.Context(), params)
+	if err != nil {
+		switch {
+		case errors.Is(err, jobs.ErrIdempotencyConflict):
+			httperr.Write(w, r, http.StatusConflict, httperr.CodeIdempotencyConflict, "idempotency key reused with a different body or endpoint")
+		case errors.Is(err, jobs.ErrEnqueueFailed):
+			httperr.Write(w, r, http.StatusInternalServerError, httperr.CodeInternalError, "could not enqueue generation job")
+		default:
+			httperr.Write(w, r, http.StatusInternalServerError, httperr.CodeInternalError, "could not create generation job")
+		}
 		return
 	}
 
-	if err := h.Enqueuer.EnqueueGenerateArtifact(r.Context(), jobID); err != nil {
-		httperr.Write(w, r, http.StatusInternalServerError, httperr.CodeInternalError, "could not enqueue generation job")
-		return
-	}
+	writeJSON(w, http.StatusAccepted, artifactGenerateResponse{JobID: result.JobID, Status: "queued"})
+}
 
-	writeJSON(w, http.StatusAccepted, artifactGenerateResponse{JobID: jobID, Status: "queued"})
+// readRawJSONBody is the body-reading half of readJSONBody — the handler
+// needs the raw bytes for the idempotency hash, so it can't use the
+// existing helper as-is.
+func readRawJSONBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodyBytes))
+	if err != nil {
+		httperr.Write(w, r, http.StatusBadRequest, httperr.CodeInvalidRequest, "could not read request body")
+		return nil, false
+	}
+	if err := rejectBodyTenantID(raw); err != nil {
+		httperr.Write(w, r, http.StatusBadRequest, httperr.CodeInvalidRequest, "tenant_id must not be set in request body")
+		return nil, false
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		httperr.Write(w, r, http.StatusBadRequest, httperr.CodeInvalidRequest, "request body required")
+		return nil, false
+	}
+	return raw, true
+}
+
+func decodeFromRaw(w http.ResponseWriter, r *http.Request, raw []byte, v any) bool {
+	dec := newJSONDecoder(raw)
+	if err := dec.Decode(v); err != nil {
+		httperr.Write(w, r, http.StatusBadRequest, httperr.CodeInvalidRequest, "could not decode request body")
+		return false
+	}
+	return true
 }
 
 func validLatencyTier(l apigen.LatencyTier) bool {
