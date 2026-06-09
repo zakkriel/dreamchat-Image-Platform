@@ -106,11 +106,14 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 	}
 
 	providerID := attempt.ProviderID
-	modelID := w.Provider.Capabilities().ModelName
 	promptHash := result.PromptHash
 	seed := result.Seed
 	jobIDRef := job.ID
 
+	// model_id is intentionally NULL: visual_assets.model_id references
+	// provider_models(id), and Phase 3 does not populate the provider model
+	// catalog. Phase 4 (provider routing + price book) introduces the
+	// provider_models rows and wires this field.
 	asset, err := w.Assets.Insert(ctx, assets.InsertParams{
 		ID:              assetID,
 		TenantID:        job.TenantID,
@@ -122,7 +125,7 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 		HighResUrl:      strPtr(urls.high),
 		ThumbnailUrl:    strPtr(urls.thumb),
 		ProviderID:      &providerID,
-		ModelID:         &modelID,
+		ModelID:         nil,
 		PromptHash:      strPtr(promptHash),
 		Seed:            strPtr(seed),
 		GenerationJobID: &jobIDRef,
