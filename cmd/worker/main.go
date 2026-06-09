@@ -1,13 +1,21 @@
 package main
 
 import (
+	"context"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/hibiken/asynq"
+	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/config"
+	"github.com/zakkriel/drchat-image-platform/internal/jobs"
+	"github.com/zakkriel/drchat-image-platform/internal/providers"
+	"github.com/zakkriel/drchat-image-platform/internal/providers/mock"
+	"github.com/zakkriel/drchat-image-platform/internal/storage"
 	"github.com/zakkriel/drchat-image-platform/internal/telemetry"
 )
 
@@ -25,6 +33,36 @@ func main() {
 		"image_provider", string(cfg.ImageProvider),
 	)
 
+	pool, err := openPool(cfg.PostgresDSN)
+	if err != nil {
+		logger.Error("postgres connect failed", "error", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
+
+	store, err := storage.NewS3Storage(context.Background(), storage.S3Config{
+		Bucket:          cfg.S3Bucket,
+		Region:          cfg.S3Region,
+		Endpoint:        cfg.S3Endpoint,
+		AccessKeyID:     cfg.S3AccessKeyID,
+		SecretAccessKey: cfg.S3SecretAccessKey,
+		UsePathStyle:    cfg.S3UsePathStyle,
+	})
+	if err != nil {
+		logger.Error("storage init failed", "error", err)
+		os.Exit(1)
+	}
+
+	provider := buildProvider(cfg)
+
+	worker := &jobs.Worker{
+		Jobs:     jobs.NewRepository(pool),
+		Assets:   assets.NewRepository(pool),
+		Storage:  store,
+		Provider: provider,
+		Logger:   logger,
+	}
+
 	redisOpt := asynq.RedisClientOpt{
 		Addr:     cfg.RedisAddr,
 		Password: cfg.RedisPassword,
@@ -35,7 +73,7 @@ func main() {
 	})
 
 	mux := asynq.NewServeMux()
-	// No task handlers registered yet — Phase 0 is just the bones.
+	mux.HandleFunc(jobs.TaskGenerateArtifact, worker.NewHandlerFunc())
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -59,6 +97,28 @@ func main() {
 	}
 
 	logger.Info("worker stopped")
+}
+
+func openPool(dsn string) (*pgxpool.Pool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		return nil, err
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return pool, nil
+}
+
+func buildProvider(cfg *config.Config) providers.ImageProvider {
+	// Phase 3 only enables the mock provider end-to-end. BFL stays untouched
+	// and is rejected at the API boundary with 503 provider_unavailable, so
+	// the worker should never receive a BFL job.
+	_ = cfg
+	return mock.New()
 }
 
 // asynqLogger adapts slog to asynq's logger interface.
