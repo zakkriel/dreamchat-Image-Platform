@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/zakkriel/drchat-image-platform/internal/cost"
 	"github.com/zakkriel/drchat-image-platform/internal/db/dbgen"
 	"github.com/zakkriel/drchat-image-platform/internal/ids"
 )
@@ -31,6 +32,13 @@ var (
 	// written and rolled to status=failed because the queue rejected the
 	// task. The handler maps this to 500.
 	ErrEnqueueFailed = errors.New("jobs: enqueue failed")
+
+	// ErrNoPriceEntry and ErrBudgetExceeded are re-exported from the cost
+	// package so handlers can map a denied pre-flight to 422 without
+	// importing cost directly. Both wrap the cost sentinels so
+	// errors.Is(err, cost.ErrNoPriceEntry) also holds.
+	ErrNoPriceEntry   = cost.ErrNoPriceEntry
+	ErrBudgetExceeded = cost.ErrBudgetExceeded
 )
 
 // CreateAndEnqueueParams carries everything a handler needs to provide to
@@ -43,6 +51,16 @@ type CreateAndEnqueueParams struct {
 	InputPayload       map[string]any
 	FallbackPolicy     string
 	CacheResult        string
+
+	// Pre-flight cost context (docs/architecture/cost-control.md §3).
+	// ProviderID/ModelID/OperationType select the price; Units is the
+	// quantity priced (image count for unit_type=image). UserID is the
+	// optional narrowest budget scope.
+	ProviderID    string
+	ModelID       string
+	OperationType string
+	Units         int32
+	UserID        string
 
 	// Idempotency context. When IdempotencyKey is empty the service skips
 	// the idempotency table altogether and creates a fresh job.
@@ -61,6 +79,13 @@ type CreateResult struct {
 	JobID    string
 	Status   string
 	Replayed bool
+
+	// Cost pre-flight outputs surfaced in the 202 response body
+	// (docs/architecture/cost-control.md §4.2). EstimatedCostUSD is the
+	// textual estimate (e.g. "0.0100"); empty when no price applied.
+	EstimatedCostUSD  string
+	Currency          string
+	CostReservationID string
 }
 
 // Creator is the handler-facing interface. Tests stub this.
@@ -68,18 +93,21 @@ type Creator interface {
 	CreateAndEnqueue(ctx context.Context, params CreateAndEnqueueParams) (CreateResult, error)
 }
 
-// Service implements Creator against Postgres + the asynq Enqueuer.
+// Service implements Creator against Postgres + the asynq Enqueuer, running
+// the cost-control pre-flight inside the create transaction.
 type Service struct {
 	pool     *pgxpool.Pool
 	enqueuer Enqueuer
+	reserver cost.Reserver
 	ttl      time.Duration
 	now      func() time.Time
 }
 
-func NewService(pool *pgxpool.Pool, enqueuer Enqueuer) *Service {
+func NewService(pool *pgxpool.Pool, enqueuer Enqueuer, reserver cost.Reserver) *Service {
 	return &Service{
 		pool:     pool,
 		enqueuer: enqueuer,
+		reserver: reserver,
 		ttl:      IdempotencyTTL,
 		now:      time.Now,
 	}
@@ -104,17 +132,6 @@ func (s *Service) CreateAndEnqueue(ctx context.Context, params CreateAndEnqueueP
 		return CreateResult{}, err
 	}
 
-	if params.IdempotencyKey == "" {
-		jobID := ids.NewGenerationJobID()
-		if err := s.insertJob(ctx, dbgen.New(s.pool), jobID, params, payload); err != nil {
-			return CreateResult{}, fmt.Errorf("insert job: %w", err)
-		}
-		if err := s.enqueue(ctx, jobID, params.TenantID); err != nil {
-			return CreateResult{}, err
-		}
-		return CreateResult{JobID: jobID, Status: "queued"}, nil
-	}
-
 	jobID := ids.NewGenerationJobID()
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -128,40 +145,136 @@ func (s *Service) CreateAndEnqueue(ctx context.Context, params CreateAndEnqueueP
 	}()
 	q := dbgen.New(tx)
 
+	// 1. Insert the job (queued). The reservation FKs to it, so it must
+	//    exist first.
 	if err := s.insertJob(ctx, q, jobID, params, payload); err != nil {
 		return CreateResult{}, fmt.Errorf("insert job: %w", err)
 	}
 
-	jobIDRef := jobID
-	_, err = q.InsertIdempotencyKey(ctx, dbgen.InsertIdempotencyKeyParams{
-		ID:              ids.NewIdempotencyKeyID(),
-		TokenID:         params.RequestedByTokenID,
-		Key:             params.IdempotencyKey,
-		Endpoint:        params.Endpoint,
-		RequestHash:     params.RequestHash,
-		GenerationJobID: &jobIDRef,
-		ExpiresAt:       pgtype.Timestamptz{Time: s.now().Add(s.ttl), Valid: true},
+	// 2. Pre-flight: price → estimate → atomic budget hold. On a denied
+	//    request this inserts a failed reservation (estimated/reserved per
+	//    the failure mode) but holds no budget.
+	res, err := s.reserver.Reserve(ctx, tx, cost.ReserveInput{
+		JobID:         jobID,
+		TenantID:      params.TenantID,
+		TokenID:       params.RequestedByTokenID,
+		WorldID:       params.WorldID,
+		UserID:        params.UserID,
+		ProviderID:    params.ProviderID,
+		ModelID:       params.ModelID,
+		OperationType: params.OperationType,
+		Units:         params.Units,
 	})
-	switch {
-	case err == nil:
-		if err := tx.Commit(ctx); err != nil {
+	if err != nil {
+		return CreateResult{}, fmt.Errorf("reserve cost: %w", err)
+	}
+
+	// 3. Link the reservation + estimate onto the job.
+	if err := q.SetGenerationJobCost(ctx, dbgen.SetGenerationJobCostParams{
+		ID:                jobID,
+		CostReservationID: &res.ID,
+		CostEstimateUsd:   res.EstimatedAmount,
+	}); err != nil {
+		return CreateResult{}, fmt.Errorf("set job cost: %w", err)
+	}
+
+	// 4. A denied pre-flight still commits the job (status=failed) + the
+	//    failed reservation for auditability. It is never enqueued.
+	if res.Failed() {
+		ec := res.FailureReason
+		em := preflightMessage(res.FailureReason)
+		rb := false
+		if _, err := q.MarkGenerationJobFailed(ctx, dbgen.MarkGenerationJobFailedParams{
+			ID:           jobID,
+			TenantID:     params.TenantID,
+			ErrorCode:    &ec,
+			ErrorMessage: &em,
+			Retryable:    &rb,
+		}); err != nil {
+			return CreateResult{}, fmt.Errorf("mark preflight failed: %w", err)
+		}
+	}
+
+	// 5. Idempotency row (when a key was supplied). On a lost race the whole
+	//    transaction — job, reservation, and any budget hold — rolls back,
+	//    and we replay the winner's row.
+	if params.IdempotencyKey != "" {
+		jobIDRef := jobID
+		_, err = q.InsertIdempotencyKey(ctx, dbgen.InsertIdempotencyKeyParams{
+			ID:              ids.NewIdempotencyKeyID(),
+			TokenID:         params.RequestedByTokenID,
+			Key:             params.IdempotencyKey,
+			Endpoint:        params.Endpoint,
+			RequestHash:     params.RequestHash,
+			GenerationJobID: &jobIDRef,
+			ExpiresAt:       pgtype.Timestamptz{Time: s.now().Add(s.ttl), Valid: true},
+		})
+		switch {
+		case err == nil:
+			// won the race; fall through to commit
+		case errors.Is(err, pgx.ErrNoRows):
+			if err := tx.Rollback(ctx); err != nil {
+				return CreateResult{}, err
+			}
+			rolled = true
+			return s.replayExisting(ctx, params)
+		default:
 			return CreateResult{}, err
 		}
-		rolled = true
-		if err := s.enqueue(ctx, jobID, params.TenantID); err != nil {
-			return CreateResult{}, err
-		}
-		return CreateResult{JobID: jobID, Status: "queued"}, nil
-	case errors.Is(err, pgx.ErrNoRows):
-		// Race: another writer committed first. Roll back our speculative
-		// job insert and read the winner's row from a fresh connection.
-		if err := tx.Rollback(ctx); err != nil {
-			return CreateResult{}, err
-		}
-		rolled = true
-		return s.replayExisting(ctx, params)
-	default:
+	}
+
+	if err := tx.Commit(ctx); err != nil {
 		return CreateResult{}, err
+	}
+	rolled = true
+
+	// 6. Terminal outcomes. A denied pre-flight returns its sentinel error
+	//    (handler → 422) alongside the committed-job metadata.
+	if res.Failed() {
+		return CreateResult{
+			JobID:             jobID,
+			Status:            "failed",
+			EstimatedCostUSD:  res.EstimateUSD,
+			Currency:          res.Currency,
+			CostReservationID: res.ID,
+		}, failureError(res.FailureReason)
+	}
+
+	if err := s.enqueue(ctx, jobID, params.TenantID); err != nil {
+		return CreateResult{JobID: jobID, Status: "failed"}, err
+	}
+	return CreateResult{
+		JobID:             jobID,
+		Status:            "queued",
+		EstimatedCostUSD:  res.EstimateUSD,
+		Currency:          res.Currency,
+		CostReservationID: res.ID,
+	}, nil
+}
+
+// preflightMessage is the human-readable error_message stored on a job that a
+// pre-flight denied.
+func preflightMessage(reason string) string {
+	switch reason {
+	case cost.ReasonNoPriceEntry:
+		return "no active price entry for the selected provider/model/operation"
+	case cost.ReasonBudgetExceeded:
+		return "cost budget exceeded for this request"
+	default:
+		return "cost pre-flight failed"
+	}
+}
+
+// failureError maps a reservation failure reason to the sentinel the handler
+// keys its 422 status code off.
+func failureError(reason string) error {
+	switch reason {
+	case cost.ReasonNoPriceEntry:
+		return ErrNoPriceEntry
+	case cost.ReasonBudgetExceeded:
+		return ErrBudgetExceeded
+	default:
+		return fmt.Errorf("jobs: pre-flight failed: %s", reason)
 	}
 }
 
@@ -187,7 +300,21 @@ func (s *Service) replayExisting(ctx context.Context, params CreateAndEnqueuePar
 	if err != nil {
 		return CreateResult{}, fmt.Errorf("load replayed job: %w", err)
 	}
-	return CreateResult{JobID: job.ID, Status: job.Status, Replayed: true}, nil
+	result := CreateResult{JobID: job.ID, Status: job.Status, Replayed: true}
+	if job.CostReservationID != nil {
+		result.CostReservationID = *job.CostReservationID
+	}
+	// A replay of a pre-flight-denied job must return the same 422 again, not
+	// a 202 echoing status=failed (Phase 4 correction 1).
+	if job.Status == "failed" && job.ErrorCode != nil {
+		switch *job.ErrorCode {
+		case cost.ReasonNoPriceEntry:
+			return result, ErrNoPriceEntry
+		case cost.ReasonBudgetExceeded:
+			return result, ErrBudgetExceeded
+		}
+	}
+	return result, nil
 }
 
 func (s *Service) insertJob(ctx context.Context, q *dbgen.Queries, jobID string, params CreateAndEnqueueParams, payload []byte) error {

@@ -20,6 +20,11 @@ const (
 	CodeInvalidStyleProfile = "invalid_style_profile"
 	CodeIdempotencyConflict = "idempotency_conflict"
 	CodeProviderUnavailable = "provider_unavailable"
+
+	// Cost-control pre-flight (docs/architecture/cost-control.md §5). Both
+	// surface as HTTP 422 in Phase 4 (see Phase 4 corrections 1, 2, 6, 7).
+	CodeNoPriceEntry   = "no_price_entry"
+	CodeBudgetExceeded = "budget_exceeded"
 )
 
 type Body struct {

@@ -12,6 +12,7 @@ var (
 	assetPattern     = regexp.MustCompile(`^asset_[0-9a-f]{16}$`)
 	attemptPattern   = regexp.MustCompile(`^att_[0-9a-f]{16}$`)
 	costEventPattern = regexp.MustCompile(`^ce_[0-9a-f]{16}$`)
+	reservationPat   = regexp.MustCompile(`^resv_[0-9a-f]{16}$`)
 	idemPattern      = regexp.MustCompile(`^idem_[0-9a-f]{16}$`)
 )
 
@@ -54,6 +55,13 @@ func TestNewCostEventIDPrefix(t *testing.T) {
 	id := NewCostEventID()
 	if !costEventPattern.MatchString(id) {
 		t.Fatalf("cost event id %q does not match ce_<16 hex>", id)
+	}
+}
+
+func TestNewCostReservationIDPrefix(t *testing.T) {
+	id := NewCostReservationID()
+	if !reservationPat.MatchString(id) {
+		t.Fatalf("cost reservation id %q does not match resv_<16 hex>", id)
 	}
 }
 
