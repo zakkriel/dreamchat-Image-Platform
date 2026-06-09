@@ -67,3 +67,99 @@ func (q *Queries) GetVisualAssetByID(ctx context.Context, arg GetVisualAssetByID
 	)
 	return i, err
 }
+
+const insertVisualAsset = `-- name: InsertVisualAsset :one
+INSERT INTO visual_assets (
+    id, tenant_id, world_id, asset_type, variant_key,
+    quality_tier, status,
+    low_res_url, high_res_url, thumbnail_url,
+    provider_id, model_id, prompt_hash, seed,
+    generation_job_id, generated_at
+) VALUES (
+    $1, $2, $3, $4, $5,
+    $6, 'ready',
+    $7, $8, $9,
+    $10, $11, $12, $13,
+    $14, now()
+)
+RETURNING id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
+          variant_family, version, state_version, style_profile_id,
+          style_profile_version, quality_tier, status,
+          compatibility_tags, fallback_allowed, fallback_rank, is_identity_anchor,
+          low_res_url, high_res_url, thumbnail_url,
+          provider_id, model_id, provider_route_id,
+          prompt_hash, seed, reference_asset_ids,
+          generation_job_id, metadata, generated_at,
+          created_at, updated_at
+`
+
+type InsertVisualAssetParams struct {
+	ID              string  `json:"id"`
+	TenantID        string  `json:"tenant_id"`
+	WorldID         string  `json:"world_id"`
+	AssetType       string  `json:"asset_type"`
+	VariantKey      string  `json:"variant_key"`
+	QualityTier     string  `json:"quality_tier"`
+	LowResUrl       *string `json:"low_res_url"`
+	HighResUrl      *string `json:"high_res_url"`
+	ThumbnailUrl    *string `json:"thumbnail_url"`
+	ProviderID      *string `json:"provider_id"`
+	ModelID         *string `json:"model_id"`
+	PromptHash      *string `json:"prompt_hash"`
+	Seed            *string `json:"seed"`
+	GenerationJobID *string `json:"generation_job_id"`
+}
+
+func (q *Queries) InsertVisualAsset(ctx context.Context, arg InsertVisualAssetParams) (VisualAsset, error) {
+	row := q.db.QueryRow(ctx, insertVisualAsset,
+		arg.ID,
+		arg.TenantID,
+		arg.WorldID,
+		arg.AssetType,
+		arg.VariantKey,
+		arg.QualityTier,
+		arg.LowResUrl,
+		arg.HighResUrl,
+		arg.ThumbnailUrl,
+		arg.ProviderID,
+		arg.ModelID,
+		arg.PromptHash,
+		arg.Seed,
+		arg.GenerationJobID,
+	)
+	var i VisualAsset
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.WorldID,
+		&i.VisualIdentityID,
+		&i.AssetType,
+		&i.VariantKey,
+		&i.VariantFamily,
+		&i.Version,
+		&i.StateVersion,
+		&i.StyleProfileID,
+		&i.StyleProfileVersion,
+		&i.QualityTier,
+		&i.Status,
+		&i.CompatibilityTags,
+		&i.FallbackAllowed,
+		&i.FallbackRank,
+		&i.IsIdentityAnchor,
+		&i.LowResUrl,
+		&i.HighResUrl,
+		&i.ThumbnailUrl,
+		&i.ProviderID,
+		&i.ModelID,
+		&i.ProviderRouteID,
+		&i.PromptHash,
+		&i.Seed,
+		&i.ReferenceAssetIds,
+		&i.GenerationJobID,
+		&i.Metadata,
+		&i.GeneratedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
