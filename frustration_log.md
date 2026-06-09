@@ -170,3 +170,50 @@ Format per entry:
   - `visual_assets.generation_job_id` and `asset_packs.created_by_job_id` are soft FKs (no constraint) to avoid chicken-and-egg with the array-shaped reverse refs.
 - **Implication**: the "are we ready to implement?" answer is now an unqualified yes. Phases 0–7 of the plan can run against this schema without further migrations until handler implementation surfaces a real gap.
 
+## 2026-06-09 — Phase 2 implementation (visual-identity CRUD)
+
+### Entry 19
+- **Trigger**: GET visual-identity contract vs DB unique constraint
+- **Category**: drift / doubt
+- **Note**: The DB has `UNIQUE (tenant_id, world_id, owner_type, owner_id)` on `visual_identities`, so the same owner_id (e.g. `char_alice`) can exist independently across worlds. The OpenAPI `GET /v1/characters/{character_id}/visual-identity` takes only the path parameter — there is no `world_id` query parameter or header. That makes the GET ambiguous when an owner has visual identities in multiple worlds. For Phase 2 I added a `GetVisualIdentityByOwnerAcrossWorlds` query that orders by `updated_at DESC LIMIT 1` so the lookup is deterministic for the acceptance test (single owner, single world). When Phase 3 introduces world-scoped style profiles it will probably also need a way to disambiguate this GET — either a `world_id` query parameter or a separate `/v1/worlds/{world_id}/...` route prefix. Flagging now so it doesn't surprise anyone.
+
+### Entry 20
+- **Trigger**: Generated `apigen.CreateVisualIdentityRequest` ignores unknown JSON fields
+- **Category**: surprise / assumption
+- **Note**: The phase brief explicitly calls this out: oapi-codegen-generated structs silently drop unknown JSON top-level fields. That means `{"tenant_id": "other", ...}` would deserialize cleanly into `apigen.CreateVisualIdentityRequest` and the handler would never see the tenant_id field unless I checked the raw bytes first. I implemented `rejectBodyTenantID` to inspect the raw body before decoding. This pattern is also why the brief calls for inspecting before decoding rather than using a custom `UnmarshalJSON` — it keeps the rejection localized to the request boundary.
+
+### Entry 21
+- **Trigger**: Idempotency on visual-identity upsert
+- **Category**: assumption
+- **Note**: The contract requires accepting the `Idempotency-Key` header but Phase 2 explicitly defers idempotent replay until Phase 3. My handlers do not read the header at all (no log field, no storage). The brief says "read the header if present" but also "ignore it functionally" — I went one step further and didn't even read it because the access-log middleware already logs request_id and there is no idempotency storage to populate. If Phase 3 wants to log it as a non-secret field, that's a one-liner addition.
+
+### Entry 22
+- **Trigger**: ID generation strategy
+- **Category**: assumption
+- **Note**: Specs say "opaque slugs: `sty_<16 hex chars>`, `vi_<16 hex chars>`". My `internal/ids` package generates 8 random bytes → 16 hex chars and prefixes them. The brief says "Add tests for prefix format." which I did with a regex. The upsert path passes a pre-generated `NewID` to the repository but only uses it when actually inserting a new row — for an update path, the existing row keeps its ID and the generated one is silently discarded. That's a small waste but the alternative (lazy-generating inside the transaction) would make the repository depend on `internal/ids`, breaking layering. I chose layering over micro-efficiency.
+
+### Entry 23
+- **Trigger**: `internal/ids` panics on `crypto/rand` failure
+- **Category**: assumption
+- **Note**: `crypto/rand.Read` returning an error on a healthy Linux system is essentially a "the kernel ran out of entropy" event that the process can't sensibly continue past. Rather than threading the error through every handler signature, I `panic` — same pattern as `uuid.NewString()` in the existing codebase. The brief's "don't add error handling for scenarios that can't happen" guidance maps here too.
+
+### Entry 24
+- **Trigger**: Stub repos in handler tests + real-Postgres integration tests
+- **Category**: assumption
+- **Note**: The brief allows either real-Postgres handler tests or stub-repo handler tests + repository-level integration tests behind a build tag. I went with the latter: handler tests use in-process stub repositories (fast, no Docker) and a single integration test against a real Postgres exercises the upsert/version-bump transaction path. CI gains one `go test -tags=integration ./internal/identities/...` step in the migrations job (Postgres is already running there).
+
+### Entry 25
+- **Trigger**: `sqlc` not installed in the dev container
+- **Category**: frustration
+- **Note**: The repo's `make generate` calls `sqlc generate`, but the container shipped without sqlc on the PATH. CI installs sqlc by curling the v1.27.0 binary. I had to do the same locally (`/root/go/bin/sqlc`). Worth adding a `tools/install.sh` or a `make tools` target so a fresh contributor doesn't hit this. The `oapi-codegen` step worked out of the box via `go tool`, so the inconsistency is real.
+
+### Entry 26
+- **Trigger**: `oapi-codegen` warning about OpenAPI 3.1
+- **Category**: surprise
+- **Note**: `make generate` prints "WARNING: You are using an OpenAPI 3.1.x specification, which is not yet supported by oapi-codegen and so some functionality may not be available." Codegen succeeded and produced the types I needed (StyleProfile, VisualIdentity, CreateStyleProfileRequest, etc.). This is a known limitation, not a Phase 2 blocker — but if a future endpoint uses 3.1-only features (e.g. JSON Schema 2020-12 `unevaluatedProperties`), the warning will start to bite.
+
+### Entry 27
+- **Trigger**: world_id required in body even though OpenAPI has it on the route via the path
+- **Category**: assumption
+- **Note**: The route is `/v1/characters/{character_id}/visual-identity`, not `/v1/worlds/{world_id}/characters/...`. The world is therefore only carried in the request body's `world_id` field. The DB enforces `UNIQUE (tenant_id, world_id, owner_type, owner_id)` so you literally cannot store a visual identity without a world. Phase 2 requires `world_id` on every POST body. This is consistent with the OpenAPI `CreateVisualIdentityRequest` schema which lists `world_id` under `required`.
+
