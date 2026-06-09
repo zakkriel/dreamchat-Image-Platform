@@ -96,31 +96,54 @@ jobs:
           --health-interval 2s
           --health-timeout 5s
           --health-retries 20
-      minio:
-        image: bitnami/minio:2024.10.13
-        env:
-          MINIO_ROOT_USER: minioadmin
-          MINIO_ROOT_PASSWORD: minioadmin
-          MINIO_DEFAULT_BUCKETS: image-platform
-        ports:
-          - 9000:9000
-        options: >-
-          --health-cmd "curl -f http://localhost:9000/minio/health/live"
-          --health-interval 3s
-          --health-timeout 5s
-          --health-retries 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
           cache: true
+
+      # MinIO is run as a regular docker container (not a GitHub services
+      # container) because the services entry has no way to override the
+      # image command — the official minio/minio image needs `server /data`
+      # as its argv and there's no service-block field for that.
+      - name: start minio
+        run: |
+          docker run -d --name minio \
+            -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin \
+            -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio:RELEASE.2024-10-13T13-34-11Z \
+            server /data --console-address ":9001"
+
+      - name: wait for minio
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:9000/minio/health/live >/dev/null 2>&1; then
+              echo "minio ready"; exit 0
+            fi
+            sleep 1
+          done
+          echo "minio did not become ready"
+          docker logs minio || true
+          exit 1
+
+      - name: install mc and create bucket
+        env:
+          MC_HOST_local: http://minioadmin:minioadmin@localhost:9000
+        run: |
+          curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc
+          chmod +x /usr/local/bin/mc
+          mc mb --ignore-existing local/image-platform
+          mc ls local/
+
       - name: apply migration
         env:
           PGPASSWORD: image_platform
         run: |
           psql -h localhost -U image_platform -d image_platform \
                -v ON_ERROR_STOP=1 -f migrations/0001_initial.up.sql
+
       - name: assert all expected tables exist
         env:
           PGPASSWORD: image_platform
@@ -129,6 +152,7 @@ jobs:
             "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'")
           echo "table count: $count"
           test "$count" = "17"
+
       - name: assert idempotency expires index exists
         env:
           PGPASSWORD: image_platform
@@ -136,6 +160,7 @@ jobs:
           exists=$(psql -h localhost -U image_platform -d image_platform -tAc \
             "SELECT 1 FROM pg_indexes WHERE indexname = 'idx_idempotency_keys_expires'")
           test "$exists" = "1"
+
       - name: integration tests
         env:
           POSTGRES_DSN: postgres://image_platform:image_platform@localhost:5432/image_platform?sslmode=disable
@@ -147,3 +172,7 @@ jobs:
           S3_SECRET_ACCESS_KEY: minioadmin
           S3_USE_PATH_STYLE: "true"
         run: go test -tags=integration ./...
+
+      - name: minio logs on failure
+        if: failure()
+        run: docker logs minio || true
