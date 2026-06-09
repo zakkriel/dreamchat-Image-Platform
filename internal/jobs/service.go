@@ -96,11 +96,12 @@ type Creator interface {
 // Service implements Creator against Postgres + the asynq Enqueuer, running
 // the cost-control pre-flight inside the create transaction.
 type Service struct {
-	pool     *pgxpool.Pool
-	enqueuer Enqueuer
-	reserver cost.Reserver
-	ttl      time.Duration
-	now      func() time.Time
+	pool      *pgxpool.Pool
+	enqueuer  Enqueuer
+	reserver  cost.Reserver
+	finalizer cost.Finalizer
+	ttl       time.Duration
+	now       func() time.Time
 }
 
 func NewService(pool *pgxpool.Pool, enqueuer Enqueuer, reserver cost.Reserver) *Service {
@@ -111,6 +112,15 @@ func NewService(pool *pgxpool.Pool, enqueuer Enqueuer, reserver cost.Reserver) *
 		ttl:      IdempotencyTTL,
 		now:      time.Now,
 	}
+}
+
+// WithFinalizer wires the cost-reservation finalizer so an enqueue failure
+// (which marks the just-committed job failed) also releases its budget hold
+// instead of leaving it stuck in `reserved`. Optional; nil in tests that don't
+// exercise the lifecycle.
+func (s *Service) WithFinalizer(f cost.Finalizer) *Service {
+	s.finalizer = f
+	return s
 }
 
 // CreateAndEnqueue is the atomic create + idempotency + enqueue path.
@@ -353,6 +363,14 @@ func (s *Service) enqueue(ctx context.Context, jobID, tenantID string) error {
 			// Caller still gets ErrEnqueueFailed; the markFailed failure
 			// is logged through the wrapped error so it doesn't get lost.
 			return fmt.Errorf("%w (also mark-failed: %v): %v", ErrEnqueueFailed, markErr, err)
+		}
+		// Enqueue failure after a successful reservation is a terminal failure
+		// for this job: release the budget hold so it doesn't sit reserved
+		// forever. Best-effort — the request already failed.
+		if s.finalizer != nil {
+			if relErr := s.finalizer.Release(ctx, jobID); relErr != nil {
+				return fmt.Errorf("%w (also release-reservation: %v): %v", ErrEnqueueFailed, relErr, err)
+			}
 		}
 		return fmt.Errorf("%w: %v", ErrEnqueueFailed, err)
 	}

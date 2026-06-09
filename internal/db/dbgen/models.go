@@ -92,6 +92,16 @@ type CostReservation struct {
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 }
 
+type CostReservationBudgetHold struct {
+	ID                string             `json:"id"`
+	CostReservationID string             `json:"cost_reservation_id"`
+	CostBudgetID      string             `json:"cost_budget_id"`
+	ReservedAmount    pgtype.Numeric     `json:"reserved_amount"`
+	Status            string             `json:"status"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+}
+
 type GenerationCostEvent struct {
 	ID                string             `json:"id"`
 	TenantID          string             `json:"tenant_id"`

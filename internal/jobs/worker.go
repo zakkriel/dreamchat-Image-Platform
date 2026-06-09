@@ -11,6 +11,7 @@ import (
 	"github.com/hibiken/asynq"
 
 	"github.com/zakkriel/drchat-image-platform/internal/assets"
+	"github.com/zakkriel/drchat-image-platform/internal/cost"
 	"github.com/zakkriel/drchat-image-platform/internal/ids"
 	"github.com/zakkriel/drchat-image-platform/internal/providers"
 	"github.com/zakkriel/drchat-image-platform/internal/storage"
@@ -31,6 +32,11 @@ type Worker struct {
 	Storage  storage.Storage
 	Provider providers.ImageProvider
 	Logger   *slog.Logger
+
+	// Finalizer commits the cost reservation on success and releases it on
+	// terminal failure (docs/architecture/cost-control.md §3 steps 9–10).
+	// Optional: nil in unit tests that don't exercise the cost lifecycle.
+	Finalizer cost.Finalizer
 }
 
 // NewHandlerFunc returns the asynq handler so the cmd/worker binary stays a
@@ -162,6 +168,16 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 		w.log().Warn("worker: insert cost event", "job_id", jobID, "error", err)
 	}
 
+	// Commit the cost reservation: reserved → committed, move the held
+	// estimate from reserved to spent, stamp actual_cost on the job + event.
+	// Idempotent — safe if a later retry re-enters after a partial failure.
+	if w.Finalizer != nil {
+		if err := w.Finalizer.Commit(ctx, job.ID); err != nil {
+			w.log().Error("worker: commit cost reservation", "job_id", jobID, "error", err)
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -220,6 +236,13 @@ func (w *Worker) recordFailure(ctx context.Context, job Job, attemptID, provider
 	if finalAttempt {
 		if _, err := w.Jobs.MarkFailed(ctx, job.ID, job.TenantID, errorCodeFor(callErr), errMsg, false); err != nil {
 			w.log().Error("worker: mark job failed", "job_id", job.ID, "error", err)
+		}
+		// Terminal failure: release the cost reservation (reserved → released,
+		// return the held estimate to the budget; spent untouched). Idempotent.
+		if w.Finalizer != nil {
+			if err := w.Finalizer.Release(ctx, job.ID); err != nil {
+				w.log().Error("worker: release cost reservation", "job_id", job.ID, "error", err)
+			}
 		}
 	}
 }

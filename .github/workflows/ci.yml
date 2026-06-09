@@ -145,6 +145,8 @@ jobs:
                -v ON_ERROR_STOP=1 -f migrations/0001_initial.up.sql
           psql -h localhost -U image_platform -d image_platform \
                -v ON_ERROR_STOP=1 -f migrations/0002_seed_mock_provider.up.sql
+          psql -h localhost -U image_platform -d image_platform \
+               -v ON_ERROR_STOP=1 -f migrations/0003_cost_lifecycle.up.sql
 
       - name: assert all expected tables exist
         env:
@@ -153,7 +155,16 @@ jobs:
           count=$(psql -h localhost -U image_platform -d image_platform -tAc \
             "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'")
           echo "table count: $count"
-          test "$count" = "17"
+          # 17 from 0001 + cost_reservation_budget_holds from 0003 (Phase 4B).
+          test "$count" = "18"
+
+      - name: assert cost reservation budget holds table exists
+        env:
+          PGPASSWORD: image_platform
+        run: |
+          exists=$(psql -h localhost -U image_platform -d image_platform -tAc \
+            "SELECT 1 FROM information_schema.tables WHERE table_name = 'cost_reservation_budget_holds'")
+          test "$exists" = "1"
 
       - name: assert idempotency expires index exists
         env:

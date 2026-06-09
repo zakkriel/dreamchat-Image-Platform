@@ -77,6 +77,9 @@ func cleanup(t *testing.T, pool *pgxpool.Pool) {
 	exec(`DELETE FROM provider_attempts WHERE generation_job_id IN (SELECT id FROM generation_jobs WHERE tenant_id = $1)`, itTenant)
 	exec(`DELETE FROM idempotency_keys WHERE token_id = $1`, itTokenID)
 	exec(`DELETE FROM visual_assets WHERE tenant_id = $1`, itTenant)
+	// cost_reservation_budget_holds references both cost_reservations and
+	// cost_budgets; clear it before either.
+	exec(`DELETE FROM cost_reservation_budget_holds WHERE cost_reservation_id IN (SELECT id FROM cost_reservations WHERE tenant_id = $1)`, itTenant)
 	// generation_jobs <-> cost_reservations is a circular FK: break the
 	// job->reservation link before deleting the reservations.
 	exec(`UPDATE generation_jobs SET cost_reservation_id = NULL WHERE tenant_id = $1`, itTenant)

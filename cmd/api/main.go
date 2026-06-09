@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/zakkriel/drchat-image-platform/internal/admincost"
 	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/auth"
 	"github.com/zakkriel/drchat-image-platform/internal/config"
@@ -47,6 +48,8 @@ func main() {
 	enqueuer := jobs.NewEnqueuer(cfg.RedisAddr, cfg.RedisPassword)
 	defer func() { _ = enqueuer.Close() }()
 
+	finalizer := cost.NewLifecycle(pool, logger)
+
 	deps := apphttp.Deps{
 		Logger:         logger,
 		Config:         cfg,
@@ -55,7 +58,8 @@ func main() {
 		IdentitiesRepo: identities.NewRepository(pool),
 		AssetsRepo:     assets.NewRepository(pool),
 		JobsRepo:       jobs.NewRepository(pool),
-		JobsService:    jobs.NewService(pool, enqueuer, cost.NewService(logger)),
+		JobsService:    jobs.NewService(pool, enqueuer, cost.NewService(logger)).WithFinalizer(finalizer),
+		AdminCost:      admincost.NewService(pool, logger),
 	}
 
 	router := apphttp.NewRouter(deps)

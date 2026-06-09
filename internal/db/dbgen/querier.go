@@ -9,6 +9,15 @@ import (
 )
 
 type Querier interface {
+	// CommitBudgetHold moves a hold's amount from reserved → spent on the budget.
+	// GREATEST guards against a negative reserved_amount if accounting ever drifts.
+	CommitBudgetHold(ctx context.Context, arg CommitBudgetHoldParams) error
+	// CommitReservationForJob flips a reservation reserved → committed exactly
+	// once. No row returned means the reservation was not in `reserved` (already
+	// committed / released / failed) → caller treats it as a no-op and moves no
+	// budget. actual_amount = estimated_amount (Phase 4B: no provider-reported
+	// reconciliation).
+	CommitReservationForJob(ctx context.Context, generationJobID string) (CommitReservationForJobRow, error)
 	CountProviderAttemptsForJob(ctx context.Context, generationJobID string) (int32, error)
 	CreateStyleProfile(ctx context.Context, arg CreateStyleProfileParams) (StyleProfile, error)
 	DeleteExpiredIdempotencyKeys(ctx context.Context) error
@@ -19,22 +28,47 @@ type Querier interface {
 	// means there is no active price entry → fail closed (no_price_entry).
 	EstimateOperationCost(ctx context.Context, arg EstimateOperationCostParams) (EstimateOperationCostRow, error)
 	GetActiveAPITokenByPrefix(ctx context.Context, tokenPrefix string) (GetActiveAPITokenByPrefixRow, error)
+	GetCostBudget(ctx context.Context, id string) (GetCostBudgetRow, error)
 	GetGenerationJobByID(ctx context.Context, arg GetGenerationJobByIDParams) (GenerationJob, error)
 	GetGenerationJobByIDUnchecked(ctx context.Context, id string) (GenerationJob, error)
 	GetIdempotencyKey(ctx context.Context, arg GetIdempotencyKeyParams) (IdempotencyKey, error)
+	GetProviderModelPrice(ctx context.Context, id string) (GetProviderModelPriceRow, error)
 	GetStyleProfileByID(ctx context.Context, arg GetStyleProfileByIDParams) (StyleProfile, error)
 	GetVisualAssetByID(ctx context.Context, arg GetVisualAssetByIDParams) (VisualAsset, error)
 	GetVisualIdentityByID(ctx context.Context, arg GetVisualIdentityByIDParams) (VisualIdentity, error)
 	GetVisualIdentityByOwner(ctx context.Context, arg GetVisualIdentityByOwnerParams) (VisualIdentity, error)
 	GetVisualIdentityByOwnerForUpdate(ctx context.Context, arg GetVisualIdentityByOwnerForUpdateParams) (VisualIdentity, error)
+	// ---------------------------------------------------------------------------
+	// Audit events
+	// ---------------------------------------------------------------------------
+	// InsertAuditEvent records a state-changing admin action. Written in the same
+	// transaction as the mutation; if it fails, the mutation fails.
+	InsertAuditEvent(ctx context.Context, arg InsertAuditEventParams) error
+	// InsertBudgetHold records that `reserved_amount` was credited against
+	// `cost_budget_id` for this reservation. Written in the same savepoint as the
+	// budget increment so a denied reservation rolls the hold back too. Release /
+	// commit reverse exactly the rows recorded here.
+	InsertBudgetHold(ctx context.Context, arg InsertBudgetHoldParams) error
+	// ---------------------------------------------------------------------------
+	// Cost budgets
+	// ---------------------------------------------------------------------------
+	// InsertCostBudget creates a budget. reserved_amount and spent_amount are
+	// platform-owned and start at 0; callers may not set them.
+	InsertCostBudget(ctx context.Context, arg InsertCostBudgetParams) (InsertCostBudgetRow, error)
 	// InsertCostReservation records the reservation for a job. status=reserved
 	// on success; status=failed with failure_reason on no_price_entry /
 	// budget_exceeded.
 	InsertCostReservation(ctx context.Context, arg InsertCostReservationParams) (CostReservation, error)
+	// InsertFinalizerCostEvent writes a cost event carrying estimated/actual when
+	// the worker never managed to write one (best-effort fallback).
+	InsertFinalizerCostEvent(ctx context.Context, arg InsertFinalizerCostEventParams) error
 	InsertGenerationCostEvent(ctx context.Context, arg InsertGenerationCostEventParams) error
 	InsertGenerationJob(ctx context.Context, arg InsertGenerationJobParams) (GenerationJob, error)
 	InsertIdempotencyKey(ctx context.Context, arg InsertIdempotencyKeyParams) (IdempotencyKey, error)
 	InsertProviderAttempt(ctx context.Context, arg InsertProviderAttemptParams) (ProviderAttempt, error)
+	// InsertProviderModelPrice creates a new active price entry. effective_from is
+	// now(); effective_to is NULL (current).
+	InsertProviderModelPrice(ctx context.Context, arg InsertProviderModelPriceParams) (InsertProviderModelPriceRow, error)
 	InsertVisualAsset(ctx context.Context, arg InsertVisualAssetParams) (VisualAsset, error)
 	InsertVisualIdentity(ctx context.Context, arg InsertVisualIdentityParams) (VisualIdentity, error)
 	InsertVisualIdentityVersion(ctx context.Context, arg InsertVisualIdentityVersionParams) error
@@ -43,12 +77,42 @@ type Querier interface {
 	// budgets matching the request's identifiers. The caller picks which to
 	// enforce (tenant always; then the narrowest applicable scope).
 	ListBudgetsForReservation(ctx context.Context, arg ListBudgetsForReservationParams) ([]ListBudgetsForReservationRow, error)
+	ListCostBudgets(ctx context.Context) ([]ListCostBudgetsRow, error)
+	// ---------------------------------------------------------------------------
+	// Cost reservations (read-only admin list)
+	// ---------------------------------------------------------------------------
+	ListCostReservationsAdmin(ctx context.Context, arg ListCostReservationsAdminParams) ([]ListCostReservationsAdminRow, error)
+	ListProviderModelPrices(ctx context.Context) ([]ListProviderModelPricesRow, error)
+	// ListReservedBudgetHolds returns the still-reserved holds for a reservation.
+	// Processed once inside the guarded transition; marking each hold committed /
+	// released afterwards is belt-and-suspenders against a partial retry.
+	ListReservedBudgetHolds(ctx context.Context, costReservationID string) ([]ListReservedBudgetHoldsRow, error)
 	ListStyleProfilesByTenant(ctx context.Context, tenantID string) ([]StyleProfile, error)
+	// MarkBudgetHoldStatus records the hold's terminal state. The WHERE guard on
+	// status='reserved' makes a re-run a no-op.
+	MarkBudgetHoldStatus(ctx context.Context, arg MarkBudgetHoldStatusParams) error
 	MarkGenerationJobCompleted(ctx context.Context, arg MarkGenerationJobCompletedParams) (GenerationJob, error)
 	MarkGenerationJobFailed(ctx context.Context, arg MarkGenerationJobFailedParams) (GenerationJob, error)
 	MarkGenerationJobRunning(ctx context.Context, arg MarkGenerationJobRunningParams) (GenerationJob, error)
 	MarkProviderAttemptFailed(ctx context.Context, arg MarkProviderAttemptFailedParams) error
 	MarkProviderAttemptSucceeded(ctx context.Context, arg MarkProviderAttemptSucceededParams) error
+	// Cost-reservation terminal lifecycle (docs/architecture/cost-control.md §3
+	// steps 9–10). Phase 4B: commit on job success, release on terminal failure.
+	// Idempotency lives in the reservation status guard: a reservation moves
+	// reserved → committed or reserved → released at most once, and the budget
+	// holds are processed only inside that single guarded transition.
+	// MarkReservationBudgetExceeded turns a freshly-inserted `reserved` row into a
+	// `failed` one when the budget hold is denied. The estimate stays for audit;
+	// reserved_amount is zeroed because the savepoint already rolled back every
+	// budget increment and hold this reservation made.
+	MarkReservationBudgetExceeded(ctx context.Context, arg MarkReservationBudgetExceededParams) error
+	// ReleaseBudgetHold returns a hold's amount to the budget: drop reserved,
+	// leave spent untouched.
+	ReleaseBudgetHold(ctx context.Context, arg ReleaseBudgetHoldParams) error
+	// ReleaseReservationForJob flips a reservation reserved → released exactly
+	// once. actual_amount stays NULL (job failed, nothing charged). No row
+	// returned → no-op.
+	ReleaseReservationForJob(ctx context.Context, generationJobID string) (ReleaseReservationForJobRow, error)
 	// ReserveActiveBudget atomically holds `amount` against an active budget.
 	// The conditional WHERE is the consistency point: concurrent requests that
 	// would collectively oversell the limit see all-but-one fail (no row
@@ -57,11 +121,37 @@ type Querier interface {
 	// ReservePausedBudget records a hold against a paused budget without
 	// enforcing the limit (paused = recording only; never deny).
 	ReservePausedBudget(ctx context.Context, arg ReservePausedBudgetParams) (string, error)
+	// SetGenerationJobActualCost records the committed actual on the job row.
+	SetGenerationJobActualCost(ctx context.Context, arg SetGenerationJobActualCostParams) error
 	// SetGenerationJobCost links a job to its cost_reservation and records the
 	// pre-flight estimate. Run inside the create transaction, after the
 	// reservation row exists.
 	SetGenerationJobCost(ctx context.Context, arg SetGenerationJobCostParams) error
+	// Admin cost surface (docs/architecture/admin-control-surface.md §"Cost
+	// controls"). Phase 4B: price-book create/list/get/update, cost-budget
+	// create/list/update, cost-reservation list, and the audit-event write that
+	// every mutation shares a transaction with.
+	// ---------------------------------------------------------------------------
+	// Price book
+	// ---------------------------------------------------------------------------
+	// SupersedePreviousActivePrice ends the current active entry for a
+	// (provider × model × operation_type): clears is_active and stamps
+	// effective_to. Run in the same transaction as the new INSERT so there is
+	// never a window with zero (or two) active rows. :execrows reports whether an
+	// entry was actually superseded.
+	SupersedePreviousActivePrice(ctx context.Context, arg SupersedePreviousActivePriceParams) (int64, error)
 	TouchAPITokenLastUsed(ctx context.Context, id string) error
+	// UpdateCostBudget mutates only limit_amount and status. reserved_amount,
+	// spent_amount, and the scope/period identity stay platform-owned and fixed.
+	UpdateCostBudget(ctx context.Context, arg UpdateCostBudgetParams) (UpdateCostBudgetRow, error)
+	// UpdateLatestJobCostEvent stamps the estimated/actual cost and final status
+	// onto the most recent cost event for a job (the one the worker wrote for the
+	// terminal attempt). Returns the number of rows touched so the finalizer can
+	// insert one if the worker never wrote it.
+	UpdateLatestJobCostEvent(ctx context.Context, arg UpdateLatestJobCostEventParams) (int64, error)
+	// UpdateProviderModelPrice mutates only the editable fields (effective_to,
+	// is_active, notes). COALESCE keeps unspecified fields unchanged.
+	UpdateProviderModelPrice(ctx context.Context, arg UpdateProviderModelPriceParams) (UpdateProviderModelPriceRow, error)
 	UpdateVisualIdentityWithVersionBump(ctx context.Context, arg UpdateVisualIdentityWithVersionBumpParams) (VisualIdentity, error)
 }
 
