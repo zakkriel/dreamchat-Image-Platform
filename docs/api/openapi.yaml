@@ -125,6 +125,7 @@ paths:
         - BearerAuth: [images:read]
       parameters:
         - $ref: '#/components/parameters/CharacterId'
+        - $ref: '#/components/parameters/WorldIdQuery'
       responses:
         '200':
           description: Visual identity
@@ -189,6 +190,7 @@ paths:
         - BearerAuth: [images:read]
       parameters:
         - $ref: '#/components/parameters/PlaceId'
+        - $ref: '#/components/parameters/WorldIdQuery'
       responses:
         '200':
           description: Visual identity
@@ -1084,6 +1086,14 @@ components:
         Client-generated idempotency key. The same key + token + endpoint + body
         hash returns the same job. Same key + different body returns 409.
         See `idempotency.md`.
+    WorldIdQuery:
+      name: world_id
+      in: query
+      required: true
+      schema: { type: string }
+      description: |
+        World ID used to scope the owner lookup. Visual identities are unique
+        by tenant_id + world_id + owner_type + owner_id.
   responses:
     ErrorResponse:
       description: Standard error response. Content type is `application/problem+json`.

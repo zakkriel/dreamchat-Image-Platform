@@ -25,20 +25,6 @@ WHERE tenant_id = $1
   AND owner_type = $3
   AND owner_id = $4;
 
--- name: GetVisualIdentityByOwnerAcrossWorlds :one
-SELECT id, tenant_id, world_id, owner_type, owner_id, display_name,
-       canonical_visual_traits, allowed_variation, forbidden_drift,
-       style_profile_id, consistency_key, identity_seed,
-       anchor_asset_ids, reference_asset_ids,
-       current_version, current_state_version, status,
-       created_at, updated_at
-FROM visual_identities
-WHERE tenant_id = $1
-  AND owner_type = $2
-  AND owner_id = $3
-ORDER BY updated_at DESC
-LIMIT 1;
-
 -- name: GetVisualIdentityByID :one
 SELECT id, tenant_id, world_id, owner_type, owner_id, display_name,
        canonical_visual_traits, allowed_variation, forbidden_drift,

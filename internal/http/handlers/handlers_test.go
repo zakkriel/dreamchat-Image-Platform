@@ -179,13 +179,12 @@ func ptrEqual(a, b *string) bool {
 	return *a == *b
 }
 
-func (s *stubIdentitiesRepo) GetByOwner(_ context.Context, tenantID, ownerType, ownerID string) (identities.VisualIdentity, error) {
+func (s *stubIdentitiesRepo) GetByOwner(_ context.Context, tenantID, worldID, ownerType, ownerID string) (identities.VisualIdentity, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for k, v := range s.byOwner {
-		if k.tenantID == tenantID && k.ownerType == ownerType && k.ownerID == ownerID {
-			return v, nil
-		}
+	key := identityKey{tenantID, worldID, ownerType, ownerID}
+	if v, ok := s.byOwner[key]; ok {
+		return v, nil
 	}
 	return identities.VisualIdentity{}, identities.ErrNotFound
 }
@@ -544,11 +543,100 @@ func TestVisualIdentityInvalidStyleProfileReturns422(t *testing.T) {
 	assertError(t, rec, http.StatusUnprocessableEntity, "invalid_style_profile")
 }
 
+func TestGetCharacterVisualIdentityWithoutWorldIDReturns400(t *testing.T) {
+	idents := newStubIdentitiesRepo()
+	router := newCharacterRouter(idents, nil)
+
+	rec := sendJSON(t, router, http.MethodGet, "/v1/characters/char_alice/visual-identity", tenantA, nil)
+	assertError(t, rec, http.StatusBadRequest, "invalid_request")
+}
+
+func TestGetCharacterVisualIdentityWithEmptyWorldIDReturns400(t *testing.T) {
+	idents := newStubIdentitiesRepo()
+	router := newCharacterRouter(idents, nil)
+
+	rec := sendJSON(t, router, http.MethodGet, "/v1/characters/char_alice/visual-identity?world_id=", tenantA, nil)
+	assertError(t, rec, http.StatusBadRequest, "invalid_request")
+}
+
+func TestGetPlaceVisualIdentityWithoutWorldIDReturns400(t *testing.T) {
+	idents := newStubIdentitiesRepo()
+	router := newCharacterRouter(idents, nil)
+
+	rec := sendJSON(t, router, http.MethodGet, "/v1/places/place_castle/visual-identity", tenantA, nil)
+	assertError(t, rec, http.StatusBadRequest, "invalid_request")
+}
+
 func TestGetVisualIdentityNotFoundReturns404(t *testing.T) {
 	idents := newStubIdentitiesRepo()
 	router := newCharacterRouter(idents, nil)
 
-	rec := sendJSON(t, router, http.MethodGet, "/v1/characters/char_ghost/visual-identity", tenantA, nil)
+	rec := sendJSON(t, router, http.MethodGet, "/v1/characters/char_ghost/visual-identity?world_id=w1", tenantA, nil)
+	assertError(t, rec, http.StatusNotFound, "not_found")
+}
+
+func TestGetCharacterVisualIdentityIsWorldScoped(t *testing.T) {
+	idents := newStubIdentitiesRepo()
+	idents.registerStyle(tenantA, "sty_ok")
+
+	idCounter := 0
+	gen := func() string {
+		idCounter++
+		return []string{"vi_world1aaaaaaaa", "vi_world2bbbbbbbb"}[idCounter-1]
+	}
+	router := newCharacterRouter(idents, gen)
+
+	for _, world := range []string{"w1", "w2"} {
+		body := map[string]any{
+			"world_id":                world,
+			"owner_type":              "character",
+			"owner_id":                "char_alice",
+			"display_name":            "Alice " + world,
+			"canonical_visual_traits": map[string]any{},
+			"style_profile_id":        "sty_ok",
+		}
+		if rec := sendJSON(t, router, http.MethodPost, "/v1/characters/char_alice/visual-identity", tenantA, body); rec.Code != http.StatusOK {
+			t.Fatalf("upsert %s failed: %d %s", world, rec.Code, rec.Body.String())
+		}
+	}
+
+	rec := sendJSON(t, router, http.MethodGet, "/v1/characters/char_alice/visual-identity?world_id=w1", tenantA, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for w1, got %d", rec.Code)
+	}
+	resp := decode[map[string]any](t, rec)
+	if resp["id"] != "vi_world1aaaaaaaa" || resp["world_id"] != "w1" {
+		t.Fatalf("expected w1 identity, got %v", resp)
+	}
+
+	rec = sendJSON(t, router, http.MethodGet, "/v1/characters/char_alice/visual-identity?world_id=w2", tenantA, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for w2, got %d", rec.Code)
+	}
+	resp = decode[map[string]any](t, rec)
+	if resp["id"] != "vi_world2bbbbbbbb" || resp["world_id"] != "w2" {
+		t.Fatalf("expected w2 identity, got %v", resp)
+	}
+}
+
+func TestGetCharacterVisualIdentityCrossTenantReturns404(t *testing.T) {
+	idents := newStubIdentitiesRepo()
+	idents.registerStyle(tenantA, "sty_ok")
+	router := newCharacterRouter(idents, func() string { return "vi_aaaaaaaaaaaaaaaa" })
+
+	body := map[string]any{
+		"world_id":                "w1",
+		"owner_type":              "character",
+		"owner_id":                "char_alice",
+		"display_name":            "Alice",
+		"canonical_visual_traits": map[string]any{},
+		"style_profile_id":        "sty_ok",
+	}
+	if rec := sendJSON(t, router, http.MethodPost, "/v1/characters/char_alice/visual-identity", tenantA, body); rec.Code != http.StatusOK {
+		t.Fatalf("upsert failed: %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec := sendJSON(t, router, http.MethodGet, "/v1/characters/char_alice/visual-identity?world_id=w1", tenantB, nil)
 	assertError(t, rec, http.StatusNotFound, "not_found")
 }
 
@@ -568,13 +656,51 @@ func TestPlaceVisualIdentityUpsertAndGet(t *testing.T) {
 	if rec := sendJSON(t, router, http.MethodPost, "/v1/places/place_castle/visual-identity", tenantA, body); rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
-	rec := sendJSON(t, router, http.MethodGet, "/v1/places/place_castle/visual-identity", tenantA, nil)
+	rec := sendJSON(t, router, http.MethodGet, "/v1/places/place_castle/visual-identity?world_id=w1", tenantA, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected GET 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
 	resp := decode[map[string]any](t, rec)
 	if resp["owner_type"] != "place" {
 		t.Fatalf("expected owner_type=place, got %v", resp["owner_type"])
+	}
+	if resp["world_id"] != "w1" {
+		t.Fatalf("expected world_id=w1, got %v", resp["world_id"])
+	}
+}
+
+func TestGetPlaceVisualIdentityIsWorldScoped(t *testing.T) {
+	idents := newStubIdentitiesRepo()
+	idents.registerStyle(tenantA, "sty_ok")
+
+	idCounter := 0
+	gen := func() string {
+		idCounter++
+		return []string{"vi_w1placeeeeeeeee", "vi_w2placeeeeeeeee"}[idCounter-1]
+	}
+	router := newCharacterRouter(idents, gen)
+
+	for _, world := range []string{"w1", "w2"} {
+		body := map[string]any{
+			"world_id":                world,
+			"owner_type":              "place",
+			"owner_id":                "place_castle",
+			"display_name":            "Castle " + world,
+			"canonical_visual_traits": map[string]any{},
+			"style_profile_id":        "sty_ok",
+		}
+		if rec := sendJSON(t, router, http.MethodPost, "/v1/places/place_castle/visual-identity", tenantA, body); rec.Code != http.StatusOK {
+			t.Fatalf("upsert %s failed: %d %s", world, rec.Code, rec.Body.String())
+		}
+	}
+
+	rec := sendJSON(t, router, http.MethodGet, "/v1/places/place_castle/visual-identity?world_id=w2", tenantA, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for w2, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	resp := decode[map[string]any](t, rec)
+	if resp["id"] != "vi_w2placeeeeeeeee" || resp["world_id"] != "w2" {
+		t.Fatalf("expected w2 place identity, got %v", resp)
 	}
 }
 

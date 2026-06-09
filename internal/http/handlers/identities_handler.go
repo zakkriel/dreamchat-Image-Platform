@@ -117,7 +117,13 @@ func (h *IdentitiesHandler) get(w http.ResponseWriter, r *http.Request, pathPara
 		return
 	}
 
-	row, err := h.Repo.GetByOwner(r.Context(), principal.TenantID, string(expectedOwner), ownerID)
+	worldID := r.URL.Query().Get("world_id")
+	if worldID == "" {
+		httperr.Write(w, r, http.StatusBadRequest, httperr.CodeInvalidRequest, "world_id query parameter is required")
+		return
+	}
+
+	row, err := h.Repo.GetByOwner(r.Context(), principal.TenantID, worldID, string(expectedOwner), ownerID)
 	if err != nil {
 		if errors.Is(err, identities.ErrNotFound) {
 			httperr.Write(w, r, http.StatusNotFound, httperr.CodeNotFound, "visual identity not found")

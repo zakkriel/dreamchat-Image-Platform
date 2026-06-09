@@ -37,7 +37,7 @@ type noopIdentitiesRepo struct{}
 func (noopIdentitiesRepo) Upsert(context.Context, identities.UpsertParams) (identities.VisualIdentity, error) {
 	return identities.VisualIdentity{ID: "vi_test", CurrentVersion: 1, Status: "active"}, nil
 }
-func (noopIdentitiesRepo) GetByOwner(context.Context, string, string, string) (identities.VisualIdentity, error) {
+func (noopIdentitiesRepo) GetByOwner(context.Context, string, string, string, string) (identities.VisualIdentity, error) {
 	return identities.VisualIdentity{}, identities.ErrNotFound
 }
 func (noopIdentitiesRepo) GetByIDForTenant(context.Context, string, string) (identities.VisualIdentity, error) {

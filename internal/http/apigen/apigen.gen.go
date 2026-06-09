@@ -862,6 +862,9 @@ type PlaceId = string
 // StyleId defines model for StyleId.
 type StyleId = string
 
+// WorldIdQuery defines model for WorldIdQuery.
+type WorldIdQuery = string
+
 // ErrorResponse Standard error body returned for all non-2xx responses. Served with
 // content type `application/problem+json`. `code` is a stable, lowercase
 // machine-readable identifier (e.g. `unauthorized`, `forbidden`,
@@ -949,6 +952,13 @@ type PostV1CharactersCharacterIdGeneratePackParams struct {
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
 }
 
+// GetV1CharactersCharacterIdVisualIdentityParams defines parameters for GetV1CharactersCharacterIdVisualIdentity.
+type GetV1CharactersCharacterIdVisualIdentityParams struct {
+	// WorldId World ID used to scope the owner lookup. Visual identities are unique
+	// by tenant_id + world_id + owner_type + owner_id.
+	WorldId WorldIdQuery `form:"world_id" json:"world_id"`
+}
+
 // PostV1CharactersCharacterIdVisualIdentityParams defines parameters for PostV1CharactersCharacterIdVisualIdentity.
 type PostV1CharactersCharacterIdVisualIdentityParams struct {
 	// IdempotencyKey Client-generated idempotency key. The same key + token + endpoint + body
@@ -963,6 +973,13 @@ type PostV1PlacesPlaceIdGeneratePackParams struct {
 	// hash returns the same job. Same key + different body returns 409.
 	// See `idempotency.md`.
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
+}
+
+// GetV1PlacesPlaceIdVisualIdentityParams defines parameters for GetV1PlacesPlaceIdVisualIdentity.
+type GetV1PlacesPlaceIdVisualIdentityParams struct {
+	// WorldId World ID used to scope the owner lookup. Visual identities are unique
+	// by tenant_id + world_id + owner_type + owner_id.
+	WorldId WorldIdQuery `form:"world_id" json:"world_id"`
 }
 
 // PostV1PlacesPlaceIdVisualIdentityParams defines parameters for PostV1PlacesPlaceIdVisualIdentity.

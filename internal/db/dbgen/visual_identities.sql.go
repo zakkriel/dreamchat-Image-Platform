@@ -106,54 +106,6 @@ func (q *Queries) GetVisualIdentityByOwner(ctx context.Context, arg GetVisualIde
 	return i, err
 }
 
-const getVisualIdentityByOwnerAcrossWorlds = `-- name: GetVisualIdentityByOwnerAcrossWorlds :one
-SELECT id, tenant_id, world_id, owner_type, owner_id, display_name,
-       canonical_visual_traits, allowed_variation, forbidden_drift,
-       style_profile_id, consistency_key, identity_seed,
-       anchor_asset_ids, reference_asset_ids,
-       current_version, current_state_version, status,
-       created_at, updated_at
-FROM visual_identities
-WHERE tenant_id = $1
-  AND owner_type = $2
-  AND owner_id = $3
-ORDER BY updated_at DESC
-LIMIT 1
-`
-
-type GetVisualIdentityByOwnerAcrossWorldsParams struct {
-	TenantID  string `json:"tenant_id"`
-	OwnerType string `json:"owner_type"`
-	OwnerID   string `json:"owner_id"`
-}
-
-func (q *Queries) GetVisualIdentityByOwnerAcrossWorlds(ctx context.Context, arg GetVisualIdentityByOwnerAcrossWorldsParams) (VisualIdentity, error) {
-	row := q.db.QueryRow(ctx, getVisualIdentityByOwnerAcrossWorlds, arg.TenantID, arg.OwnerType, arg.OwnerID)
-	var i VisualIdentity
-	err := row.Scan(
-		&i.ID,
-		&i.TenantID,
-		&i.WorldID,
-		&i.OwnerType,
-		&i.OwnerID,
-		&i.DisplayName,
-		&i.CanonicalVisualTraits,
-		&i.AllowedVariation,
-		&i.ForbiddenDrift,
-		&i.StyleProfileID,
-		&i.ConsistencyKey,
-		&i.IdentitySeed,
-		&i.AnchorAssetIds,
-		&i.ReferenceAssetIds,
-		&i.CurrentVersion,
-		&i.CurrentStateVersion,
-		&i.Status,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
 const getVisualIdentityByOwnerForUpdate = `-- name: GetVisualIdentityByOwnerForUpdate :one
 SELECT id, tenant_id, world_id, owner_type, owner_id, display_name,
        canonical_visual_traits, allowed_variation, forbidden_drift,

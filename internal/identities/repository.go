@@ -56,7 +56,7 @@ type IDGenerator func() string
 
 type Repository interface {
 	Upsert(ctx context.Context, params UpsertParams) (VisualIdentity, error)
-	GetByOwner(ctx context.Context, tenantID, ownerType, ownerID string) (VisualIdentity, error)
+	GetByOwner(ctx context.Context, tenantID, worldID, ownerType, ownerID string) (VisualIdentity, error)
 	GetByIDForTenant(ctx context.Context, id, tenantID string) (VisualIdentity, error)
 }
 
@@ -176,9 +176,10 @@ func (r *pgRepository) Upsert(ctx context.Context, params UpsertParams) (VisualI
 	return rowToDomain(row), nil
 }
 
-func (r *pgRepository) GetByOwner(ctx context.Context, tenantID, ownerType, ownerID string) (VisualIdentity, error) {
-	row, err := dbgen.New(r.pool).GetVisualIdentityByOwnerAcrossWorlds(ctx, dbgen.GetVisualIdentityByOwnerAcrossWorldsParams{
+func (r *pgRepository) GetByOwner(ctx context.Context, tenantID, worldID, ownerType, ownerID string) (VisualIdentity, error) {
+	row, err := dbgen.New(r.pool).GetVisualIdentityByOwner(ctx, dbgen.GetVisualIdentityByOwnerParams{
 		TenantID:  tenantID,
+		WorldID:   worldID,
 		OwnerType: ownerType,
 		OwnerID:   ownerID,
 	})
