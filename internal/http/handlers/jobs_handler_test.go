@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"net/http"
 	"testing"
 	"time"
@@ -9,6 +10,54 @@ import (
 
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
 )
+
+// stubJobsRepo is a tiny in-memory implementation of jobs.Repository used
+// by the GET /v1/jobs/{job_id} tests. Only the read path is exercised.
+type stubJobsRepo struct {
+	byID map[string]jobs.Job
+}
+
+func newStubJobsRepo() *stubJobsRepo {
+	return &stubJobsRepo{byID: map[string]jobs.Job{}}
+}
+
+func (s *stubJobsRepo) Insert(context.Context, jobs.InsertParams) (jobs.Job, error) {
+	return jobs.Job{}, nil
+}
+func (s *stubJobsRepo) GetByIDForTenant(_ context.Context, id, tenantID string) (jobs.Job, error) {
+	job, ok := s.byID[id]
+	if !ok || job.TenantID != tenantID {
+		return jobs.Job{}, jobs.ErrNotFound
+	}
+	return job, nil
+}
+func (s *stubJobsRepo) GetByID(_ context.Context, id string) (jobs.Job, error) {
+	job, ok := s.byID[id]
+	if !ok {
+		return jobs.Job{}, jobs.ErrNotFound
+	}
+	return job, nil
+}
+func (s *stubJobsRepo) MarkRunning(context.Context, string, string) (jobs.Job, error) {
+	return jobs.Job{}, nil
+}
+func (s *stubJobsRepo) MarkCompleted(context.Context, string, string, []string) (jobs.Job, error) {
+	return jobs.Job{}, nil
+}
+func (s *stubJobsRepo) MarkFailed(context.Context, string, string, string, string, bool) (jobs.Job, error) {
+	return jobs.Job{}, nil
+}
+func (s *stubJobsRepo) InsertProviderAttempt(context.Context, jobs.ProviderAttemptInsertParams) (jobs.ProviderAttempt, error) {
+	return jobs.ProviderAttempt{}, nil
+}
+func (s *stubJobsRepo) MarkProviderAttemptSucceeded(context.Context, string, int32) error { return nil }
+func (s *stubJobsRepo) MarkProviderAttemptFailed(context.Context, string, string, string, int32) error {
+	return nil
+}
+func (s *stubJobsRepo) CountProviderAttempts(context.Context, string) (int32, error) { return 0, nil }
+func (s *stubJobsRepo) InsertCostEvent(context.Context, jobs.CostEventInsertParams) error {
+	return nil
+}
 
 func newJobsRouter(repo jobs.Repository) chi.Router {
 	h := NewJobsHandler(repo)

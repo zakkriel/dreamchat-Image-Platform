@@ -6,16 +6,11 @@ import (
 
 	"github.com/zakkriel/drchat-image-platform/internal/config"
 	"github.com/zakkriel/drchat-image-platform/internal/idempotency"
-	"github.com/zakkriel/drchat-image-platform/internal/styles"
 )
 
 func TestIdempotencySameKeySameBodyReturnsSameJob(t *testing.T) {
-	jobsRepo := newStubJobsRepo()
-	stylesRepo := seededStyles()
-	enq := &stubEnqueuer{}
-	idem := newStubIdempRepo()
-
-	router := newArtifactsRouter(jobsRepo, stylesRepo, enq, idem, config.ProviderMock)
+	creator := newStubCreator()
+	router := newArtifactsRouter(creator, seededStyles(), config.ProviderMock)
 	body := map[string]any{
 		"world_id":         "w1",
 		"style_profile_id": "sty_ok",
@@ -41,17 +36,14 @@ func TestIdempotencySameKeySameBodyReturnsSameJob(t *testing.T) {
 	if first.Body.String() != second.Body.String() {
 		t.Fatalf("expected replay body to match original\nfirst=%s\nsecond=%s", first.Body.String(), second.Body.String())
 	}
-	if len(jobsRepo.inserts) != 1 {
-		t.Fatalf("expected exactly one job insert across replays, got %d", len(jobsRepo.inserts))
-	}
-	if len(enq.jobIDs) != 1 {
-		t.Fatalf("expected exactly one enqueue across replays, got %d", len(enq.jobIDs))
+	if len(creator.calls) != 2 {
+		t.Fatalf("expected two service calls (one fresh + one replay), got %d", len(creator.calls))
 	}
 }
 
 func TestIdempotencySameKeyDifferentBodyReturns409(t *testing.T) {
-	jobsRepo := newStubJobsRepo()
-	router := newArtifactsRouter(jobsRepo, seededStyles(), &stubEnqueuer{}, newStubIdempRepo(), config.ProviderMock)
+	creator := newStubCreator()
+	router := newArtifactsRouter(creator, seededStyles(), config.ProviderMock)
 	headers := map[string]string{idempotency.HeaderKey: "phase3-conflict"}
 
 	first := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/artifacts/art_1/generate", tenantA, []string{"images:write"},
@@ -66,8 +58,8 @@ func TestIdempotencySameKeyDifferentBodyReturns409(t *testing.T) {
 }
 
 func TestIdempotencyNoHeaderProducesTwoJobs(t *testing.T) {
-	jobsRepo := newStubJobsRepo()
-	router := newArtifactsRouter(jobsRepo, seededStyles(), &stubEnqueuer{}, newStubIdempRepo(), config.ProviderMock)
+	creator := newStubCreator()
+	router := newArtifactsRouter(creator, seededStyles(), config.ProviderMock)
 	body := map[string]any{"world_id": "w1", "style_profile_id": "sty_ok", "description": "A bronze key"}
 
 	first := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/artifacts/art_1/generate", tenantA, []string{"images:write"}, body, nil)
@@ -75,14 +67,16 @@ func TestIdempotencyNoHeaderProducesTwoJobs(t *testing.T) {
 	if first.Code != http.StatusAccepted || second.Code != http.StatusAccepted {
 		t.Fatalf("expected both 202, got %d / %d", first.Code, second.Code)
 	}
-	if len(jobsRepo.inserts) != 2 {
-		t.Fatalf("expected two job inserts when no idempotency header, got %d", len(jobsRepo.inserts))
+	firstID := decode[map[string]any](t, first)["job_id"]
+	secondID := decode[map[string]any](t, second)["job_id"]
+	if firstID == secondID {
+		t.Fatalf("expected different job ids when no idempotency header, got same %v", firstID)
 	}
 }
 
 func TestIdempotencyReplayResponseShape(t *testing.T) {
-	jobsRepo := newStubJobsRepo()
-	router := newArtifactsRouter(jobsRepo, seededStyles(), &stubEnqueuer{}, newStubIdempRepo(), config.ProviderMock)
+	creator := newStubCreator()
+	router := newArtifactsRouter(creator, seededStyles(), config.ProviderMock)
 	headers := map[string]string{idempotency.HeaderKey: "phase3-shape"}
 	body := map[string]any{"world_id": "w1", "style_profile_id": "sty_ok", "description": "A bronze key"}
 
@@ -99,10 +93,8 @@ func TestIdempotencyReplayResponseShape(t *testing.T) {
 }
 
 func TestIdempotencyDifferentEndpointSameKeyReturns409(t *testing.T) {
-	jobsRepo := newStubJobsRepo()
-	stylesRepo := seededStyles()
-	idem := newStubIdempRepo()
-	router := newArtifactsRouter(jobsRepo, stylesRepo, &stubEnqueuer{}, idem, config.ProviderMock)
+	creator := newStubCreator()
+	router := newArtifactsRouter(creator, seededStyles(), config.ProviderMock)
 	headers := map[string]string{idempotency.HeaderKey: "phase3-endpoint-collision"}
 	body := map[string]any{"world_id": "w1", "style_profile_id": "sty_ok", "description": "A bronze key"}
 
@@ -115,5 +107,3 @@ func TestIdempotencyDifferentEndpointSameKeyReturns409(t *testing.T) {
 	second := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/artifacts/art_2/generate", tenantA, []string{"images:write"}, body, headers)
 	assertError(t, second, http.StatusConflict, "idempotency_conflict")
 }
-
-var _ = styles.ErrNotFound // pin import

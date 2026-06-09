@@ -16,7 +16,6 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/auth"
 	"github.com/zakkriel/drchat-image-platform/internal/config"
-	"github.com/zakkriel/drchat-image-platform/internal/idempotency"
 	"github.com/zakkriel/drchat-image-platform/internal/identities"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
 	"github.com/zakkriel/drchat-image-platform/internal/styles"
@@ -88,18 +87,11 @@ func (noopJobsRepo) InsertCostEvent(context.Context, jobs.CostEventInsertParams)
 	return nil
 }
 
-type noopIdempRepo struct{}
+type noopJobsService struct{}
 
-func (noopIdempRepo) Get(context.Context, string, string) (idempotency.Record, error) {
-	return idempotency.Record{}, idempotency.ErrNotFound
+func (noopJobsService) CreateAndEnqueue(context.Context, jobs.CreateAndEnqueueParams) (jobs.CreateResult, error) {
+	return jobs.CreateResult{JobID: "job_routerstubaaaaaaa"}, nil
 }
-func (noopIdempRepo) Insert(_ context.Context, rec idempotency.Record) (idempotency.Record, bool, error) {
-	return rec, true, nil
-}
-
-type noopEnqueuer struct{}
-
-func (noopEnqueuer) EnqueueGenerateArtifact(context.Context, string) error { return nil }
 
 const (
 	testPepper      = "test-pepper"
@@ -169,8 +161,7 @@ func newPhase2Deps(t *testing.T, repo *stubRepo) Deps {
 
 func withPhase3Stubs(d Deps) Deps {
 	d.JobsRepo = &noopJobsRepo{}
-	d.IdempotencyRepo = &noopIdempRepo{}
-	d.Enqueuer = &noopEnqueuer{}
+	d.JobsService = noopJobsService{}
 	if d.Config != nil {
 		d.Config.ImageProvider = config.ProviderMock
 	}
