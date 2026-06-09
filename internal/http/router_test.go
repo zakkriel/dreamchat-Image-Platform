@@ -13,9 +13,42 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/auth"
 	"github.com/zakkriel/drchat-image-platform/internal/config"
+	"github.com/zakkriel/drchat-image-platform/internal/identities"
+	"github.com/zakkriel/drchat-image-platform/internal/styles"
 )
+
+type noopStylesRepo struct{}
+
+func (noopStylesRepo) ListActiveByTenant(context.Context, string) ([]styles.StyleProfile, error) {
+	return nil, nil
+}
+func (noopStylesRepo) Create(context.Context, styles.CreateParams) (styles.StyleProfile, error) {
+	return styles.StyleProfile{ID: "sty_test", Status: "active", DefaultQualityTier: "standard"}, nil
+}
+func (noopStylesRepo) GetByIDForTenant(context.Context, string, string) (styles.StyleProfile, error) {
+	return styles.StyleProfile{}, styles.ErrNotFound
+}
+
+type noopIdentitiesRepo struct{}
+
+func (noopIdentitiesRepo) Upsert(context.Context, identities.UpsertParams) (identities.VisualIdentity, error) {
+	return identities.VisualIdentity{ID: "vi_test", CurrentVersion: 1, Status: "active"}, nil
+}
+func (noopIdentitiesRepo) GetByOwner(context.Context, string, string, string) (identities.VisualIdentity, error) {
+	return identities.VisualIdentity{}, identities.ErrNotFound
+}
+func (noopIdentitiesRepo) GetByIDForTenant(context.Context, string, string) (identities.VisualIdentity, error) {
+	return identities.VisualIdentity{}, identities.ErrNotFound
+}
+
+type noopAssetsRepo struct{}
+
+func (noopAssetsRepo) GetByIDForTenant(context.Context, string, string) (assets.VisualAsset, error) {
+	return assets.VisualAsset{}, assets.ErrNotFound
+}
 
 const (
 	testPepper      = "test-pepper"
@@ -72,6 +105,15 @@ func newTestDeps(t *testing.T, repo auth.Repository, env config.Environment, doc
 		Config:   &config.Config{Environment: env, APITokenPepper: testPepper, OpenAPIDocsEnabled: docsEnabled},
 		AuthRepo: repo,
 	}
+}
+
+func newPhase2Deps(t *testing.T, repo *stubRepo) Deps {
+	t.Helper()
+	deps := newTestDeps(t, repo, config.EnvDev, true)
+	deps.StylesRepo = &noopStylesRepo{}
+	deps.IdentitiesRepo = &noopIdentitiesRepo{}
+	deps.AssetsRepo = &noopAssetsRepo{}
+	return deps
 }
 
 func TestHealthEndpoint(t *testing.T) {
@@ -213,16 +255,17 @@ func TestV1StylesWithoutAuthReturns401(t *testing.T) {
 	}
 }
 
-func TestV1StylesWithValidAuthReturns404(t *testing.T) {
+func TestV1StylesWithStylesReadScopeReturns200(t *testing.T) {
 	repo := newStubRepo()
-	r := NewRouter(newTestDeps(t, repo, config.EnvDev, true))
+	repo.token.Scopes = []string{"styles:read", "styles:write"}
+	r := NewRouter(newPhase2Deps(t, repo))
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/styles", nil)
 	req.Header.Set("Authorization", "Bearer "+testPrefix+"_"+testSecret)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("expected 404 with valid bearer on unimplemented route, got %d", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
 	select {
 	case id := <-repo.touchCalled:
@@ -231,5 +274,39 @@ func TestV1StylesWithValidAuthReturns404(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatalf("expected touch goroutine to fire within 1s")
+	}
+}
+
+func TestV1StylesRequiresStylesReadScope(t *testing.T) {
+	repo := newStubRepo()
+	repo.token.Scopes = []string{"images:read"}
+	r := NewRouter(newPhase2Deps(t, repo))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/styles", nil)
+	req.Header.Set("Authorization", "Bearer "+testPrefix+"_"+testSecret)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if body["code"] != "forbidden" {
+		t.Fatalf("expected code=forbidden, got %v", body["code"])
+	}
+}
+
+func TestV1VisualIdentityPostRequiresImagesWrite(t *testing.T) {
+	repo := newStubRepo()
+	repo.token.Scopes = []string{"images:read"}
+	r := NewRouter(newPhase2Deps(t, repo))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/characters/char_alice/visual-identity", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer "+testPrefix+"_"+testSecret)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }

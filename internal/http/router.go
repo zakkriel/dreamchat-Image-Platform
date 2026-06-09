@@ -7,18 +7,25 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/auth"
 	"github.com/zakkriel/drchat-image-platform/internal/config"
+	"github.com/zakkriel/drchat-image-platform/internal/http/handlers"
 	"github.com/zakkriel/drchat-image-platform/internal/httperr"
+	"github.com/zakkriel/drchat-image-platform/internal/identities"
+	"github.com/zakkriel/drchat-image-platform/internal/styles"
 )
 
 // Deps bundles the long-lived dependencies the router needs to wire
 // middlewares and handlers. The router does not own these objects; the
 // caller manages their lifecycle.
 type Deps struct {
-	Logger   *slog.Logger
-	Config   *config.Config
-	AuthRepo auth.Repository
+	Logger         *slog.Logger
+	Config         *config.Config
+	AuthRepo       auth.Repository
+	StylesRepo     styles.Repository
+	IdentitiesRepo identities.Repository
+	AssetsRepo     assets.Repository
 }
 
 type HealthResponse struct {
@@ -92,9 +99,9 @@ func notFound(w http.ResponseWriter, r *http.Request) {
 	httperr.Write(w, r, http.StatusNotFound, httperr.CodeNotFound, "not found")
 }
 
-// mountV1 creates the authenticated /v1 group. Phase 1 only exercises the
-// boundary: missing or invalid auth returns 401; valid auth on an
-// unimplemented path falls through to 404.
+// mountV1 creates the authenticated /v1 group and wires Phase 2 endpoints.
+// Missing or invalid auth returns 401; valid auth on an unimplemented path
+// falls through to 404.
 //
 // The catch-all handler is registered explicitly so the auth middleware on
 // the subrouter runs before chi's route lookup decides the path is unknown;
@@ -105,6 +112,37 @@ func mountV1(r chi.Router, deps Deps) {
 	}
 	r.Route("/v1", func(v1 chi.Router) {
 		v1.Use(auth.Middleware(deps.AuthRepo, deps.Config.APITokenPepper, string(deps.Config.Environment)))
+		mountStyles(v1, deps)
+		mountIdentities(v1, deps)
+		mountAssets(v1, deps)
 		v1.Handle("/*", http.HandlerFunc(notFound))
 	})
+}
+
+func mountStyles(v1 chi.Router, deps Deps) {
+	if deps.StylesRepo == nil {
+		return
+	}
+	h := handlers.NewStylesHandler(deps.StylesRepo)
+	v1.With(auth.RequireScopes("styles:read")).Get("/styles", h.List)
+	v1.With(auth.RequireScopes("styles:write")).Post("/styles", h.Create)
+}
+
+func mountIdentities(v1 chi.Router, deps Deps) {
+	if deps.IdentitiesRepo == nil {
+		return
+	}
+	h := handlers.NewIdentitiesHandler(deps.IdentitiesRepo)
+	v1.With(auth.RequireScopes("images:write")).Post("/characters/{character_id}/visual-identity", h.UpsertCharacter)
+	v1.With(auth.RequireScopes("images:read")).Get("/characters/{character_id}/visual-identity", h.GetCharacter)
+	v1.With(auth.RequireScopes("images:write")).Post("/places/{place_id}/visual-identity", h.UpsertPlace)
+	v1.With(auth.RequireScopes("images:read")).Get("/places/{place_id}/visual-identity", h.GetPlace)
+}
+
+func mountAssets(v1 chi.Router, deps Deps) {
+	if deps.AssetsRepo == nil {
+		return
+	}
+	h := handlers.NewAssetsHandler(deps.AssetsRepo)
+	v1.With(auth.RequireScopes("images:read")).Get("/assets/{asset_id}", h.Get)
 }
