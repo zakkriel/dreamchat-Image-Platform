@@ -217,3 +217,50 @@ Format per entry:
 - **Category**: assumption
 - **Note**: The route is `/v1/characters/{character_id}/visual-identity`, not `/v1/worlds/{world_id}/characters/...`. The world is therefore only carried in the request body's `world_id` field. The DB enforces `UNIQUE (tenant_id, world_id, owner_type, owner_id)` so you literally cannot store a visual identity without a world. Phase 2 requires `world_id` on every POST body. This is consistent with the OpenAPI `CreateVisualIdentityRequest` schema which lists `world_id` under `required`.
 
+## 2026-06-09 — Phase 3 implementation (generation pipeline)
+
+### Entry 28
+- **Trigger**: Phase 3 prompt corrections — `IMAGE_PROVIDER=bfl` rejection ordering
+- **Category**: drift / process (resolution)
+- **Note**: The prompt body's "503 provider_unavailable" sentence lives next to the test case ("`IMAGE_PROVIDER=bfl` → `503 provider_unavailable`") but doesn't itself dictate where in the handler that rejection has to happen. The override instructions (correction 1) pin it explicitly: the 503 must fire *before* job insert, *before* idempotency-key write, and *before* enqueue. I lifted the provider check to the very first thing the handler does after the principal+url-param read; the idempotency middleware itself never opens a transaction on the keys table because the handler's writeRecorder records the 503 and the middleware sees `status != 202`, so it skips the Insert call. A test (`TestArtifactGenerateBFLProviderReturns503BeforeAnyWrites`) asserts zero job inserts, zero enqueues, and zero idempotency rows; passes locally.
+
+### Entry 29
+- **Trigger**: Phase 3 prompt corrections — provider_attempts tenant scope
+- **Category**: drift / assumption
+- **Note**: The original Phase 3 brief listed `tenant_id` on `provider_attempts`. The override (correction 2) bins that and derives the tenant scope through `provider_attempts.generation_job_id -> generation_jobs.tenant_id`. The DB schema (`migrations/0001_initial.up.sql`) already matches the override — `provider_attempts` has no `tenant_id` column — so my sqlc query and InsertProviderAttempt params don't pass tenant_id either. Tenant comes through the job row at read time.
+
+### Entry 30
+- **Trigger**: Phase 3 prompt corrections — idempotency replay body reconstruction
+- **Category**: assumption / resolution
+- **Note**: Override correction 3 says replay must reconstruct the 202 from `generation_job_id`, not from a stored body. The `idempotency_keys` table has exactly the columns I need (token_id, key, endpoint, request_hash, generation_job_id, expires_at) — no response_body column, no need to invent one. The middleware reconstructs `{job_id, status: "queued"}` deterministically. The test `TestIdempotencySameKeySameBodyReturnsSameJob` asserts the first and second response bodies are byte-equal, which they are because the structure is fixed and `Status` is constant.
+
+### Entry 31
+- **Trigger**: Phase 3 prompt corrections — endpoint mismatch returns 409
+- **Category**: process (resolution)
+- **Note**: Override correction 4 (same key + different endpoint = 409) is one extra branch in the middleware. The endpoint is keyed as `"<method> <path>"`. Test `TestIdempotencyDifferentEndpointSameKeyReturns409` covers it. The choice of method+path (rather than method+chi pattern) means future endpoints could collide if they happen to share a path prefix but split on a path param — there are no such cases at Phase 3, but flagging it for the day pack/place endpoints land.
+
+### Entry 32
+- **Trigger**: Phase 3 prompt corrections — asynq MaxRetry vs MaxAttempts
+- **Category**: drift / assumption
+- **Note**: Override correction 5 pins MaxAttempts to 3 explicitly. asynq's `asynq.MaxRetry(N)` means "retry up to N times" — so a max of `MaxAttempts=3` total attempts is enqueued as `asynq.MaxRetry(MaxAttempts-1)` = MaxRetry(2). The worker logic also uses `MaxAttempts` to compute `finalAttempt := (retryCount+1) >= MaxAttempts`, which lines up with asynq's zero-based RetryCount: retryCount=0 is attempt 1, retryCount=2 is attempt 3 (the last). Test `TestWorkerProcessProviderErrorOnFinalAttemptMarksFailed` calls Process with retryCount=MaxAttempts-1=2 and asserts the job is marked failed with retryable=false; the early-attempt counterpart asserts the job is *not* marked failed.
+
+### Entry 33
+- **Trigger**: oapi-codegen-generated `GenerationJobAccepted` status type
+- **Category**: surprise
+- **Note**: oapi-codegen turned the `status: { type: string, enum: [queued] }` block on `GenerationJobAccepted` into a typed `GenerationJobAcceptedStatus` constant. My handler responds with a small ad-hoc struct (`{job_id, status: "queued"}`) instead of the codegen type because (a) the codegen type's nullable cost+currency fields would force me to ship explicit zero-value pointers, and (b) the middleware needs to reconstruct that same body for replay and reusing the codegen struct from inside the idempotency package would create an import loop (idempotency would depend on apigen which depends on internal types). The downside is the two structs are kept in sync by hand; an OpenAPI bump that touches the 202 shape will require updates in both places. Flagging because Phase 4 will likely add `estimated_cost_usd` and `cost_reservation_id` and at that point promoting to a shared response type is worthwhile.
+
+### Entry 34
+- **Trigger**: Stub repos vs real Postgres for handler tests
+- **Category**: assumption
+- **Note**: Same call as Phase 2 — handler tests use in-memory stubs (`stubJobsRepo`, `stubIdempRepo`, `stubEnqueuer`); the end-to-end integration test against real Postgres + MinIO lives under `-tags=integration`. The integration test wires the same domain repos the production binary uses, drives `worker.Process` synchronously in the test goroutine (no real Redis), and asserts the visual_assets row carries three S3 URLs. The downside vs a real-asynq test is I don't actually exercise the queue's encode/decode of `TaskPayload` end-to-end; I do test it in unit form by calling `Worker.NewHandlerFunc()`'s decoder in `TestWorkerProcessHappyPath` indirectly.
+
+### Entry 35
+- **Trigger**: Storage Put returns canonical s3:// URL
+- **Category**: assumption
+- **Note**: The brief says `Put` returns a canonical `s3://` URL — not a presigned download URL, not a virtual-host URL. I picked `s3://<bucket>/<key>` because Phase 3 only writes (presigned reads land later) and a vendor-agnostic format means switching from MinIO to AWS S3 doesn't rewrite the rows. The integration test against MinIO asserts the returned string is exactly `s3://<bucket>/<key>` and verifies the object exists via a raw HeadObject call. When Phase X needs reads, a presigner will derive a signed virtual-host URL from the `s3://` value at read time.
+
+### Entry 36
+- **Trigger**: aws-sdk-go-v2 endpoint config in v1.103.x
+- **Category**: surprise
+- **Note**: The endpoint resolver shape in aws-sdk-go-v2 has shifted: older code uses `EndpointResolverWithOptionsFunc`; current docs lean on `s3.Options.BaseEndpoint`. I went with `BaseEndpoint` because it's the per-service knob the SDK now recommends and it doesn't require constructing a custom resolver. Path-style addressing is set via `o.UsePathStyle = true` on the same options closure. This matches `DECISIONS.md` § "Storage config" which already says "phrase config generically so SDK API changes don't ripple through docs."
+
