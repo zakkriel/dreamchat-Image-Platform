@@ -48,9 +48,10 @@ type Config struct {
 }
 
 func Load() (*Config, error) {
+	env := Environment(getEnv("ENVIRONMENT", "dev"))
 	cfg := &Config{
 		AppPort:           getEnvInt("APP_PORT", 8080),
-		Environment:       Environment(getEnv("ENVIRONMENT", "dev")),
+		Environment:       env,
 		LogLevel:          getEnv("LOG_LEVEL", "info"),
 		WorkerConcurrency: getEnvInt("WORKER_CONCURRENCY", 4),
 
@@ -69,13 +70,20 @@ func Load() (*Config, error) {
 		BFLAPIKey:     getEnv("BFL_API_KEY", ""),
 
 		APITokenPepper:     getEnv("API_TOKEN_PEPPER", ""),
-		OpenAPIDocsEnabled: getEnvBool("OPENAPI_DOCS_ENABLED", true),
+		OpenAPIDocsEnabled: getEnvBool("OPENAPI_DOCS_ENABLED", defaultDocsEnabled(env)),
 	}
 
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+// defaultDocsEnabled returns the default for OPENAPI_DOCS_ENABLED when the
+// env var is unset: docs are on by default in dev/test and off by default
+// in live (ADR-015). An explicit env var value overrides this.
+func defaultDocsEnabled(env Environment) bool {
+	return env != EnvLive
 }
 
 func (c *Config) validate() error {
