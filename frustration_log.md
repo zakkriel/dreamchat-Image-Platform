@@ -264,3 +264,35 @@ Format per entry:
 - **Category**: surprise
 - **Note**: The endpoint resolver shape in aws-sdk-go-v2 has shifted: older code uses `EndpointResolverWithOptionsFunc`; current docs lean on `s3.Options.BaseEndpoint`. I went with `BaseEndpoint` because it's the per-service knob the SDK now recommends and it doesn't require constructing a custom resolver. Path-style addressing is set via `o.UsePathStyle = true` on the same options closure. This matches `DECISIONS.md` § "Storage config" which already says "phrase config generically so SDK API changes don't ripple through docs."
 
+## 2026-06-09 — Phase 3 patch (PR #7 review fixes)
+
+### Entry 37
+- **Trigger**: CI `migrations` job failed at `Initialize containers`
+- **Category**: frustration / drift
+- **Note**: The first Phase 3 PR added a `bitnami/minio:2024.10.13` service container with a `curl http://localhost:9000/minio/health/live` healthcheck. The job never made it past container init. Two real problems combined: (a) GitHub Actions' `services:` block has no field for the container command, but the official `minio/minio` image needs `server /data` as argv — bitnami's wrapper does that for you, but its healthcheck shape and entrypoint depend on a curl that isn't always available; (b) Actions runs healthchecks against the container's *internal* network namespace, not the runner's localhost, so `curl localhost:9000` from inside the bitnami container can fail in subtle ways. The fix: drop the services entry entirely and `docker run -d` MinIO as a step. That gives full control over argv (`server /data --console-address ":9001"`) and the readiness check runs from the runner's namespace where port 9000 is mapped, which is well-understood. The bucket gets created via `mc mb`. Adds the `minio logs on failure` step so the next time something breaks we get container logs in the run output.
+
+### Entry 38
+- **Trigger**: `visual_assets.model_id` FK to `provider_models(id)`
+- **Category**: surprise / drift
+- **Note**: The Phase 3 worker set `visual_assets.model_id = "mock-v1"` (from `provider.Capabilities().ModelName`). The `visual_assets.model_id` column has a FK to `provider_models(id)`. Phase 3 doesn't seed `provider_models` rows, so the FK would have rejected every successful generation insert at integration time. The narrow fix: stop writing `model_id` in Phase 3, leave it NULL. The provider model catalog comes with Phase 4 (provider routing + price book), at which point the FK will be writeable. The integration test now asserts `model_id IS NULL` after a successful generation so we don't silently re-introduce the FK bug.
+
+### Entry 39
+- **Trigger**: Idempotency middleware was not actually first-writer-wins
+- **Category**: drift / process (resolution)
+- **Note**: The first Phase 3 PR put idempotency in a chi middleware that ran the handler first, then wrote the idempotency_keys row on 202. Two concurrent requests with the same `(token_id, key)` could both miss the existing row, both create generation_jobs, both enqueue tasks, and only then would one idempotency insert win. The contract requires the opposite. The fix moves the create+key+enqueue into a single `jobs.Service.CreateAndEnqueue` flow that wraps the generation_jobs insert and the idempotency_keys insert in one transaction. ON CONFLICT DO NOTHING on `(token_id, key)` makes the loser of a race read no rows back from its idempotency insert; the loser rolls back its speculative generation_jobs row, then GETs the winner's row from a fresh connection and reports the winner's job_id (or 409 on body/endpoint mismatch). The middleware is gone. The package `internal/idempotency` is now just the `Idempotency-Key` constant and the TTL constant — concrete repository wiring will return when sweep/admin code needs it.
+
+### Entry 40
+- **Trigger**: Enqueue failure could orphan a queued generation_jobs row
+- **Category**: drift / process (resolution)
+- **Note**: Original Phase 3: insert generation_jobs (status=queued), then call asynq Enqueue. If the queue was unreachable, the row sat at status=queued forever and nothing ever ran. New behavior: `Service.enqueue` calls `MarkGenerationJobFailed` with `error_code=enqueue_failed` and `retryable=false` when the queue rejects the task, then returns `jobs.ErrEnqueueFailed` to the handler, which renders 500. Replays of the same Idempotency-Key will return 202 with the failed job_id (the GET endpoint surfaces the real status) — that's coherent with "I told you the job was queued and now it isn't"; the client picks a new key for a fresh attempt. Note: if marking the job failed *also* fails (e.g. DB unreachable), the wrapped error carries both messages but the handler still gets `ErrEnqueueFailed` so the response is 500. Integration test `TestEnqueueFailureMarksJobFailedAndReturns500` covers this end-to-end.
+
+### Entry 41
+- **Trigger**: pgxpool default `MaxConns` too small for the 8-way concurrent idempotency test
+- **Category**: assumption
+- **Note**: pgxpool's `MaxConns` defaults to `max(NumCPU, 4)`. CI runners typically have 2 CPUs so the default would be 4, which is below my N=8 concurrent goroutines. Each goroutine holds a connection across its transaction (the tx outlives the InsertIdempotencyKey call), so under starvation half the requests would block waiting for a conn before they ever started a tx. Bumped the test-pool `MaxConns` to 16 in `openTestPool`. Not a production concern — the API pool gets configured by the caller and the tx is short — but worth flagging.
+
+### Entry 42
+- **Trigger**: Decoding raw body in the handler vs. using the existing `readJSONBody` helper
+- **Category**: assumption
+- **Note**: `readJSONBody` reads the body and decodes in one shot; the idempotency hash needs the raw bytes *and* the decoded struct. Added a `readRawJSONBody` + `decodeFromRaw` pair so the new artifacts handler can hash the bytes (used only when `Idempotency-Key` is present) and still get the typed struct. Keeps the body-level `tenant_id` rejection in one place (`rejectBodyTenantID`). The existing styles/identities handlers continue to use the original `readJSONBody`.
+
