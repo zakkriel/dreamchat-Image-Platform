@@ -6,22 +6,105 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/zakkriel/drchat-image-platform/internal/auth"
+	"github.com/zakkriel/drchat-image-platform/internal/config"
+	"github.com/zakkriel/drchat-image-platform/internal/httperr"
 )
+
+// Deps bundles the long-lived dependencies the router needs to wire
+// middlewares and handlers. The router does not own these objects; the
+// caller manages their lifecycle.
+type Deps struct {
+	Logger   *slog.Logger
+	Config   *config.Config
+	AuthRepo auth.Repository
+}
 
 type HealthResponse struct {
 	Status string `json:"status"`
 }
 
-func NewRouter(logger *slog.Logger) *chi.Mux {
+const scopeAdminRead = "admin:read"
+
+func NewRouter(deps Deps) *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(RequestID)
-	r.Use(AccessLog(logger))
+	r.Use(AccessLog(deps.Logger))
 
 	r.Get("/health", healthHandler)
+
+	mountDocs(r, deps)
+	mountV1(r, deps)
+
 	return r
 }
 
-func healthHandler(w http.ResponseWriter, r *http.Request) {
+func healthHandler(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(HealthResponse{Status: "ok"})
+}
+
+// mountDocs wires GET /openapi.json and GET /docs per ADR-015.
+//
+// Gating:
+//
+//   - dev/test environments serve docs publicly.
+//   - live with OPENAPI_DOCS_ENABLED=false hides both endpoints behind 404.
+//   - live with OPENAPI_DOCS_ENABLED=true requires bearer auth with the
+//     admin:read scope; failures return 404 (not 401) to avoid leaking the
+//     existence of the docs surface.
+func mountDocs(r chi.Router, deps Deps) {
+	enabled := deps.Config.OpenAPIDocsEnabled
+	env := deps.Config.Environment
+
+	if env == config.EnvLive && !enabled {
+		return
+	}
+
+	if env == config.EnvLive {
+		r.Get("/openapi.json", gatedDocs(deps, openAPIJSONHandler))
+		r.Get("/docs", gatedDocs(deps, docsHandler))
+		return
+	}
+
+	r.Get("/openapi.json", openAPIJSONHandler)
+	r.Get("/docs", docsHandler)
+}
+
+// gatedDocs verifies the bearer token inline and serves 404 on any auth
+// failure or missing admin:read scope, so the docs surface is invisible to
+// callers without the right credentials.
+func gatedDocs(deps Deps, next http.HandlerFunc) http.HandlerFunc {
+	pepper := deps.Config.APITokenPepper
+	env := string(deps.Config.Environment)
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, rej := auth.Verify(r.Context(), deps.AuthRepo, r.Header.Get("Authorization"), pepper, env)
+		if rej != nil || !principal.HasScope(scopeAdminRead) {
+			notFound(w, r)
+			return
+		}
+		next(w, r)
+	}
+}
+
+func notFound(w http.ResponseWriter, r *http.Request) {
+	httperr.Write(w, r, http.StatusNotFound, httperr.CodeNotFound, "not found")
+}
+
+// mountV1 creates the authenticated /v1 group. Phase 1 only exercises the
+// boundary: missing or invalid auth returns 401; valid auth on an
+// unimplemented path falls through to 404.
+//
+// The catch-all handler is registered explicitly so the auth middleware on
+// the subrouter runs before chi's route lookup decides the path is unknown;
+// chi only runs subrouter middleware once a matching route is selected.
+func mountV1(r chi.Router, deps Deps) {
+	if deps.AuthRepo == nil {
+		return
+	}
+	r.Route("/v1", func(v1 chi.Router) {
+		v1.Use(auth.Middleware(deps.AuthRepo, deps.Config.APITokenPepper, string(deps.Config.Environment)))
+		v1.Handle("/*", http.HandlerFunc(notFound))
+	})
 }

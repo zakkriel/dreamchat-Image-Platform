@@ -10,6 +10,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/zakkriel/drchat-image-platform/internal/auth"
 	"github.com/zakkriel/drchat-image-platform/internal/config"
 	apphttp "github.com/zakkriel/drchat-image-platform/internal/http"
 	"github.com/zakkriel/drchat-image-platform/internal/telemetry"
@@ -18,7 +21,6 @@ import (
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
-		// Logger isn't built yet; print and exit cleanly.
 		println("config error:", err.Error())
 		os.Exit(1)
 	}
@@ -30,7 +32,20 @@ func main() {
 		"image_provider", string(cfg.ImageProvider),
 	)
 
-	router := apphttp.NewRouter(logger)
+	pool, err := openPool(cfg.PostgresDSN)
+	if err != nil {
+		logger.Error("postgres connect failed", "error", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
+
+	deps := apphttp.Deps{
+		Logger:   logger,
+		Config:   cfg,
+		AuthRepo: auth.NewRepository(pool),
+	}
+
+	router := apphttp.NewRouter(deps)
 	srv := &stdhttp.Server{
 		Addr:              ":" + strconv.Itoa(cfg.AppPort),
 		Handler:           router,
@@ -64,4 +79,18 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("api stopped")
+}
+
+func openPool(dsn string) (*pgxpool.Pool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		return nil, err
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return pool, nil
 }

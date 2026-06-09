@@ -19,6 +19,7 @@ func RequestID(next http.Handler) http.Handler {
 			id = uuid.NewString()
 		}
 		ctx := telemetry.ContextWithRequestID(r.Context(), id)
+		ctx = telemetry.ContextWithRequestLog(ctx, &telemetry.RequestLog{})
 		w.Header().Set(HeaderRequestID, id)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
@@ -40,12 +41,15 @@ func AccessLog(logger *slog.Logger) func(http.Handler) http.Handler {
 			start := time.Now()
 			rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 			next.ServeHTTP(rec, r)
+			tenantID, tokenID := telemetry.RequestLogFromContext(r.Context()).Identity()
 			logger.LogAttrs(r.Context(), slog.LevelInfo, "http_request",
 				slog.String("request_id", telemetry.RequestIDFromContext(r.Context())),
 				slog.String("method", r.Method),
 				slog.String("path", r.URL.Path),
 				slog.Int("status", rec.status),
 				slog.Int64("duration_ms", time.Since(start).Milliseconds()),
+				slog.String("tenant_id", tenantID),
+				slog.String("token_id", tokenID),
 			)
 		})
 	}

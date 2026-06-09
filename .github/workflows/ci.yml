@@ -19,6 +19,17 @@ jobs:
           go-version: "1.25"
           cache: true
 
+      - name: install sqlc
+        run: |
+          curl -fsSL https://github.com/sqlc-dev/sqlc/releases/download/v1.27.0/sqlc_1.27.0_linux_amd64.tar.gz \
+            | sudo tar -xz -C /usr/local/bin sqlc
+
+      - name: make generate
+        run: make generate
+
+      - name: assert generated files are committed
+        run: git diff --exit-code
+
       - name: go vet
         run: go vet ./...
 
@@ -56,7 +67,7 @@ jobs:
       - name: install sqlc
         run: |
           curl -fsSL https://github.com/sqlc-dev/sqlc/releases/download/v1.27.0/sqlc_1.27.0_linux_amd64.tar.gz \
-            | tar -xz -C /usr/local/bin sqlc
+            | sudo tar -xz -C /usr/local/bin sqlc
       - name: sqlc vet
         run: sqlc vet
 
