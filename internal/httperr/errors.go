@@ -12,10 +12,12 @@ import (
 )
 
 const (
-	CodeUnauthorized  = "unauthorized"
-	CodeForbidden     = "forbidden"
-	CodeNotFound      = "not_found"
-	CodeInternalError = "internal_error"
+	CodeUnauthorized        = "unauthorized"
+	CodeForbidden           = "forbidden"
+	CodeNotFound            = "not_found"
+	CodeInternalError       = "internal_error"
+	CodeInvalidRequest      = "invalid_request"
+	CodeInvalidStyleProfile = "invalid_style_profile"
 )
 
 type Body struct {

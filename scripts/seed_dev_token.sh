@@ -15,7 +15,7 @@ TOKEN_ID="tok_$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 16)"
 
 docker compose exec -T postgres psql -U image_platform -d image_platform -v ON_ERROR_STOP=1 <<SQL
 INSERT INTO api_tokens (id, tenant_id, token_prefix, token_hash, name, owner_type, scopes, environment, status)
-VALUES ('${TOKEN_ID}', '${TENANT_ID}', '${PREFIX}', '${HASH}', '${TOKEN_NAME}', 'tenant', ARRAY['images:read','images:write'], 'dev', 'active');
+VALUES ('${TOKEN_ID}', '${TENANT_ID}', '${PREFIX}', '${HASH}', '${TOKEN_NAME}', 'tenant', ARRAY['images:read','images:write','styles:read','styles:write'], 'dev', 'active');
 SQL
 
 cat <<EOF
@@ -25,7 +25,7 @@ Dev token created. The raw value is printed ONCE — save it now.
   Token ID    : ${TOKEN_ID}
   Tenant ID   : ${TENANT_ID}
   Prefix      : ${PREFIX}
-  Scopes      : images:read, images:write
+  Scopes      : images:read, images:write, styles:read, styles:write
   Environment : dev
 
   Authorization: Bearer ${RAW}

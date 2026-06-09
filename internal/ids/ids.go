@@ -1,0 +1,30 @@
+// Package ids generates opaque, slug-style identifiers for platform
+// entities. IDs are minted at the API layer (never by the database) so that
+// repository inserts can use a known ID before the row exists.
+package ids
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+)
+
+const (
+	PrefixStyleProfile   = "sty"
+	PrefixVisualIdentity = "vi"
+)
+
+// New returns an opaque ID of the form "<prefix>_<16 hex chars>".
+func New(prefix string) string {
+	return prefix + "_" + randomHex(8)
+}
+
+func NewStyleProfileID() string   { return New(PrefixStyleProfile) }
+func NewVisualIdentityID() string { return New(PrefixVisualIdentity) }
+
+func randomHex(byteLen int) string {
+	b := make([]byte, byteLen)
+	if _, err := rand.Read(b); err != nil {
+		panic("ids: crypto/rand failed: " + err.Error())
+	}
+	return hex.EncodeToString(b)
+}

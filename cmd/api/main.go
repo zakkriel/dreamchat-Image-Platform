@@ -12,9 +12,12 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/auth"
 	"github.com/zakkriel/drchat-image-platform/internal/config"
 	apphttp "github.com/zakkriel/drchat-image-platform/internal/http"
+	"github.com/zakkriel/drchat-image-platform/internal/identities"
+	"github.com/zakkriel/drchat-image-platform/internal/styles"
 	"github.com/zakkriel/drchat-image-platform/internal/telemetry"
 )
 
@@ -40,9 +43,12 @@ func main() {
 	defer pool.Close()
 
 	deps := apphttp.Deps{
-		Logger:   logger,
-		Config:   cfg,
-		AuthRepo: auth.NewRepository(pool),
+		Logger:         logger,
+		Config:         cfg,
+		AuthRepo:       auth.NewRepository(pool),
+		StylesRepo:     styles.NewRepository(pool),
+		IdentitiesRepo: identities.NewRepository(pool),
+		AssetsRepo:     assets.NewRepository(pool),
 	}
 
 	router := apphttp.NewRouter(deps)
