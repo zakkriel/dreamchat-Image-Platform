@@ -216,6 +216,26 @@ func (s *stubAssetsRepo) GetByIDForTenant(_ context.Context, id, tenantID string
 	return row, nil
 }
 
+func (s *stubAssetsRepo) Insert(_ context.Context, params assets.InsertParams) (assets.VisualAsset, error) {
+	asset := assets.VisualAsset{
+		ID:           params.ID,
+		TenantID:     params.TenantID,
+		WorldID:      params.WorldID,
+		AssetType:    params.AssetType,
+		VariantKey:   params.VariantKey,
+		Status:       "ready",
+		LowResUrl:    params.LowResUrl,
+		HighResUrl:   params.HighResUrl,
+		ThumbnailUrl: params.ThumbnailUrl,
+		ProviderID:   params.ProviderID,
+		ModelID:      params.ModelID,
+		PromptHash:   params.PromptHash,
+		Seed:         params.Seed,
+	}
+	s.byID[params.ID] = asset
+	return asset, nil
+}
+
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------

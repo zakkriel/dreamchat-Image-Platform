@@ -9,8 +9,13 @@ import (
 )
 
 const (
-	PrefixStyleProfile   = "sty"
-	PrefixVisualIdentity = "vi"
+	PrefixStyleProfile    = "sty"
+	PrefixVisualIdentity  = "vi"
+	PrefixGenerationJob   = "job"
+	PrefixVisualAsset     = "asset"
+	PrefixProviderAttempt = "att"
+	PrefixCostEvent       = "ce"
+	PrefixIdempotencyKey  = "idem"
 )
 
 // New returns an opaque ID of the form "<prefix>_<16 hex chars>".
@@ -18,8 +23,13 @@ func New(prefix string) string {
 	return prefix + "_" + randomHex(8)
 }
 
-func NewStyleProfileID() string   { return New(PrefixStyleProfile) }
-func NewVisualIdentityID() string { return New(PrefixVisualIdentity) }
+func NewStyleProfileID() string    { return New(PrefixStyleProfile) }
+func NewVisualIdentityID() string  { return New(PrefixVisualIdentity) }
+func NewGenerationJobID() string   { return New(PrefixGenerationJob) }
+func NewVisualAssetID() string     { return New(PrefixVisualAsset) }
+func NewProviderAttemptID() string { return New(PrefixProviderAttempt) }
+func NewCostEventID() string       { return New(PrefixCostEvent) }
+func NewIdempotencyKeyID() string  { return New(PrefixIdempotencyKey) }
 
 func randomHex(byteLen int) string {
 	b := make([]byte, byteLen)

@@ -9,16 +9,31 @@ import (
 )
 
 type Querier interface {
+	CountProviderAttemptsForJob(ctx context.Context, generationJobID string) (int32, error)
 	CreateStyleProfile(ctx context.Context, arg CreateStyleProfileParams) (StyleProfile, error)
+	DeleteExpiredIdempotencyKeys(ctx context.Context) error
 	GetActiveAPITokenByPrefix(ctx context.Context, tokenPrefix string) (GetActiveAPITokenByPrefixRow, error)
+	GetGenerationJobByID(ctx context.Context, arg GetGenerationJobByIDParams) (GenerationJob, error)
+	GetGenerationJobByIDUnchecked(ctx context.Context, id string) (GenerationJob, error)
+	GetIdempotencyKey(ctx context.Context, arg GetIdempotencyKeyParams) (IdempotencyKey, error)
 	GetStyleProfileByID(ctx context.Context, arg GetStyleProfileByIDParams) (StyleProfile, error)
 	GetVisualAssetByID(ctx context.Context, arg GetVisualAssetByIDParams) (VisualAsset, error)
 	GetVisualIdentityByID(ctx context.Context, arg GetVisualIdentityByIDParams) (VisualIdentity, error)
 	GetVisualIdentityByOwner(ctx context.Context, arg GetVisualIdentityByOwnerParams) (VisualIdentity, error)
 	GetVisualIdentityByOwnerForUpdate(ctx context.Context, arg GetVisualIdentityByOwnerForUpdateParams) (VisualIdentity, error)
+	InsertGenerationCostEvent(ctx context.Context, arg InsertGenerationCostEventParams) error
+	InsertGenerationJob(ctx context.Context, arg InsertGenerationJobParams) (GenerationJob, error)
+	InsertIdempotencyKey(ctx context.Context, arg InsertIdempotencyKeyParams) (IdempotencyKey, error)
+	InsertProviderAttempt(ctx context.Context, arg InsertProviderAttemptParams) (ProviderAttempt, error)
+	InsertVisualAsset(ctx context.Context, arg InsertVisualAssetParams) (VisualAsset, error)
 	InsertVisualIdentity(ctx context.Context, arg InsertVisualIdentityParams) (VisualIdentity, error)
 	InsertVisualIdentityVersion(ctx context.Context, arg InsertVisualIdentityVersionParams) error
 	ListStyleProfilesByTenant(ctx context.Context, tenantID string) ([]StyleProfile, error)
+	MarkGenerationJobCompleted(ctx context.Context, arg MarkGenerationJobCompletedParams) (GenerationJob, error)
+	MarkGenerationJobFailed(ctx context.Context, arg MarkGenerationJobFailedParams) (GenerationJob, error)
+	MarkGenerationJobRunning(ctx context.Context, arg MarkGenerationJobRunningParams) (GenerationJob, error)
+	MarkProviderAttemptFailed(ctx context.Context, arg MarkProviderAttemptFailedParams) error
+	MarkProviderAttemptSucceeded(ctx context.Context, arg MarkProviderAttemptSucceededParams) error
 	TouchAPITokenLastUsed(ctx context.Context, id string) error
 	UpdateVisualIdentityWithVersionBump(ctx context.Context, arg UpdateVisualIdentityWithVersionBumpParams) (VisualIdentity, error)
 }

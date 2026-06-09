@@ -217,3 +217,82 @@ Format per entry:
 - **Category**: assumption
 - **Note**: The route is `/v1/characters/{character_id}/visual-identity`, not `/v1/worlds/{world_id}/characters/...`. The world is therefore only carried in the request body's `world_id` field. The DB enforces `UNIQUE (tenant_id, world_id, owner_type, owner_id)` so you literally cannot store a visual identity without a world. Phase 2 requires `world_id` on every POST body. This is consistent with the OpenAPI `CreateVisualIdentityRequest` schema which lists `world_id` under `required`.
 
+## 2026-06-09 — Phase 3 implementation (generation pipeline)
+
+### Entry 28
+- **Trigger**: Phase 3 prompt corrections — `IMAGE_PROVIDER=bfl` rejection ordering
+- **Category**: drift / process (resolution)
+- **Note**: The prompt body's "503 provider_unavailable" sentence lives next to the test case ("`IMAGE_PROVIDER=bfl` → `503 provider_unavailable`") but doesn't itself dictate where in the handler that rejection has to happen. The override instructions (correction 1) pin it explicitly: the 503 must fire *before* job insert, *before* idempotency-key write, and *before* enqueue. I lifted the provider check to the very first thing the handler does after the principal+url-param read; the idempotency middleware itself never opens a transaction on the keys table because the handler's writeRecorder records the 503 and the middleware sees `status != 202`, so it skips the Insert call. A test (`TestArtifactGenerateBFLProviderReturns503BeforeAnyWrites`) asserts zero job inserts, zero enqueues, and zero idempotency rows; passes locally.
+
+### Entry 29
+- **Trigger**: Phase 3 prompt corrections — provider_attempts tenant scope
+- **Category**: drift / assumption
+- **Note**: The original Phase 3 brief listed `tenant_id` on `provider_attempts`. The override (correction 2) bins that and derives the tenant scope through `provider_attempts.generation_job_id -> generation_jobs.tenant_id`. The DB schema (`migrations/0001_initial.up.sql`) already matches the override — `provider_attempts` has no `tenant_id` column — so my sqlc query and InsertProviderAttempt params don't pass tenant_id either. Tenant comes through the job row at read time.
+
+### Entry 30
+- **Trigger**: Phase 3 prompt corrections — idempotency replay body reconstruction
+- **Category**: assumption / resolution
+- **Note**: Override correction 3 says replay must reconstruct the 202 from `generation_job_id`, not from a stored body. The `idempotency_keys` table has exactly the columns I need (token_id, key, endpoint, request_hash, generation_job_id, expires_at) — no response_body column, no need to invent one. The middleware reconstructs `{job_id, status: "queued"}` deterministically. The test `TestIdempotencySameKeySameBodyReturnsSameJob` asserts the first and second response bodies are byte-equal, which they are because the structure is fixed and `Status` is constant.
+
+### Entry 31
+- **Trigger**: Phase 3 prompt corrections — endpoint mismatch returns 409
+- **Category**: process (resolution)
+- **Note**: Override correction 4 (same key + different endpoint = 409) is one extra branch in the middleware. The endpoint is keyed as `"<method> <path>"`. Test `TestIdempotencyDifferentEndpointSameKeyReturns409` covers it. The choice of method+path (rather than method+chi pattern) means future endpoints could collide if they happen to share a path prefix but split on a path param — there are no such cases at Phase 3, but flagging it for the day pack/place endpoints land.
+
+### Entry 32
+- **Trigger**: Phase 3 prompt corrections — asynq MaxRetry vs MaxAttempts
+- **Category**: drift / assumption
+- **Note**: Override correction 5 pins MaxAttempts to 3 explicitly. asynq's `asynq.MaxRetry(N)` means "retry up to N times" — so a max of `MaxAttempts=3` total attempts is enqueued as `asynq.MaxRetry(MaxAttempts-1)` = MaxRetry(2). The worker logic also uses `MaxAttempts` to compute `finalAttempt := (retryCount+1) >= MaxAttempts`, which lines up with asynq's zero-based RetryCount: retryCount=0 is attempt 1, retryCount=2 is attempt 3 (the last). Test `TestWorkerProcessProviderErrorOnFinalAttemptMarksFailed` calls Process with retryCount=MaxAttempts-1=2 and asserts the job is marked failed with retryable=false; the early-attempt counterpart asserts the job is *not* marked failed.
+
+### Entry 33
+- **Trigger**: oapi-codegen-generated `GenerationJobAccepted` status type
+- **Category**: surprise
+- **Note**: oapi-codegen turned the `status: { type: string, enum: [queued] }` block on `GenerationJobAccepted` into a typed `GenerationJobAcceptedStatus` constant. My handler responds with a small ad-hoc struct (`{job_id, status: "queued"}`) instead of the codegen type because (a) the codegen type's nullable cost+currency fields would force me to ship explicit zero-value pointers, and (b) the middleware needs to reconstruct that same body for replay and reusing the codegen struct from inside the idempotency package would create an import loop (idempotency would depend on apigen which depends on internal types). The downside is the two structs are kept in sync by hand; an OpenAPI bump that touches the 202 shape will require updates in both places. Flagging because Phase 4 will likely add `estimated_cost_usd` and `cost_reservation_id` and at that point promoting to a shared response type is worthwhile.
+
+### Entry 34
+- **Trigger**: Stub repos vs real Postgres for handler tests
+- **Category**: assumption
+- **Note**: Same call as Phase 2 — handler tests use in-memory stubs (`stubJobsRepo`, `stubIdempRepo`, `stubEnqueuer`); the end-to-end integration test against real Postgres + MinIO lives under `-tags=integration`. The integration test wires the same domain repos the production binary uses, drives `worker.Process` synchronously in the test goroutine (no real Redis), and asserts the visual_assets row carries three S3 URLs. The downside vs a real-asynq test is I don't actually exercise the queue's encode/decode of `TaskPayload` end-to-end; I do test it in unit form by calling `Worker.NewHandlerFunc()`'s decoder in `TestWorkerProcessHappyPath` indirectly.
+
+### Entry 35
+- **Trigger**: Storage Put returns canonical s3:// URL
+- **Category**: assumption
+- **Note**: The brief says `Put` returns a canonical `s3://` URL — not a presigned download URL, not a virtual-host URL. I picked `s3://<bucket>/<key>` because Phase 3 only writes (presigned reads land later) and a vendor-agnostic format means switching from MinIO to AWS S3 doesn't rewrite the rows. The integration test against MinIO asserts the returned string is exactly `s3://<bucket>/<key>` and verifies the object exists via a raw HeadObject call. When Phase X needs reads, a presigner will derive a signed virtual-host URL from the `s3://` value at read time.
+
+### Entry 36
+- **Trigger**: aws-sdk-go-v2 endpoint config in v1.103.x
+- **Category**: surprise
+- **Note**: The endpoint resolver shape in aws-sdk-go-v2 has shifted: older code uses `EndpointResolverWithOptionsFunc`; current docs lean on `s3.Options.BaseEndpoint`. I went with `BaseEndpoint` because it's the per-service knob the SDK now recommends and it doesn't require constructing a custom resolver. Path-style addressing is set via `o.UsePathStyle = true` on the same options closure. This matches `DECISIONS.md` § "Storage config" which already says "phrase config generically so SDK API changes don't ripple through docs."
+
+## 2026-06-09 — Phase 3 patch (PR #7 review fixes)
+
+### Entry 37
+- **Trigger**: CI `migrations` job failed at `Initialize containers`
+- **Category**: frustration / drift
+- **Note**: The first Phase 3 PR added a `bitnami/minio:2024.10.13` service container with a `curl http://localhost:9000/minio/health/live` healthcheck. The job never made it past container init. Two real problems combined: (a) GitHub Actions' `services:` block has no field for the container command, but the official `minio/minio` image needs `server /data` as argv — bitnami's wrapper does that for you, but its healthcheck shape and entrypoint depend on a curl that isn't always available; (b) Actions runs healthchecks against the container's *internal* network namespace, not the runner's localhost, so `curl localhost:9000` from inside the bitnami container can fail in subtle ways. The fix: drop the services entry entirely and `docker run -d` MinIO as a step. That gives full control over argv (`server /data --console-address ":9001"`) and the readiness check runs from the runner's namespace where port 9000 is mapped, which is well-understood. The bucket gets created via `mc mb`. Adds the `minio logs on failure` step so the next time something breaks we get container logs in the run output.
+
+### Entry 38
+- **Trigger**: `visual_assets.model_id` FK to `provider_models(id)`
+- **Category**: surprise / drift
+- **Note**: The Phase 3 worker set `visual_assets.model_id = "mock-v1"` (from `provider.Capabilities().ModelName`). The `visual_assets.model_id` column has a FK to `provider_models(id)`. Phase 3 doesn't seed `provider_models` rows, so the FK would have rejected every successful generation insert at integration time. The narrow fix: stop writing `model_id` in Phase 3, leave it NULL. The provider model catalog comes with Phase 4 (provider routing + price book), at which point the FK will be writeable. The integration test now asserts `model_id IS NULL` after a successful generation so we don't silently re-introduce the FK bug.
+
+### Entry 39
+- **Trigger**: Idempotency middleware was not actually first-writer-wins
+- **Category**: drift / process (resolution)
+- **Note**: The first Phase 3 PR put idempotency in a chi middleware that ran the handler first, then wrote the idempotency_keys row on 202. Two concurrent requests with the same `(token_id, key)` could both miss the existing row, both create generation_jobs, both enqueue tasks, and only then would one idempotency insert win. The contract requires the opposite. The fix moves the create+key+enqueue into a single `jobs.Service.CreateAndEnqueue` flow that wraps the generation_jobs insert and the idempotency_keys insert in one transaction. ON CONFLICT DO NOTHING on `(token_id, key)` makes the loser of a race read no rows back from its idempotency insert; the loser rolls back its speculative generation_jobs row, then GETs the winner's row from a fresh connection and reports the winner's job_id (or 409 on body/endpoint mismatch). The middleware is gone. The package `internal/idempotency` is now just the `Idempotency-Key` constant and the TTL constant — concrete repository wiring will return when sweep/admin code needs it.
+
+### Entry 40
+- **Trigger**: Enqueue failure could orphan a queued generation_jobs row
+- **Category**: drift / process (resolution)
+- **Note**: Original Phase 3: insert generation_jobs (status=queued), then call asynq Enqueue. If the queue was unreachable, the row sat at status=queued forever and nothing ever ran. New behavior: `Service.enqueue` calls `MarkGenerationJobFailed` with `error_code=enqueue_failed` and `retryable=false` when the queue rejects the task, then returns `jobs.ErrEnqueueFailed` to the handler, which renders 500. Replays of the same Idempotency-Key will return 202 with the failed job_id (the GET endpoint surfaces the real status) — that's coherent with "I told you the job was queued and now it isn't"; the client picks a new key for a fresh attempt. Note: if marking the job failed *also* fails (e.g. DB unreachable), the wrapped error carries both messages but the handler still gets `ErrEnqueueFailed` so the response is 500. Integration test `TestEnqueueFailureMarksJobFailedAndReturns500` covers this end-to-end.
+
+### Entry 41
+- **Trigger**: pgxpool default `MaxConns` too small for the 8-way concurrent idempotency test
+- **Category**: assumption
+- **Note**: pgxpool's `MaxConns` defaults to `max(NumCPU, 4)`. CI runners typically have 2 CPUs so the default would be 4, which is below my N=8 concurrent goroutines. Each goroutine holds a connection across its transaction (the tx outlives the InsertIdempotencyKey call), so under starvation half the requests would block waiting for a conn before they ever started a tx. Bumped the test-pool `MaxConns` to 16 in `openTestPool`. Not a production concern — the API pool gets configured by the caller and the tx is short — but worth flagging.
+
+### Entry 42
+- **Trigger**: Decoding raw body in the handler vs. using the existing `readJSONBody` helper
+- **Category**: assumption
+- **Note**: `readJSONBody` reads the body and decodes in one shot; the idempotency hash needs the raw bytes *and* the decoded struct. Added a `readRawJSONBody` + `decodeFromRaw` pair so the new artifacts handler can hash the bytes (used only when `Idempotency-Key` is present) and still get the typed struct. Keeps the body-level `tenant_id` rejection in one place (`rejectBodyTenantID`). The existing styles/identities handlers continue to use the original `readJSONBody`.
+

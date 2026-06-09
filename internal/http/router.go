@@ -13,6 +13,7 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/http/handlers"
 	"github.com/zakkriel/drchat-image-platform/internal/httperr"
 	"github.com/zakkriel/drchat-image-platform/internal/identities"
+	"github.com/zakkriel/drchat-image-platform/internal/jobs"
 	"github.com/zakkriel/drchat-image-platform/internal/styles"
 )
 
@@ -26,6 +27,8 @@ type Deps struct {
 	StylesRepo     styles.Repository
 	IdentitiesRepo identities.Repository
 	AssetsRepo     assets.Repository
+	JobsRepo       jobs.Repository
+	JobsService    jobs.Creator
 }
 
 type HealthResponse struct {
@@ -115,6 +118,8 @@ func mountV1(r chi.Router, deps Deps) {
 		mountStyles(v1, deps)
 		mountIdentities(v1, deps)
 		mountAssets(v1, deps)
+		mountArtifacts(v1, deps)
+		mountJobs(v1, deps)
 		v1.Handle("/*", http.HandlerFunc(notFound))
 	})
 }
@@ -145,4 +150,20 @@ func mountAssets(v1 chi.Router, deps Deps) {
 	}
 	h := handlers.NewAssetsHandler(deps.AssetsRepo)
 	v1.With(auth.RequireScopes("images:read")).Get("/assets/{asset_id}", h.Get)
+}
+
+func mountArtifacts(v1 chi.Router, deps Deps) {
+	if deps.JobsService == nil || deps.StylesRepo == nil {
+		return
+	}
+	h := handlers.NewArtifactsHandler(deps.JobsService, deps.StylesRepo, deps.Config.ImageProvider)
+	v1.With(auth.RequireScopes("images:write")).Post("/artifacts/{artifact_id}/generate", h.Generate)
+}
+
+func mountJobs(v1 chi.Router, deps Deps) {
+	if deps.JobsRepo == nil {
+		return
+	}
+	h := handlers.NewJobsHandler(deps.JobsRepo)
+	v1.With(auth.RequireScopes("jobs:read")).Get("/jobs/{job_id}", h.Get)
 }
