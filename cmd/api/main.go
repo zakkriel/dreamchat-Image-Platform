@@ -15,6 +15,7 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/auth"
 	"github.com/zakkriel/drchat-image-platform/internal/config"
+	"github.com/zakkriel/drchat-image-platform/internal/cost"
 	apphttp "github.com/zakkriel/drchat-image-platform/internal/http"
 	"github.com/zakkriel/drchat-image-platform/internal/identities"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
@@ -54,7 +55,7 @@ func main() {
 		IdentitiesRepo: identities.NewRepository(pool),
 		AssetsRepo:     assets.NewRepository(pool),
 		JobsRepo:       jobs.NewRepository(pool),
-		JobsService:    jobs.NewService(pool, enqueuer),
+		JobsService:    jobs.NewService(pool, enqueuer, cost.NewService(logger)),
 	}
 
 	router := apphttp.NewRouter(deps)

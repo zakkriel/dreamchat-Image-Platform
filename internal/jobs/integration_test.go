@@ -19,6 +19,7 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/auth"
 	"github.com/zakkriel/drchat-image-platform/internal/config"
+	"github.com/zakkriel/drchat-image-platform/internal/cost"
 	"github.com/zakkriel/drchat-image-platform/internal/http/handlers"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
 	"github.com/zakkriel/drchat-image-platform/internal/providers/mock"
@@ -76,7 +77,12 @@ func cleanup(t *testing.T, pool *pgxpool.Pool) {
 	exec(`DELETE FROM provider_attempts WHERE generation_job_id IN (SELECT id FROM generation_jobs WHERE tenant_id = $1)`, itTenant)
 	exec(`DELETE FROM idempotency_keys WHERE token_id = $1`, itTokenID)
 	exec(`DELETE FROM visual_assets WHERE tenant_id = $1`, itTenant)
+	// generation_jobs <-> cost_reservations is a circular FK: break the
+	// job->reservation link before deleting the reservations.
+	exec(`UPDATE generation_jobs SET cost_reservation_id = NULL WHERE tenant_id = $1`, itTenant)
+	exec(`DELETE FROM cost_reservations WHERE tenant_id = $1`, itTenant)
 	exec(`DELETE FROM generation_jobs WHERE tenant_id = $1`, itTenant)
+	exec(`DELETE FROM cost_budgets WHERE tenant_id = $1`, itTenant)
 	exec(`DELETE FROM api_tokens WHERE id = $1`, itTokenID)
 	exec(`DELETE FROM style_profiles WHERE tenant_id = $1`, itTenant)
 }
@@ -198,7 +204,7 @@ func TestEndToEndArtifactGeneration(t *testing.T) {
 	assetsRepo := assets.NewRepository(pool)
 	stylesRepo := styles.NewRepository(pool)
 	enq := newRecordingEnqueuer()
-	svc := jobs.NewService(pool, enq)
+	svc := jobs.NewService(pool, enq, cost.NewService(nil))
 	r := mountTestRouter(svc, stylesRepo, jobsRepo)
 
 	rec := sendArtifactRequest(t, r, map[string]any{
@@ -275,7 +281,7 @@ func TestIdempotencyConcurrentRequestsCreateExactlyOneJob(t *testing.T) {
 	jobsRepo := jobs.NewRepository(pool)
 	stylesRepo := styles.NewRepository(pool)
 	enq := newRecordingEnqueuer()
-	svc := jobs.NewService(pool, enq)
+	svc := jobs.NewService(pool, enq, cost.NewService(nil))
 	r := mountTestRouter(svc, stylesRepo, jobsRepo)
 
 	body := map[string]any{
@@ -351,7 +357,7 @@ func TestIdempotencyDifferentBodyReturns409(t *testing.T) {
 	jobsRepo := jobs.NewRepository(pool)
 	stylesRepo := styles.NewRepository(pool)
 	enq := newRecordingEnqueuer()
-	svc := jobs.NewService(pool, enq)
+	svc := jobs.NewService(pool, enq, cost.NewService(nil))
 	r := mountTestRouter(svc, stylesRepo, jobsRepo)
 
 	first := sendArtifactRequest(t, r, map[string]any{
@@ -380,7 +386,7 @@ func TestEnqueueFailureMarksJobFailedAndReturns500(t *testing.T) {
 	stylesRepo := styles.NewRepository(pool)
 	enq := newRecordingEnqueuer()
 	enq.failOn["*"] = true
-	svc := jobs.NewService(pool, enq)
+	svc := jobs.NewService(pool, enq, cost.NewService(nil))
 	r := mountTestRouter(svc, stylesRepo, jobsRepo)
 
 	rec := sendArtifactRequest(t, r, map[string]any{
@@ -423,7 +429,7 @@ func TestIdempotencyReplayEchoesCurrentJobStatus(t *testing.T) {
 	stylesRepo := styles.NewRepository(pool)
 	enq := newRecordingEnqueuer()
 	enq.failOn["*"] = true
-	svc := jobs.NewService(pool, enq)
+	svc := jobs.NewService(pool, enq, cost.NewService(nil))
 	r := mountTestRouter(svc, stylesRepo, jobsRepo)
 
 	body := map[string]any{

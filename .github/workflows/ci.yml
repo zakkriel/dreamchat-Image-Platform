@@ -137,12 +137,14 @@ jobs:
           mc mb --ignore-existing local/image-platform
           mc ls local/
 
-      - name: apply migration
+      - name: apply migrations
         env:
           PGPASSWORD: image_platform
         run: |
           psql -h localhost -U image_platform -d image_platform \
                -v ON_ERROR_STOP=1 -f migrations/0001_initial.up.sql
+          psql -h localhost -U image_platform -d image_platform \
+               -v ON_ERROR_STOP=1 -f migrations/0002_seed_mock_provider.up.sql
 
       - name: assert all expected tables exist
         env:
@@ -160,6 +162,40 @@ jobs:
           exists=$(psql -h localhost -U image_platform -d image_platform -tAc \
             "SELECT 1 FROM pg_indexes WHERE indexname = 'idx_idempotency_keys_expires'")
           test "$exists" = "1"
+
+      - name: assert single-active-price index exists
+        env:
+          PGPASSWORD: image_platform
+        run: |
+          exists=$(psql -h localhost -U image_platform -d image_platform -tAc \
+            "SELECT 1 FROM pg_indexes WHERE indexname = 'idx_provider_model_prices_one_active'")
+          test "$exists" = "1"
+
+      - name: assert mock provider seed present
+        env:
+          PGPASSWORD: image_platform
+        run: |
+          model=$(psql -h localhost -U image_platform -d image_platform -tAc \
+            "SELECT 1 FROM provider_models WHERE id = 'pm_mock_v1' AND status = 'active'")
+          route=$(psql -h localhost -U image_platform -d image_platform -tAc \
+            "SELECT 1 FROM provider_routes WHERE id = 'route_mock_text_to_image_standard'")
+          price=$(psql -h localhost -U image_platform -d image_platform -tAc \
+            "SELECT 1 FROM provider_model_prices WHERE id = 'price_mock_text_to_image_001' AND is_active = true AND unit_type = 'image'")
+          test "$model" = "1"
+          test "$route" = "1"
+          test "$price" = "1"
+
+      - name: assert single-active-price index is enforced
+        env:
+          PGPASSWORD: image_platform
+        run: |
+          # A second active price for the same (provider, model, operation)
+          # must be rejected by idx_provider_model_prices_one_active.
+          if psql -h localhost -U image_platform -d image_platform -v ON_ERROR_STOP=1 -c \
+            "INSERT INTO provider_model_prices (id, provider_id, model_id, operation_type, unit_type, price_per_unit, effective_from, is_active) VALUES ('price_dup', 'mock', 'pm_mock_v1', 'text_to_image', 'image', 0.02, now(), true)" 2>/dev/null; then
+            echo "ERROR: duplicate active price was allowed"; exit 1
+          fi
+          echo "duplicate active price correctly rejected"
 
       - name: integration tests
         env:

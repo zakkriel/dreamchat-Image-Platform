@@ -12,6 +12,12 @@ type Querier interface {
 	CountProviderAttemptsForJob(ctx context.Context, generationJobID string) (int32, error)
 	CreateStyleProfile(ctx context.Context, arg CreateStyleProfileParams) (StyleProfile, error)
 	DeleteExpiredIdempotencyKeys(ctx context.Context) error
+	// Cost-control pre-flight queries (docs/architecture/cost-control.md §3).
+	// Phase 4 implements steps 4–7 (price lookup → estimate → budget reservation).
+	// EstimateOperationCost loads the active price for (provider × model ×
+	// operation) and returns the pre-flight estimate for `units` of work. No row
+	// means there is no active price entry → fail closed (no_price_entry).
+	EstimateOperationCost(ctx context.Context, arg EstimateOperationCostParams) (EstimateOperationCostRow, error)
 	GetActiveAPITokenByPrefix(ctx context.Context, tokenPrefix string) (GetActiveAPITokenByPrefixRow, error)
 	GetGenerationJobByID(ctx context.Context, arg GetGenerationJobByIDParams) (GenerationJob, error)
 	GetGenerationJobByIDUnchecked(ctx context.Context, id string) (GenerationJob, error)
@@ -21,6 +27,10 @@ type Querier interface {
 	GetVisualIdentityByID(ctx context.Context, arg GetVisualIdentityByIDParams) (VisualIdentity, error)
 	GetVisualIdentityByOwner(ctx context.Context, arg GetVisualIdentityByOwnerParams) (VisualIdentity, error)
 	GetVisualIdentityByOwnerForUpdate(ctx context.Context, arg GetVisualIdentityByOwnerForUpdateParams) (VisualIdentity, error)
+	// InsertCostReservation records the reservation for a job. status=reserved
+	// on success; status=failed with failure_reason on no_price_entry /
+	// budget_exceeded.
+	InsertCostReservation(ctx context.Context, arg InsertCostReservationParams) (CostReservation, error)
 	InsertGenerationCostEvent(ctx context.Context, arg InsertGenerationCostEventParams) error
 	InsertGenerationJob(ctx context.Context, arg InsertGenerationJobParams) (GenerationJob, error)
 	InsertIdempotencyKey(ctx context.Context, arg InsertIdempotencyKeyParams) (IdempotencyKey, error)
@@ -28,12 +38,29 @@ type Querier interface {
 	InsertVisualAsset(ctx context.Context, arg InsertVisualAssetParams) (VisualAsset, error)
 	InsertVisualIdentity(ctx context.Context, arg InsertVisualIdentityParams) (VisualIdentity, error)
 	InsertVisualIdentityVersion(ctx context.Context, arg InsertVisualIdentityVersionParams) error
+	// ListBudgetsForReservation returns every budget that could apply to a
+	// request: the tenant-scope budget(s) plus any token / world / user scoped
+	// budgets matching the request's identifiers. The caller picks which to
+	// enforce (tenant always; then the narrowest applicable scope).
+	ListBudgetsForReservation(ctx context.Context, arg ListBudgetsForReservationParams) ([]ListBudgetsForReservationRow, error)
 	ListStyleProfilesByTenant(ctx context.Context, tenantID string) ([]StyleProfile, error)
 	MarkGenerationJobCompleted(ctx context.Context, arg MarkGenerationJobCompletedParams) (GenerationJob, error)
 	MarkGenerationJobFailed(ctx context.Context, arg MarkGenerationJobFailedParams) (GenerationJob, error)
 	MarkGenerationJobRunning(ctx context.Context, arg MarkGenerationJobRunningParams) (GenerationJob, error)
 	MarkProviderAttemptFailed(ctx context.Context, arg MarkProviderAttemptFailedParams) error
 	MarkProviderAttemptSucceeded(ctx context.Context, arg MarkProviderAttemptSucceededParams) error
+	// ReserveActiveBudget atomically holds `amount` against an active budget.
+	// The conditional WHERE is the consistency point: concurrent requests that
+	// would collectively oversell the limit see all-but-one fail (no row
+	// returned → budget_exceeded).
+	ReserveActiveBudget(ctx context.Context, arg ReserveActiveBudgetParams) (string, error)
+	// ReservePausedBudget records a hold against a paused budget without
+	// enforcing the limit (paused = recording only; never deny).
+	ReservePausedBudget(ctx context.Context, arg ReservePausedBudgetParams) (string, error)
+	// SetGenerationJobCost links a job to its cost_reservation and records the
+	// pre-flight estimate. Run inside the create transaction, after the
+	// reservation row exists.
+	SetGenerationJobCost(ctx context.Context, arg SetGenerationJobCostParams) error
 	TouchAPITokenLastUsed(ctx context.Context, id string) error
 	UpdateVisualIdentityWithVersionBump(ctx context.Context, arg UpdateVisualIdentityWithVersionBumpParams) (VisualIdentity, error)
 }

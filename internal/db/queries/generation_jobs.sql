@@ -15,6 +15,16 @@ RETURNING id, tenant_id, world_id, job_type, status,
           queue_duration_ms, generation_duration_ms,
           created_at, updated_at, started_at, completed_at;
 
+-- SetGenerationJobCost links a job to its cost_reservation and records the
+-- pre-flight estimate. Run inside the create transaction, after the
+-- reservation row exists.
+-- name: SetGenerationJobCost :exec
+UPDATE generation_jobs
+SET cost_reservation_id = sqlc.arg(cost_reservation_id),
+    cost_estimate_usd = sqlc.arg(cost_estimate_usd),
+    updated_at = now()
+WHERE id = sqlc.arg(id);
+
 -- name: GetGenerationJobByID :one
 SELECT id, tenant_id, world_id, job_type, status,
        requested_by_token_id, visual_identity_id, asset_pack_id,

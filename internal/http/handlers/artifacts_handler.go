@@ -35,10 +35,15 @@ func NewArtifactsHandler(service jobs.Creator, stylesRepo styles.Repository, pro
 	}
 }
 
-type artifactGenerateResponse struct {
-	JobID  string `json:"job_id"`
-	Status string `json:"status"`
-}
+// Phase 4 has no provider router yet, so artifact generation resolves to the
+// seeded mock route (migrations/0002_seed_mock_provider.up.sql) for pricing.
+// A single artifact request is one text_to_image image.
+const (
+	artifactProviderID    = "mock"
+	artifactModelID       = "pm_mock_v1"
+	artifactOperationType = "text_to_image"
+	artifactUnits         = 1
+)
 
 func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 	// Provider gate runs first. Per the Phase 3 corrections, this must
@@ -133,6 +138,10 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		InputPayload:       payload,
 		FallbackPolicy:     fallback,
 		CacheResult:        cacheResult,
+		ProviderID:         artifactProviderID,
+		ModelID:            artifactModelID,
+		OperationType:      artifactOperationType,
+		Units:              artifactUnits,
 	}
 	if key := r.Header.Get(idempotency.HeaderKey); key != "" {
 		params.IdempotencyKey = key
@@ -143,6 +152,10 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 	result, err := h.Service.CreateAndEnqueue(r.Context(), params)
 	if err != nil {
 		switch {
+		case errors.Is(err, jobs.ErrNoPriceEntry):
+			httperr.Write(w, r, http.StatusUnprocessableEntity, httperr.CodeNoPriceEntry, "no active price entry for the selected provider/model/operation")
+		case errors.Is(err, jobs.ErrBudgetExceeded):
+			httperr.Write(w, r, http.StatusUnprocessableEntity, httperr.CodeBudgetExceeded, "cost budget exceeded for this request")
 		case errors.Is(err, jobs.ErrIdempotencyConflict):
 			httperr.Write(w, r, http.StatusConflict, httperr.CodeIdempotencyConflict, "idempotency key reused with a different body or endpoint")
 		case errors.Is(err, jobs.ErrEnqueueFailed):
@@ -157,7 +170,23 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 	if status == "" {
 		status = "queued"
 	}
-	writeJSON(w, http.StatusAccepted, artifactGenerateResponse{JobID: result.JobID, Status: status})
+	resp := apigen.GenerationJobAccepted{
+		JobId:  result.JobID,
+		Status: apigen.GenerationJobAcceptedStatus(status),
+	}
+	if result.EstimatedCostUSD != "" {
+		est := result.EstimatedCostUSD
+		resp.EstimatedCostUsd = &est
+	}
+	if result.Currency != "" {
+		cur := result.Currency
+		resp.Currency = &cur
+	}
+	if result.CostReservationID != "" {
+		rid := result.CostReservationID
+		resp.CostReservationId = &rid
+	}
+	writeJSON(w, http.StatusAccepted, resp)
 }
 
 // readRawJSONBody is the body-reading half of readJSONBody — the handler

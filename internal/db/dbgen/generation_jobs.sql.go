@@ -7,6 +7,8 @@ package dbgen
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const getGenerationJobByID = `-- name: GetGenerationJobByID :one
@@ -361,4 +363,26 @@ func (q *Queries) MarkGenerationJobRunning(ctx context.Context, arg MarkGenerati
 		&i.CompletedAt,
 	)
 	return i, err
+}
+
+const setGenerationJobCost = `-- name: SetGenerationJobCost :exec
+UPDATE generation_jobs
+SET cost_reservation_id = $1,
+    cost_estimate_usd = $2,
+    updated_at = now()
+WHERE id = $3
+`
+
+type SetGenerationJobCostParams struct {
+	CostReservationID *string        `json:"cost_reservation_id"`
+	CostEstimateUsd   pgtype.Numeric `json:"cost_estimate_usd"`
+	ID                string         `json:"id"`
+}
+
+// SetGenerationJobCost links a job to its cost_reservation and records the
+// pre-flight estimate. Run inside the create transaction, after the
+// reservation row exists.
+func (q *Queries) SetGenerationJobCost(ctx context.Context, arg SetGenerationJobCostParams) error {
+	_, err := q.db.Exec(ctx, setGenerationJobCost, arg.CostReservationID, arg.CostEstimateUsd, arg.ID)
+	return err
 }

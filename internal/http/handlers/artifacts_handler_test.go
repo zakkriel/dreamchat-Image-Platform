@@ -156,6 +156,65 @@ func TestArtifactGenerateHappyPath(t *testing.T) {
 	}
 }
 
+func TestArtifactGenerateNoPriceEntryReturns422(t *testing.T) {
+	creator := newStubCreator()
+	creator.failErr = jobs.ErrNoPriceEntry
+	router := newArtifactsRouter(creator, seededStyles(), config.ProviderMock)
+	body := map[string]any{"world_id": "w1", "style_profile_id": "sty_ok", "description": "x"}
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/artifacts/art_1/generate", tenantA, []string{"images:write"}, body, nil)
+	assertError(t, rec, http.StatusUnprocessableEntity, "no_price_entry")
+}
+
+func TestArtifactGenerateBudgetExceededReturns422(t *testing.T) {
+	creator := newStubCreator()
+	creator.failErr = jobs.ErrBudgetExceeded
+	router := newArtifactsRouter(creator, seededStyles(), config.ProviderMock)
+	body := map[string]any{"world_id": "w1", "style_profile_id": "sty_ok", "description": "x"}
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/artifacts/art_1/generate", tenantA, []string{"images:write"}, body, nil)
+	assertError(t, rec, http.StatusUnprocessableEntity, "budget_exceeded")
+}
+
+func TestArtifactGeneratePassesPricingContextAndEchoesEstimate(t *testing.T) {
+	creator := &estimatingCreator{}
+	router := newArtifactsRouter(creator, seededStyles(), config.ProviderMock)
+	body := map[string]any{"world_id": "w1", "style_profile_id": "sty_ok", "description": "x"}
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/artifacts/art_1/generate", tenantA, []string{"images:write"}, body, nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	resp := decode[map[string]any](t, rec)
+	if resp["estimated_cost_usd"] != "0.0100" {
+		t.Fatalf("expected estimated_cost_usd=0.0100, got %v", resp["estimated_cost_usd"])
+	}
+	if resp["currency"] != "USD" {
+		t.Fatalf("expected currency=USD, got %v", resp["currency"])
+	}
+	if resp["cost_reservation_id"] != "resv_test" {
+		t.Fatalf("expected cost_reservation_id=resv_test, got %v", resp["cost_reservation_id"])
+	}
+	// The handler must hand the pricing context to the service.
+	if creator.got.ProviderID != "mock" || creator.got.ModelID != "pm_mock_v1" ||
+		creator.got.OperationType != "text_to_image" || creator.got.Units != 1 {
+		t.Fatalf("pricing context not forwarded: %+v", creator.got)
+	}
+}
+
+// estimatingCreator captures the params and returns a populated cost result.
+type estimatingCreator struct {
+	got jobs.CreateAndEnqueueParams
+}
+
+func (c *estimatingCreator) CreateAndEnqueue(_ context.Context, params jobs.CreateAndEnqueueParams) (jobs.CreateResult, error) {
+	c.got = params
+	return jobs.CreateResult{
+		JobID:             ids.NewGenerationJobID(),
+		Status:            "queued",
+		EstimatedCostUSD:  "0.0100",
+		Currency:          "USD",
+		CostReservationID: "resv_test",
+	}, nil
+}
+
 func TestArtifactGenerateMissingWorldIDReturns400(t *testing.T) {
 	router := newArtifactsRouter(newStubCreator(), seededStyles(), config.ProviderMock)
 	body := map[string]any{"style_profile_id": "sty_ok", "description": "x"}

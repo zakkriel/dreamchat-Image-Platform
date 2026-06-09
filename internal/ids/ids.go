@@ -15,6 +15,7 @@ const (
 	PrefixVisualAsset     = "asset"
 	PrefixProviderAttempt = "att"
 	PrefixCostEvent       = "ce"
+	PrefixCostReservation = "resv"
 	PrefixIdempotencyKey  = "idem"
 )
 
@@ -29,6 +30,7 @@ func NewGenerationJobID() string   { return New(PrefixGenerationJob) }
 func NewVisualAssetID() string     { return New(PrefixVisualAsset) }
 func NewProviderAttemptID() string { return New(PrefixProviderAttempt) }
 func NewCostEventID() string       { return New(PrefixCostEvent) }
+func NewCostReservationID() string { return New(PrefixCostReservation) }
 func NewIdempotencyKeyID() string  { return New(PrefixIdempotencyKey) }
 
 func randomHex(byteLen int) string {
