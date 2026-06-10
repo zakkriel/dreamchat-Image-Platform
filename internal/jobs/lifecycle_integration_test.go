@@ -115,6 +115,40 @@ func TestLifecycleWorkerSuccessCommitsReservation(t *testing.T) {
 	}
 }
 
+func TestWorkerStampsMockProviderModelOnAsset(t *testing.T) {
+	pool := openTestPool(t)
+	defer pool.Close()
+	cleanup(t, pool)
+	defer cleanup(t, pool)
+	seedFixtures(t, pool)
+
+	jobID, _ := submitJob(t, pool)
+
+	w := &jobs.Worker{
+		Jobs:      jobs.NewRepository(pool),
+		Assets:    assets.NewRepository(pool),
+		Storage:   memStorage{},
+		Provider:  mock.New(),
+		Finalizer: cost.NewLifecycle(pool, nil),
+	}
+	if err := w.Process(context.Background(), jobID, 0); err != nil {
+		t.Fatalf("worker process: %v", err)
+	}
+
+	var providerID, modelID *string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT provider_id, model_id FROM visual_assets WHERE generation_job_id = $1`, jobID,
+	).Scan(&providerID, &modelID); err != nil {
+		t.Fatalf("read asset row: %v", err)
+	}
+	if modelID == nil || *modelID != "pm_mock_v1" {
+		t.Fatalf("expected model_id=pm_mock_v1, got %v", modelID)
+	}
+	if providerID == nil || *providerID != "mock" {
+		t.Fatalf("expected provider_id=mock, got %v", providerID)
+	}
+}
+
 func TestLifecycleWorkerFailureReleasesReservation(t *testing.T) {
 	pool := openTestPool(t)
 	defer pool.Close()
