@@ -104,6 +104,97 @@ func (q *Queries) FindExactVisualAsset(ctx context.Context, arg FindExactVisualA
 	return i, err
 }
 
+const findReadyArtifactByPromptHash = `-- name: FindReadyArtifactByPromptHash :one
+SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
+       variant_family, version, state_version, style_profile_id,
+       style_profile_version, quality_tier, status,
+       compatibility_tags, fallback_allowed, fallback_rank, is_identity_anchor,
+       low_res_url, high_res_url, thumbnail_url,
+       provider_id, model_id, provider_route_id,
+       prompt_hash, seed, reference_asset_ids,
+       generation_job_id, metadata, generated_at,
+       created_at, updated_at
+FROM visual_assets
+WHERE tenant_id = $1
+  AND world_id = $2
+  AND asset_type = 'artifact'
+  AND variant_key = 'default'
+  AND style_profile_id = $3
+  AND quality_tier = $4
+  AND prompt_hash = $5
+  AND status = 'ready'
+  AND ($6::int IS NULL
+       OR style_profile_version = $6)
+ORDER BY id ASC
+LIMIT 1
+`
+
+type FindReadyArtifactByPromptHashParams struct {
+	TenantID            string  `json:"tenant_id"`
+	WorldID             string  `json:"world_id"`
+	StyleProfileID      *string `json:"style_profile_id"`
+	QualityTier         string  `json:"quality_tier"`
+	PromptHash          *string `json:"prompt_hash"`
+	StyleProfileVersion *int32  `json:"style_profile_version"`
+}
+
+// Phase 6A2 single-artifact exact reuse: the narrow deterministic lookup behind
+// the artifact retrieval-before-generation path. Artifacts have no durable
+// visual identity in the generation path (they are asset_type = 'artifact',
+// variant_key = 'default'), so reuse is keyed on the deterministic artifact
+// render hash stored in prompt_hash rather than on identity/matrix retrieval.
+// Owner (tenant/world) + style + quality + the render hash must all match and
+// the asset must be reusable (status = 'ready'). style_profile_version is
+// optional: when provided it must match exactly (the render hash already folds
+// it in, so this is a belt-and-suspenders narrowing). A stable id ASC tie-break
+// keeps the single returned row deterministic when several ready rows share the
+// same hash (e.g. a re-run that raced before this reuse path existed).
+func (q *Queries) FindReadyArtifactByPromptHash(ctx context.Context, arg FindReadyArtifactByPromptHashParams) (VisualAsset, error) {
+	row := q.db.QueryRow(ctx, findReadyArtifactByPromptHash,
+		arg.TenantID,
+		arg.WorldID,
+		arg.StyleProfileID,
+		arg.QualityTier,
+		arg.PromptHash,
+		arg.StyleProfileVersion,
+	)
+	var i VisualAsset
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.WorldID,
+		&i.VisualIdentityID,
+		&i.AssetType,
+		&i.VariantKey,
+		&i.VariantFamily,
+		&i.Version,
+		&i.StateVersion,
+		&i.StyleProfileID,
+		&i.StyleProfileVersion,
+		&i.QualityTier,
+		&i.Status,
+		&i.CompatibilityTags,
+		&i.FallbackAllowed,
+		&i.FallbackRank,
+		&i.IsIdentityAnchor,
+		&i.LowResUrl,
+		&i.HighResUrl,
+		&i.ThumbnailUrl,
+		&i.ProviderID,
+		&i.ModelID,
+		&i.ProviderRouteID,
+		&i.PromptHash,
+		&i.Seed,
+		&i.ReferenceAssetIds,
+		&i.GenerationJobID,
+		&i.Metadata,
+		&i.GeneratedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getVisualAssetByID = `-- name: GetVisualAssetByID :one
 SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
        variant_family, version, state_version, style_profile_id,

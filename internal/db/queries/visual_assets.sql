@@ -47,6 +47,41 @@ WHERE tenant_id = sqlc.arg('tenant_id')
 ORDER BY id ASC
 LIMIT 1;
 
+-- name: FindReadyArtifactByPromptHash :one
+-- Phase 6A2 single-artifact exact reuse: the narrow deterministic lookup behind
+-- the artifact retrieval-before-generation path. Artifacts have no durable
+-- visual identity in the generation path (they are asset_type = 'artifact',
+-- variant_key = 'default'), so reuse is keyed on the deterministic artifact
+-- render hash stored in prompt_hash rather than on identity/matrix retrieval.
+-- Owner (tenant/world) + style + quality + the render hash must all match and
+-- the asset must be reusable (status = 'ready'). style_profile_version is
+-- optional: when provided it must match exactly (the render hash already folds
+-- it in, so this is a belt-and-suspenders narrowing). A stable id ASC tie-break
+-- keeps the single returned row deterministic when several ready rows share the
+-- same hash (e.g. a re-run that raced before this reuse path existed).
+SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
+       variant_family, version, state_version, style_profile_id,
+       style_profile_version, quality_tier, status,
+       compatibility_tags, fallback_allowed, fallback_rank, is_identity_anchor,
+       low_res_url, high_res_url, thumbnail_url,
+       provider_id, model_id, provider_route_id,
+       prompt_hash, seed, reference_asset_ids,
+       generation_job_id, metadata, generated_at,
+       created_at, updated_at
+FROM visual_assets
+WHERE tenant_id = sqlc.arg('tenant_id')
+  AND world_id = sqlc.arg('world_id')
+  AND asset_type = 'artifact'
+  AND variant_key = 'default'
+  AND style_profile_id = sqlc.arg('style_profile_id')
+  AND quality_tier = sqlc.arg('quality_tier')
+  AND prompt_hash = sqlc.arg('prompt_hash')
+  AND status = 'ready'
+  AND (sqlc.narg('style_profile_version')::int IS NULL
+       OR style_profile_version = sqlc.narg('style_profile_version'))
+ORDER BY id ASC
+LIMIT 1;
+
 -- name: ListVisualAssetCandidates :many
 -- Phase 6A1 retrieval substrate: candidate ready assets for the same owner
 -- and visual identity that the compatibility matrix

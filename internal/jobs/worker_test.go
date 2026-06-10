@@ -246,6 +246,10 @@ func (r *fakeAssetsRepo) ListRetrievalCandidatesByCompatTag(context.Context, ass
 	return nil, nil
 }
 
+func (r *fakeAssetsRepo) FindReadyArtifactByPromptHash(context.Context, assets.ArtifactLookup) (assets.VisualAsset, error) {
+	return assets.VisualAsset{}, assets.ErrNotFound
+}
+
 func (r *fakeAssetsRepo) Insert(_ context.Context, params assets.InsertParams) (assets.VisualAsset, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -350,6 +354,55 @@ func TestWorkerProcessHappyPath(t *testing.T) {
 	}
 	if len(jobsRepo.costEvents) != 1 || jobsRepo.costEvents[0].Status != "completed" {
 		t.Fatalf("expected one completed cost event, got %+v", jobsRepo.costEvents)
+	}
+}
+
+func TestWorkerProcessPersistsRequestQualityTierAndRenderHash(t *testing.T) {
+	jobsRepo := newFakeJobsRepo()
+	assetsRepo := &fakeAssetsRepo{}
+	storage := &fakeStorage{}
+
+	worldID := "w1"
+	tokenID := "tok_test"
+	_, _ = jobsRepo.Insert(context.Background(), InsertParams{
+		ID:                 "job_quality",
+		TenantID:           "tenant_a",
+		WorldID:            &worldID,
+		JobType:            "artifact",
+		RequestedByTokenID: &tokenID,
+		InputPayload: map[string]any{
+			"world_id":         "w1",
+			"description":      "bronze key",
+			"style_profile_id": "sty_ok",
+			"quality_tier":     "high",
+			"prompt_hash":      "render_hash_abc",
+		},
+	})
+
+	w := &Worker{Jobs: jobsRepo, Assets: assetsRepo, Storage: storage, Provider: mock.New()}
+	if err := w.Process(context.Background(), "job_quality", 0); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+
+	if len(assetsRepo.stored) != 1 {
+		t.Fatalf("expected one asset stored, got %d", len(assetsRepo.stored))
+	}
+	asset := assetsRepo.stored[0]
+	// quality_tier comes from the request payload, not a hardcoded "standard".
+	if asset.QualityTier != "high" {
+		t.Fatalf("expected quality_tier=high from payload, got %q", asset.QualityTier)
+	}
+	// The primary prompt_hash is the deterministic artifact render hash.
+	if asset.PromptHash == nil || *asset.PromptHash != "render_hash_abc" {
+		t.Fatalf("expected prompt_hash=render_hash_abc (the render hash), got %v", asset.PromptHash)
+	}
+	// The provider's own hash is provenance in metadata, never the primary key.
+	pph, ok := asset.Metadata["provider_prompt_hash"].(string)
+	if !ok || pph == "" {
+		t.Fatalf("expected metadata.provider_prompt_hash to carry the provider hash, got %v", asset.Metadata)
+	}
+	if pph == "render_hash_abc" {
+		t.Fatalf("provider_prompt_hash must be the provider's hash, not the render hash")
 	}
 }
 

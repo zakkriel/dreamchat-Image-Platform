@@ -2,12 +2,14 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/auth"
 	"github.com/zakkriel/drchat-image-platform/internal/config"
 	"github.com/zakkriel/drchat-image-platform/internal/http/apigen"
@@ -17,21 +19,35 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/styles"
 )
 
+// ArtifactReuseLookup is the narrow Phase 6A2 exact-reuse dependency: the
+// deterministic artifact-render-hash lookup the generate path consults before
+// reserving cost or enqueuing provider work. *assets.pgRepository satisfies it
+// (via assets.Repository); keeping it a focused interface lets the handler be
+// tested without a database and without pulling in the full asset repository.
+type ArtifactReuseLookup interface {
+	FindReadyArtifactByPromptHash(ctx context.Context, q assets.ArtifactLookup) (assets.VisualAsset, error)
+}
+
 // ArtifactsHandler accepts artifact generation requests and delegates the
 // transactional job-create + idempotency-row + enqueue work to a
 // jobs.Creator service. The handler itself is responsible only for
-// authorization, validation, and shaping the 202/4xx/5xx response.
+// authorization, validation, retrieval-before-generation (Phase 6A2), and
+// shaping the 202/4xx/5xx response.
 type ArtifactsHandler struct {
 	Service  jobs.Creator
 	Styles   styles.Repository
 	Provider config.Provider
+	// Reuse is the Phase 6A2 exact-reuse lookup. When nil, the handler skips
+	// retrieval and always generates (the pre-6A2 behavior).
+	Reuse ArtifactReuseLookup
 }
 
-func NewArtifactsHandler(service jobs.Creator, stylesRepo styles.Repository, provider config.Provider) *ArtifactsHandler {
+func NewArtifactsHandler(service jobs.Creator, stylesRepo styles.Repository, provider config.Provider, reuse ArtifactReuseLookup) *ArtifactsHandler {
 	return &ArtifactsHandler{
 		Service:  service,
 		Styles:   stylesRepo,
 		Provider: provider,
+		Reuse:    reuse,
 	}
 }
 
@@ -114,7 +130,26 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 	if req.FallbackPolicy != nil {
 		fallback = string(*req.FallbackPolicy)
 	}
-	cacheResult := "generated_required"
+
+	// Resolve the effective quality tier once. The same value feeds the render
+	// hash, the reuse lookup, and the stored asset, so a request that omits
+	// quality_tier (effective "standard") reuses and is reused consistently.
+	qualityTier := "standard"
+	if req.QualityTier != nil {
+		qualityTier = string(*req.QualityTier)
+	}
+
+	// Phase 6A2: the deterministic artifact render hash. It is the asset's
+	// prompt_hash (carried in the payload so the worker persists it on a miss)
+	// and the key the exact-reuse lookup matches on.
+	renderHash := assets.ArtifactRenderHash(assets.ArtifactHashInput{
+		TenantID:       principal.TenantID,
+		WorldID:        req.WorldId,
+		ArtifactID:     artifactID,
+		Description:    req.Description,
+		StyleProfileID: req.StyleProfileId,
+		QualityTier:    qualityTier,
+	})
 
 	payload := map[string]any{
 		"artifact_id":      artifactID,
@@ -122,12 +157,41 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		"style_profile_id": req.StyleProfileId,
 		"description":      req.Description,
 		"fallback_policy":  fallback,
-	}
-	if req.QualityTier != nil {
-		payload["quality_tier"] = string(*req.QualityTier)
+		"quality_tier":     qualityTier,
+		"prompt_hash":      renderHash,
 	}
 	if req.LatencyTier != nil {
 		payload["latency_tier"] = string(*req.LatencyTier)
+	}
+
+	// Idempotency context is shared by both the reuse and the generate paths so
+	// a same-key replay returns the same job regardless of which path created it.
+	idemKey := r.Header.Get(idempotency.HeaderKey)
+	endpoint := r.Method + " " + r.URL.Path
+	requestHash := jobs.HashRequestBody(raw)
+
+	// Phase 6A2 retrieval-before-generation: before reserving cost or enqueuing
+	// provider work, look for an existing ready artifact with this exact render
+	// hash. Exact reuse is allowed for EVERY fallback_policy (including none) —
+	// fallback_policy gates compatible/preview fallback, not exact reuse.
+	if h.Reuse != nil {
+		existing, err := h.Reuse.FindReadyArtifactByPromptHash(r.Context(), assets.ArtifactLookup{
+			TenantID:       principal.TenantID,
+			WorldID:        req.WorldId,
+			StyleProfileID: req.StyleProfileId,
+			QualityTier:    qualityTier,
+			PromptHash:     renderHash,
+		})
+		switch {
+		case err == nil:
+			h.respondCacheHit(w, r, principal, req.WorldId, fallback, payload, existing.ID, idemKey, endpoint, requestHash)
+			return
+		case errors.Is(err, assets.ErrNotFound):
+			// miss: fall through to the normal create/reserve/enqueue path.
+		default:
+			httperr.Write(w, r, http.StatusInternalServerError, httperr.CodeInternalError, "could not check artifact reuse")
+			return
+		}
 	}
 
 	params := jobs.CreateAndEnqueueParams{
@@ -137,32 +201,21 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		WorldID:            req.WorldId,
 		InputPayload:       payload,
 		FallbackPolicy:     fallback,
-		CacheResult:        cacheResult,
+		CacheResult:        "generated_required",
 		ProviderID:         artifactProviderID,
 		ModelID:            artifactModelID,
 		OperationType:      artifactOperationType,
 		Units:              artifactUnits,
 	}
-	if key := r.Header.Get(idempotency.HeaderKey); key != "" {
-		params.IdempotencyKey = key
-		params.Endpoint = r.Method + " " + r.URL.Path
-		params.RequestHash = jobs.HashRequestBody(raw)
+	if idemKey != "" {
+		params.IdempotencyKey = idemKey
+		params.Endpoint = endpoint
+		params.RequestHash = requestHash
 	}
 
 	result, err := h.Service.CreateAndEnqueue(r.Context(), params)
 	if err != nil {
-		switch {
-		case errors.Is(err, jobs.ErrNoPriceEntry):
-			httperr.Write(w, r, http.StatusUnprocessableEntity, httperr.CodeNoPriceEntry, "no active price entry for the selected provider/model/operation")
-		case errors.Is(err, jobs.ErrBudgetExceeded):
-			httperr.Write(w, r, http.StatusUnprocessableEntity, httperr.CodeBudgetExceeded, "cost budget exceeded for this request")
-		case errors.Is(err, jobs.ErrIdempotencyConflict):
-			httperr.Write(w, r, http.StatusConflict, httperr.CodeIdempotencyConflict, "idempotency key reused with a different body or endpoint")
-		case errors.Is(err, jobs.ErrEnqueueFailed):
-			httperr.Write(w, r, http.StatusInternalServerError, httperr.CodeInternalError, "could not enqueue generation job")
-		default:
-			httperr.Write(w, r, http.StatusInternalServerError, httperr.CodeInternalError, "could not create generation job")
-		}
+		h.writeServiceError(w, r, err)
 		return
 	}
 
@@ -187,6 +240,63 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		resp.CostReservationId = &rid
 	}
 	writeJSON(w, http.StatusAccepted, resp)
+}
+
+// respondCacheHit lands an already-completed cache-hit job (no cost
+// reservation, no provider attempt, no enqueue) and shapes the 202 response.
+// The 202 stays an acceptance envelope for API compatibility (status "queued"
+// — the schema's only accepted-status value): the synchronously-completed
+// state, cache_result=exact_match, and final_asset_ids are observed via
+// GET /v1/jobs/{job_id}. estimated_cost_usd is "0.0000" to signal the reuse is
+// free.
+func (h *ArtifactsHandler) respondCacheHit(w http.ResponseWriter, r *http.Request, principal *auth.Principal, worldID, fallback string, payload map[string]any, assetID, idemKey, endpoint, requestHash string) {
+	params := jobs.CreateCacheHitParams{
+		TenantID:           principal.TenantID,
+		RequestedByTokenID: principal.TokenID,
+		JobType:            "artifact",
+		WorldID:            worldID,
+		InputPayload:       payload,
+		FallbackPolicy:     fallback,
+		FinalAssetID:       assetID,
+	}
+	if idemKey != "" {
+		params.IdempotencyKey = idemKey
+		params.Endpoint = endpoint
+		params.RequestHash = requestHash
+	}
+
+	result, err := h.Service.CreateCompletedCacheHitJob(r.Context(), params)
+	if err != nil {
+		h.writeServiceError(w, r, err)
+		return
+	}
+
+	est := "0.0000"
+	if result.EstimatedCostUSD != "" {
+		est = result.EstimatedCostUSD
+	}
+	resp := apigen.GenerationJobAccepted{
+		JobId:            result.JobID,
+		Status:           apigen.GenerationJobAcceptedStatusQueued,
+		EstimatedCostUsd: &est,
+	}
+	writeJSON(w, http.StatusAccepted, resp)
+}
+
+// writeServiceError maps a jobs.Creator error to the matching HTTP status.
+func (h *ArtifactsHandler) writeServiceError(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, jobs.ErrNoPriceEntry):
+		httperr.Write(w, r, http.StatusUnprocessableEntity, httperr.CodeNoPriceEntry, "no active price entry for the selected provider/model/operation")
+	case errors.Is(err, jobs.ErrBudgetExceeded):
+		httperr.Write(w, r, http.StatusUnprocessableEntity, httperr.CodeBudgetExceeded, "cost budget exceeded for this request")
+	case errors.Is(err, jobs.ErrIdempotencyConflict):
+		httperr.Write(w, r, http.StatusConflict, httperr.CodeIdempotencyConflict, "idempotency key reused with a different body or endpoint")
+	case errors.Is(err, jobs.ErrEnqueueFailed):
+		httperr.Write(w, r, http.StatusInternalServerError, httperr.CodeInternalError, "could not enqueue generation job")
+	default:
+		httperr.Write(w, r, http.StatusInternalServerError, httperr.CodeInternalError, "could not create generation job")
+	}
 }
 
 // readRawJSONBody is the body-reading half of readJSONBody — the handler

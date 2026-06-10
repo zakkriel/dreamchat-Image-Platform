@@ -48,11 +48,27 @@ before this is production-ready.**
   platform-produced assets, not just manually seeded rows — provenance
   stamping only, no generation/skip/reuse behavior change.
 
+- **Phase 6A2 — single-artifact exact reuse**: artifact
+  retrieval-before-generation on a deterministic prompt-hash. The artifact
+  generate path (`POST /v1/artifacts/{artifact_id}/generate`) computes a
+  deterministic render hash (`internal/assets/artifact_hash.go`, including
+  `artifact_id` since artifacts have no durable visual identity) and, before
+  reserving cost or enqueuing, looks for a ready artifact with that hash
+  (`FindReadyArtifactByPromptHash`). A hit creates an already-completed
+  cache-hit job (`cache_result=exact_match`, `final_asset_ids=[asset]`, zero
+  cost, **no** reservation/provider attempt/enqueue/S3 write) via
+  `Service.CreateCompletedCacheHitJob`; a miss generates as before and the
+  worker now persists the render hash as `prompt_hash`, the request
+  `quality_tier`, and the provider hash under
+  `metadata.provider_prompt_hash`. Exact reuse is allowed for every
+  `fallback_policy` (including `none`). Artifact reuse is **exact-hash only** —
+  no compatible/preview/matrix/embedding fallback, no artifact visual
+  identities. No new table (count stays 18); no OpenAPI change (the 202 stays
+  an acceptance envelope, the completed state is observed via GET
+  `/v1/jobs/{id}`). Pack reuse is untouched.
+
 ## Remaining
 
-- **Phase 6A2 — single-artifact retrieval-before-generation**: call the 6A1
-  retrieval layer before creating an artifact generation job;
-  skip-generation-when-an-asset-exists; record the cache result on the job.
 - **Phase 6A3 — pack reuse-first + completeness storage**: retrieval-first
   pack fan-out (reused vs. missing items), misses-only pricing, all-hits
   completion, and pack-completeness storage (delivered-vs-missing required

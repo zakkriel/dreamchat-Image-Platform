@@ -145,9 +145,31 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 
 	providerID := attempt.ProviderID
 	modelID := mockProviderModelID
-	promptHash := result.PromptHash
 	seed := result.Seed
 	jobIDRef := job.ID
+
+	// Phase 6A2: the asset's prompt_hash is the deterministic artifact render
+	// hash the handler computed and carried in the payload — the same key the
+	// reuse lookup matches on, so this asset is found by an identical repeat
+	// request. The provider's own hash (if any) is provenance, not the cache
+	// key, so it goes in metadata.provider_prompt_hash. Fall back to the
+	// provider hash only if the payload has no render hash (pre-6A2 jobs).
+	promptHash := payloadString(job.InputPayload, "prompt_hash")
+	if promptHash == "" {
+		promptHash = result.PromptHash
+	}
+	var metadata map[string]any
+	if result.PromptHash != "" {
+		metadata = map[string]any{"provider_prompt_hash": result.PromptHash}
+	}
+
+	// quality_tier comes from the request payload (the handler resolves and
+	// stores the effective tier), not a hardcoded "standard", so the stored
+	// asset's tier matches what the reuse lookup queries on.
+	qualityTier := payloadString(job.InputPayload, "quality_tier")
+	if qualityTier == "" {
+		qualityTier = "standard"
+	}
 
 	// model_id is the seeded mock provider_models row (Phase 4 seeds it, and
 	// the pricing path already resolves against it). Stamping it on the asset
@@ -163,7 +185,8 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 		// request has no style_profile_version yet, so it stays nil.
 		StyleProfileID:      payloadStrPtr(job.InputPayload, "style_profile_id"),
 		StyleProfileVersion: payloadInt32Ptr(job.InputPayload, "style_profile_version"),
-		QualityTier:         "standard",
+		QualityTier:         qualityTier,
+		Metadata:            metadata,
 		LowResUrl:           strPtr(urls.low),
 		HighResUrl:          strPtr(urls.high),
 		ThumbnailUrl:        strPtr(urls.thumb),
@@ -321,11 +344,17 @@ func strPtr(s string) *string {
 	return &out
 }
 
+// payloadString reads an optional string out of a job input payload, returning
+// "" when the key is absent or not a string.
+func payloadString(payload map[string]any, key string) string {
+	s, _ := payload[key].(string)
+	return s
+}
+
 // payloadStrPtr reads an optional string out of a job input payload, returning
 // nil when the key is absent or empty.
 func payloadStrPtr(payload map[string]any, key string) *string {
-	s, _ := payload[key].(string)
-	return strPtr(s)
+	return strPtr(payloadString(payload, key))
 }
 
 // payloadInt32Ptr reads an optional integer out of a job input payload. JSON

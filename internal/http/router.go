@@ -164,7 +164,13 @@ func mountArtifacts(v1 chi.Router, deps Deps) {
 	if deps.JobsService == nil || deps.StylesRepo == nil {
 		return
 	}
-	h := handlers.NewArtifactsHandler(deps.JobsService, deps.StylesRepo, deps.Config.ImageProvider)
+	// deps.AssetsRepo is the Phase 6A2 exact-reuse lookup; nil-safe (the
+	// handler skips reuse when it is nil).
+	var reuse handlers.ArtifactReuseLookup
+	if deps.AssetsRepo != nil {
+		reuse = deps.AssetsRepo
+	}
+	h := handlers.NewArtifactsHandler(deps.JobsService, deps.StylesRepo, deps.Config.ImageProvider, reuse)
 	v1.With(auth.RequireScopes("images:write")).Post("/artifacts/{artifact_id}/generate", h.Generate)
 }
 
