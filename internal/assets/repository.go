@@ -48,26 +48,28 @@ type VisualAsset struct {
 // The compatibility fields (Phase 5B) carry the deterministic variant
 // classification; the single-artifact path leaves them at safe defaults.
 type InsertParams struct {
-	ID                string
-	TenantID          string
-	WorldID           string
-	VisualIdentityID  *string
-	AssetType         string
-	VariantKey        string
-	VariantFamily     *string
-	CompatibilityTags []string
-	FallbackAllowed   bool
-	FallbackRank      *int32
-	Metadata          map[string]any
-	QualityTier       string
-	LowResUrl         *string
-	HighResUrl        *string
-	ThumbnailUrl      *string
-	ProviderID        *string
-	ModelID           *string
-	PromptHash        *string
-	Seed              *string
-	GenerationJobID   *string
+	ID                  string
+	TenantID            string
+	WorldID             string
+	VisualIdentityID    *string
+	AssetType           string
+	VariantKey          string
+	VariantFamily       *string
+	CompatibilityTags   []string
+	FallbackAllowed     bool
+	FallbackRank        *int32
+	Metadata            map[string]any
+	StyleProfileID      *string
+	StyleProfileVersion *int32
+	QualityTier         string
+	LowResUrl           *string
+	HighResUrl          *string
+	ThumbnailUrl        *string
+	ProviderID          *string
+	ModelID             *string
+	PromptHash          *string
+	Seed                *string
+	GenerationJobID     *string
 }
 
 type Repository interface {
@@ -116,26 +118,28 @@ func InsertWithQueries(ctx context.Context, q *dbgen.Queries, params InsertParam
 		return VisualAsset{}, err
 	}
 	row, err := q.InsertVisualAsset(ctx, dbgen.InsertVisualAssetParams{
-		ID:                params.ID,
-		TenantID:          params.TenantID,
-		WorldID:           params.WorldID,
-		VisualIdentityID:  params.VisualIdentityID,
-		AssetType:         params.AssetType,
-		VariantKey:        params.VariantKey,
-		VariantFamily:     params.VariantFamily,
-		CompatibilityTags: tags,
-		FallbackAllowed:   params.FallbackAllowed,
-		FallbackRank:      params.FallbackRank,
-		QualityTier:       params.QualityTier,
-		LowResUrl:         params.LowResUrl,
-		HighResUrl:        params.HighResUrl,
-		ThumbnailUrl:      params.ThumbnailUrl,
-		ProviderID:        params.ProviderID,
-		ModelID:           params.ModelID,
-		PromptHash:        params.PromptHash,
-		Seed:              params.Seed,
-		GenerationJobID:   params.GenerationJobID,
-		Metadata:          metadata,
+		ID:                  params.ID,
+		TenantID:            params.TenantID,
+		WorldID:             params.WorldID,
+		VisualIdentityID:    params.VisualIdentityID,
+		AssetType:           params.AssetType,
+		VariantKey:          params.VariantKey,
+		VariantFamily:       params.VariantFamily,
+		CompatibilityTags:   tags,
+		FallbackAllowed:     params.FallbackAllowed,
+		FallbackRank:        params.FallbackRank,
+		StyleProfileID:      params.StyleProfileID,
+		StyleProfileVersion: params.StyleProfileVersion,
+		QualityTier:         params.QualityTier,
+		LowResUrl:           params.LowResUrl,
+		HighResUrl:          params.HighResUrl,
+		ThumbnailUrl:        params.ThumbnailUrl,
+		ProviderID:          params.ProviderID,
+		ModelID:             params.ModelID,
+		PromptHash:          params.PromptHash,
+		Seed:                params.Seed,
+		GenerationJobID:     params.GenerationJobID,
+		Metadata:            metadata,
 	})
 	if err != nil {
 		return VisualAsset{}, err

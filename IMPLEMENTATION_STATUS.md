@@ -43,7 +43,10 @@ before this is production-ready.**
   product-safety filter (matrix §2) is a deliberate stub. No migration
   (table count stays 18); the search endpoint/schemas pre-existed and were
   wired, with two additive `AssetSearchRequest` fields
-  (`style_profile_version`, `quality_tier`).
+  (`style_profile_version`, `quality_tier`). Generated assets (artifact +
+  pack paths) now persist `style_profile_id` so retrieval can find
+  platform-produced assets, not just manually seeded rows — provenance
+  stamping only, no generation/skip/reuse behavior change.
 
 ## Remaining
 

@@ -20,6 +20,30 @@ inside the artifact/pack paths stays 6A2/6A3.
 | 4 | `POST /v1/assets/search` handler + router wiring | `internal/http/handlers/assets_handler.go`, `internal/http/router.go` | 91 |
 | 5 | Additive OpenAPI (`style_profile_version`, `quality_tier` on `AssetSearchRequest`) | both `openapi.yaml`, `apigen` | 95 |
 | 6 | Unit + handler + integration tests | `internal/assets/retrieval_test.go`, `internal/http/handlers/handlers_test.go`, `internal/assets/retrieval_integration_test.go` | 90 |
+| 7 | Style-profile provenance on generated assets (so retrieval can find them) | `internal/db/queries/visual_assets.sql`, `internal/assets/repository.go`, `internal/jobs/worker.go`, `internal/jobs/worker_pack.go` | 93 |
+
+## Style-profile provenance (93)
+
+Retrieval matches on a concrete `style_profile_id`, so a generated asset that
+stored `style_profile_id = NULL` could never be found — only manually-seeded
+test rows worked (PR #13 review blocker). Fixed narrowly, **no generation
+behavior change**:
+
+- `InsertVisualAsset` now writes `style_profile_id` + `style_profile_version`
+  (the columns pre-existed in 0001; `sqlc` regenerated, no dbgen hand-edits,
+  **no migration**, table count stays 18).
+- `assets.InsertParams` carries `StyleProfileID` / `StyleProfileVersion`.
+- The artifact worker reads `style_profile_id` from `job.InputPayload`; the
+  pack path reads it in `packPlanFromJob`, carries it on `packPlan`, and
+  `generatePackItem` stamps it. `style_profile_version` flows through
+  generically but is nil today (no request carries one).
+- **Provenance flow:** request `style_profile_id` → handler `input_payload` →
+  worker → `assets.InsertParams` → `InsertVisualAsset` →
+  `visual_assets.style_profile_id` → retrieval matches it.
+- `TestEndToEndGeneratedPackAssetIsRetrievable` proves a *generated* (not
+  seeded) pack asset persists `style_profile_id` and is returned as
+  `exact_match` by the retrieval layer. The original seed-only retrieval tests
+  still pass.
 
 ## Retrieval algorithm (92)
 
