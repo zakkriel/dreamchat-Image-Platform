@@ -76,6 +76,7 @@ func main() {
 
 	mux := asynq.NewServeMux()
 	mux.HandleFunc(jobs.TaskGenerateArtifact, worker.NewHandlerFunc())
+	mux.HandleFunc(jobs.TaskGeneratePack, worker.NewPackHandlerFunc())
 
 	errCh := make(chan error, 1)
 	go func() {

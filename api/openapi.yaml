@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: DreamChat Image Platform API
-  version: 0.5.0
+  version: 0.5.1
   description: |
     Standalone API for generating, storing, retrieving, and versioning persistent visual assets for DreamChat worlds.
 
@@ -1356,6 +1356,12 @@ components:
             ID of the `cost_reservation` row created for this job. The
             reservation is committed against the budget on job success and
             released on failure/cancel.
+        asset_pack_id:
+          type: string
+          description: |
+            ID of the `asset_pack` row created for this job. Returned only
+            by the two generate-pack endpoints (PRD 04 / ADR-008); absent
+            for single-asset jobs.
     GenerationJob:
       type: object
       required: [id, status, job_type, created_at, updated_at]
@@ -1365,6 +1371,12 @@ components:
           $ref: '#/components/schemas/GenerationJobStatus'
         job_type: { type: string }
         visual_identity_id: { type: string }
+        asset_pack_id:
+          type: string
+          description: |
+            Set when this job created/extended an asset pack
+            (generate-pack endpoints). Pack progress is observed through
+            this job: `final_asset_ids` carries the per-item assets.
         preview_asset_ids:
           type: array
           items: { type: string }
@@ -1867,6 +1879,13 @@ components:
 # Confidence to Implement
 #
 # Score: 94/100 — Very High
+#
+# v0.5.1 — Phase 5A pack fan-out (additive):
+#   * `GenerationJobAccepted.asset_pack_id` — returned by the two
+#     generate-pack endpoints so callers can correlate the 202 with the
+#     created `asset_packs` row.
+#   * `GenerationJob.asset_pack_id` — pack progress is observed through
+#     the existing GET /v1/jobs/{job_id}; no separate pack GET in 5A.
 #
 # v0.5.0 — adds cost-control + preview-capability spec:
 #   * Replaces `PriceBookEntry`/`PriceBookEntryWrite` with the richer

@@ -76,7 +76,14 @@ func cleanup(t *testing.T, pool *pgxpool.Pool) {
 	exec(`DELETE FROM generation_cost_events WHERE tenant_id = $1`, itTenant)
 	exec(`DELETE FROM provider_attempts WHERE generation_job_id IN (SELECT id FROM generation_jobs WHERE tenant_id = $1)`, itTenant)
 	exec(`DELETE FROM idempotency_keys WHERE token_id = $1`, itTokenID)
+	// asset_pack_items FKs both visual_assets and asset_packs; clear it first.
+	exec(`DELETE FROM asset_pack_items WHERE asset_pack_id IN (SELECT id FROM asset_packs WHERE tenant_id = $1)`, itTenant)
 	exec(`DELETE FROM visual_assets WHERE tenant_id = $1`, itTenant)
+	// asset_packs FKs visual_identities + style_profiles + api_tokens; clear
+	// before all three.
+	exec(`DELETE FROM asset_packs WHERE tenant_id = $1`, itTenant)
+	exec(`DELETE FROM visual_identity_versions WHERE visual_identity_id IN (SELECT id FROM visual_identities WHERE tenant_id = $1)`, itTenant)
+	exec(`DELETE FROM visual_identities WHERE tenant_id = $1`, itTenant)
 	// cost_reservation_budget_holds references both cost_reservations and
 	// cost_budgets; clear it before either.
 	exec(`DELETE FROM cost_reservation_budget_holds WHERE cost_reservation_id IN (SELECT id FROM cost_reservations WHERE tenant_id = $1)`, itTenant)
@@ -133,9 +140,10 @@ func openTestStorage(t *testing.T) storage.Storage {
 // how many tasks were placed on the queue. The handler exercises the
 // jobs.Service flow against the real database; the queue is in-process.
 type recordingEnqueuer struct {
-	mu     sync.Mutex
-	jobIDs []string
-	failOn map[string]bool
+	mu         sync.Mutex
+	jobIDs     []string
+	packJobIDs []string
+	failOn     map[string]bool
 }
 
 func newRecordingEnqueuer() *recordingEnqueuer {
@@ -153,6 +161,24 @@ func (e *recordingEnqueuer) EnqueueGenerateArtifact(_ context.Context, jobID str
 	}
 	e.jobIDs = append(e.jobIDs, jobID)
 	return nil
+}
+
+func (e *recordingEnqueuer) EnqueueGeneratePack(_ context.Context, jobID string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.failOn[jobID] || e.failOn["*"] {
+		return errors.New("forced enqueue failure")
+	}
+	e.packJobIDs = append(e.packJobIDs, jobID)
+	return nil
+}
+
+func (e *recordingEnqueuer) packSnapshot() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([]string, len(e.packJobIDs))
+	copy(out, e.packJobIDs)
+	return out
 }
 
 func (e *recordingEnqueuer) Close() error { return nil }

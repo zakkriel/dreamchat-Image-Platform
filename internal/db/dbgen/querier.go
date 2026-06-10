@@ -28,6 +28,7 @@ type Querier interface {
 	// means there is no active price entry → fail closed (no_price_entry).
 	EstimateOperationCost(ctx context.Context, arg EstimateOperationCostParams) (EstimateOperationCostRow, error)
 	GetActiveAPITokenByPrefix(ctx context.Context, tokenPrefix string) (GetActiveAPITokenByPrefixRow, error)
+	GetAssetPackByID(ctx context.Context, id string) (AssetPack, error)
 	GetCostBudget(ctx context.Context, id string) (GetCostBudgetRow, error)
 	GetGenerationJobByID(ctx context.Context, arg GetGenerationJobByIDParams) (GenerationJob, error)
 	GetGenerationJobByIDUnchecked(ctx context.Context, id string) (GenerationJob, error)
@@ -38,6 +39,12 @@ type Querier interface {
 	GetVisualIdentityByID(ctx context.Context, arg GetVisualIdentityByIDParams) (VisualIdentity, error)
 	GetVisualIdentityByOwner(ctx context.Context, arg GetVisualIdentityByOwnerParams) (VisualIdentity, error)
 	GetVisualIdentityByOwnerForUpdate(ctx context.Context, arg GetVisualIdentityByOwnerForUpdateParams) (VisualIdentity, error)
+	// Pack orchestration queries (Phase 5A, ADR-008). The platform — not the
+	// provider adapter — owns pack fan-out: the create transaction inserts the
+	// asset_packs row alongside the generation_jobs row, and the worker writes
+	// one asset_pack_items row per generated variant.
+	InsertAssetPack(ctx context.Context, arg InsertAssetPackParams) (AssetPack, error)
+	InsertAssetPackItem(ctx context.Context, arg InsertAssetPackItemParams) error
 	// ---------------------------------------------------------------------------
 	// Audit events
 	// ---------------------------------------------------------------------------
@@ -72,6 +79,7 @@ type Querier interface {
 	InsertVisualAsset(ctx context.Context, arg InsertVisualAssetParams) (VisualAsset, error)
 	InsertVisualIdentity(ctx context.Context, arg InsertVisualIdentityParams) (VisualIdentity, error)
 	InsertVisualIdentityVersion(ctx context.Context, arg InsertVisualIdentityVersionParams) error
+	ListAssetPackItems(ctx context.Context, assetPackID string) ([]AssetPackItem, error)
 	// ListBudgetsForReservation returns every budget that could apply to a
 	// request: the tenant-scope budget(s) plus any token / world / user scoped
 	// budgets matching the request's identifiers. The caller picks which to
@@ -123,6 +131,9 @@ type Querier interface {
 	ReservePausedBudget(ctx context.Context, arg ReservePausedBudgetParams) (string, error)
 	// SetGenerationJobActualCost records the committed actual on the job row.
 	SetGenerationJobActualCost(ctx context.Context, arg SetGenerationJobActualCostParams) error
+	// SetGenerationJobAssetPack links the job to the pack it created. Run inside
+	// the create transaction, after both rows exist.
+	SetGenerationJobAssetPack(ctx context.Context, arg SetGenerationJobAssetPackParams) error
 	// SetGenerationJobCost links a job to its cost_reservation and records the
 	// pre-flight estimate. Run inside the create transaction, after the
 	// reservation row exists.
@@ -141,6 +152,7 @@ type Querier interface {
 	// entry was actually superseded.
 	SupersedePreviousActivePrice(ctx context.Context, arg SupersedePreviousActivePriceParams) (int64, error)
 	TouchAPITokenLastUsed(ctx context.Context, id string) error
+	UpdateAssetPackStatus(ctx context.Context, arg UpdateAssetPackStatusParams) error
 	// UpdateCostBudget mutates only limit_amount and status. reserved_amount,
 	// spent_amount, and the scope/period identity stay platform-owned and fixed.
 	UpdateCostBudget(ctx context.Context, arg UpdateCostBudgetParams) (UpdateCostBudgetRow, error)

@@ -14,17 +14,17 @@ WHERE id = $1
 
 -- name: InsertVisualAsset :one
 INSERT INTO visual_assets (
-    id, tenant_id, world_id, asset_type, variant_key,
+    id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
     quality_tier, status,
     low_res_url, high_res_url, thumbnail_url,
     provider_id, model_id, prompt_hash, seed,
     generation_job_id, generated_at
 ) VALUES (
-    $1, $2, $3, $4, $5,
-    $6, 'ready',
-    $7, $8, $9,
-    $10, $11, $12, $13,
-    $14, now()
+    $1, $2, $3, $4, $5, $6,
+    $7, 'ready',
+    $8, $9, $10,
+    $11, $12, $13, $14,
+    $15, now()
 )
 RETURNING id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
           variant_family, version, state_version, style_profile_id,

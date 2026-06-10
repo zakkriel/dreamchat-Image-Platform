@@ -43,20 +43,21 @@ type VisualAsset struct {
 
 // InsertParams captures what the worker writes when a generation succeeds.
 type InsertParams struct {
-	ID              string
-	TenantID        string
-	WorldID         string
-	AssetType       string
-	VariantKey      string
-	QualityTier     string
-	LowResUrl       *string
-	HighResUrl      *string
-	ThumbnailUrl    *string
-	ProviderID      *string
-	ModelID         *string
-	PromptHash      *string
-	Seed            *string
-	GenerationJobID *string
+	ID               string
+	TenantID         string
+	WorldID          string
+	VisualIdentityID *string
+	AssetType        string
+	VariantKey       string
+	QualityTier      string
+	LowResUrl        *string
+	HighResUrl       *string
+	ThumbnailUrl     *string
+	ProviderID       *string
+	ModelID          *string
+	PromptHash       *string
+	Seed             *string
+	GenerationJobID  *string
 }
 
 type Repository interface {
@@ -74,20 +75,21 @@ func NewRepository(pool *pgxpool.Pool) Repository {
 
 func (r *pgRepository) Insert(ctx context.Context, params InsertParams) (VisualAsset, error) {
 	row, err := r.q.InsertVisualAsset(ctx, dbgen.InsertVisualAssetParams{
-		ID:              params.ID,
-		TenantID:        params.TenantID,
-		WorldID:         params.WorldID,
-		AssetType:       params.AssetType,
-		VariantKey:      params.VariantKey,
-		QualityTier:     params.QualityTier,
-		LowResUrl:       params.LowResUrl,
-		HighResUrl:      params.HighResUrl,
-		ThumbnailUrl:    params.ThumbnailUrl,
-		ProviderID:      params.ProviderID,
-		ModelID:         params.ModelID,
-		PromptHash:      params.PromptHash,
-		Seed:            params.Seed,
-		GenerationJobID: params.GenerationJobID,
+		ID:               params.ID,
+		TenantID:         params.TenantID,
+		WorldID:          params.WorldID,
+		VisualIdentityID: params.VisualIdentityID,
+		AssetType:        params.AssetType,
+		VariantKey:       params.VariantKey,
+		QualityTier:      params.QualityTier,
+		LowResUrl:        params.LowResUrl,
+		HighResUrl:       params.HighResUrl,
+		ThumbnailUrl:     params.ThumbnailUrl,
+		ProviderID:       params.ProviderID,
+		ModelID:          params.ModelID,
+		PromptHash:       params.PromptHash,
+		Seed:             params.Seed,
+		GenerationJobID:  params.GenerationJobID,
 	})
 	if err != nil {
 		return VisualAsset{}, err

@@ -21,6 +21,8 @@ const (
 	PrefixProviderPrice   = "price"
 	PrefixCostBudget      = "bud"
 	PrefixAuditEvent      = "audit"
+	PrefixAssetPack       = "pack"
+	PrefixAssetPackItem   = "pki"
 )
 
 // New returns an opaque ID of the form "<prefix>_<16 hex chars>".
@@ -40,6 +42,8 @@ func NewBudgetHoldID() string      { return New(PrefixBudgetHold) }
 func NewProviderPriceID() string   { return New(PrefixProviderPrice) }
 func NewCostBudgetID() string      { return New(PrefixCostBudget) }
 func NewAuditEventID() string      { return New(PrefixAuditEvent) }
+func NewAssetPackID() string       { return New(PrefixAssetPack) }
+func NewAssetPackItemID() string   { return New(PrefixAssetPackItem) }
 
 func randomHex(byteLen int) string {
 	b := make([]byte, byteLen)

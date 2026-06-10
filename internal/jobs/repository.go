@@ -29,6 +29,7 @@ type Job struct {
 	JobType            string
 	Status             string
 	RequestedByTokenID *string
+	AssetPackID        *string
 	InputPayload       map[string]any
 	FallbackPolicy     *string
 	CacheResult        *string
@@ -72,6 +73,25 @@ type ProviderAttempt struct {
 	Status          string
 }
 
+// AssetPackItemInsertParams captures one delivered pack variant (ADR-008:
+// the worker, not the provider adapter, writes asset_pack_items).
+type AssetPackItemInsertParams struct {
+	ID            string
+	AssetPackID   string
+	VisualAssetID string
+	VariantKey    string
+	SortOrder     int32
+}
+
+// AssetPackItem is the domain view of an asset_pack_items row.
+type AssetPackItem struct {
+	ID            string
+	AssetPackID   string
+	VisualAssetID string
+	VariantKey    string
+	SortOrder     int32
+}
+
 // CostEventInsertParams captures a single cost-event row for telemetry.
 type CostEventInsertParams struct {
 	ID                string
@@ -98,6 +118,13 @@ type Repository interface {
 	MarkProviderAttemptFailed(ctx context.Context, id, errorCode, errorMessage string, latencyMs int32) error
 	CountProviderAttempts(ctx context.Context, jobID string) (int32, error)
 	InsertCostEvent(ctx context.Context, params CostEventInsertParams) error
+
+	// Pack fan-out (Phase 5A). The pack row itself is created in the jobs
+	// service's create transaction; the worker only moves its status and
+	// appends items.
+	UpdateAssetPackStatus(ctx context.Context, packID, status string) error
+	InsertAssetPackItem(ctx context.Context, params AssetPackItemInsertParams) error
+	ListAssetPackItems(ctx context.Context, packID string) ([]AssetPackItem, error)
 }
 
 type pgRepository struct {
@@ -246,6 +273,41 @@ func (r *pgRepository) CountProviderAttempts(ctx context.Context, jobID string) 
 	return r.q.CountProviderAttemptsForJob(ctx, jobID)
 }
 
+func (r *pgRepository) UpdateAssetPackStatus(ctx context.Context, packID, status string) error {
+	return r.q.UpdateAssetPackStatus(ctx, dbgen.UpdateAssetPackStatusParams{
+		ID:     packID,
+		Status: status,
+	})
+}
+
+func (r *pgRepository) InsertAssetPackItem(ctx context.Context, params AssetPackItemInsertParams) error {
+	return r.q.InsertAssetPackItem(ctx, dbgen.InsertAssetPackItemParams{
+		ID:            params.ID,
+		AssetPackID:   params.AssetPackID,
+		VisualAssetID: params.VisualAssetID,
+		VariantKey:    params.VariantKey,
+		SortOrder:     params.SortOrder,
+	})
+}
+
+func (r *pgRepository) ListAssetPackItems(ctx context.Context, packID string) ([]AssetPackItem, error) {
+	rows, err := r.q.ListAssetPackItems(ctx, packID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]AssetPackItem, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, AssetPackItem{
+			ID:            row.ID,
+			AssetPackID:   row.AssetPackID,
+			VisualAssetID: row.VisualAssetID,
+			VariantKey:    row.VariantKey,
+			SortOrder:     row.SortOrder,
+		})
+	}
+	return out, nil
+}
+
 func (r *pgRepository) InsertCostEvent(ctx context.Context, params CostEventInsertParams) error {
 	return r.q.InsertGenerationCostEvent(ctx, dbgen.InsertGenerationCostEventParams{
 		ID:                params.ID,
@@ -276,6 +338,7 @@ func rowToJob(row dbgen.GenerationJob) Job {
 		JobType:            row.JobType,
 		Status:             row.Status,
 		RequestedByTokenID: row.RequestedByTokenID,
+		AssetPackID:        row.AssetPackID,
 		FallbackPolicy:     row.FallbackPolicy,
 		CacheResult:        row.CacheResult,
 		PreviewAssetIds:    row.PreviewAssetIds,

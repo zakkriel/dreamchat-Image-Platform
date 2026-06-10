@@ -123,6 +123,7 @@ func mountV1(r chi.Router, deps Deps) {
 		mountIdentities(v1, deps)
 		mountAssets(v1, deps)
 		mountArtifacts(v1, deps)
+		mountPacks(v1, deps)
 		mountJobs(v1, deps)
 		mountAdminCost(v1, deps)
 		v1.Handle("/*", http.HandlerFunc(notFound))
@@ -163,6 +164,18 @@ func mountArtifacts(v1 chi.Router, deps Deps) {
 	}
 	h := handlers.NewArtifactsHandler(deps.JobsService, deps.StylesRepo, deps.Config.ImageProvider)
 	v1.With(auth.RequireScopes("images:write")).Post("/artifacts/{artifact_id}/generate", h.Generate)
+}
+
+// mountPacks wires the Phase 5A generate-pack endpoints. They mirror the
+// artifact generate path but create an asset_packs row and fan out per
+// variant in the worker (ADR-008).
+func mountPacks(v1 chi.Router, deps Deps) {
+	if deps.JobsService == nil || deps.StylesRepo == nil || deps.IdentitiesRepo == nil {
+		return
+	}
+	h := handlers.NewPacksHandler(deps.JobsService, deps.StylesRepo, deps.IdentitiesRepo, deps.Config.ImageProvider)
+	v1.With(auth.RequireScopes("images:write")).Post("/characters/{character_id}/generate-pack", h.GenerateCharacterPack)
+	v1.With(auth.RequireScopes("images:write")).Post("/places/{place_id}/generate-pack", h.GeneratePlacePack)
 }
 
 func mountJobs(v1 chi.Router, deps Deps) {

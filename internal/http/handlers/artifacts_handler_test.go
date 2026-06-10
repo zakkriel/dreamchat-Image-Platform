@@ -38,6 +38,7 @@ type stubCreator struct {
 
 type storedKey struct {
 	jobID       string
+	packID      string
 	endpoint    string
 	requestHash string
 }
@@ -66,8 +67,12 @@ func (s *stubCreator) CreateAndEnqueue(_ context.Context, params jobs.CreateAndE
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls = append(s.calls, params)
+	packID := ""
+	if params.AssetPack != nil {
+		packID = ids.NewAssetPackID()
+	}
 	if params.IdempotencyKey == "" {
-		return jobs.CreateResult{JobID: ids.NewGenerationJobID(), Status: "queued"}, nil
+		return jobs.CreateResult{JobID: ids.NewGenerationJobID(), Status: "queued", AssetPackID: packID}, nil
 	}
 	k := params.RequestedByTokenID + "|" + params.IdempotencyKey
 	if existing, ok := s.byKey[k]; ok {
@@ -78,11 +83,11 @@ func (s *stubCreator) CreateAndEnqueue(_ context.Context, params jobs.CreateAndE
 		if status == "" {
 			status = "queued"
 		}
-		return jobs.CreateResult{JobID: existing.jobID, Status: status, Replayed: true}, nil
+		return jobs.CreateResult{JobID: existing.jobID, Status: status, Replayed: true, AssetPackID: existing.packID}, nil
 	}
 	jobID := ids.NewGenerationJobID()
-	s.byKey[k] = storedKey{jobID: jobID, endpoint: params.Endpoint, requestHash: params.RequestHash}
-	return jobs.CreateResult{JobID: jobID, Status: "queued"}, nil
+	s.byKey[k] = storedKey{jobID: jobID, packID: packID, endpoint: params.Endpoint, requestHash: params.RequestHash}
+	return jobs.CreateResult{JobID: jobID, Status: "queued", AssetPackID: packID}, nil
 }
 
 func newArtifactsRouter(creator jobs.Creator, stylesRepo styles.Repository, provider config.Provider) chi.Router {

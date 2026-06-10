@@ -299,4 +299,5 @@ func TestAdminBudgetCreateAffectsNextGeneration(t *testing.T) {
 type noopEnqueuer struct{}
 
 func (noopEnqueuer) EnqueueGenerateArtifact(context.Context, string) error { return nil }
+func (noopEnqueuer) EnqueueGeneratePack(context.Context, string) error     { return nil }
 func (noopEnqueuer) Close() error                                          { return nil }

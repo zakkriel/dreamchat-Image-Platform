@@ -58,6 +58,13 @@ func (s *stubJobsRepo) CountProviderAttempts(context.Context, string) (int32, er
 func (s *stubJobsRepo) InsertCostEvent(context.Context, jobs.CostEventInsertParams) error {
 	return nil
 }
+func (s *stubJobsRepo) UpdateAssetPackStatus(context.Context, string, string) error { return nil }
+func (s *stubJobsRepo) InsertAssetPackItem(context.Context, jobs.AssetPackItemInsertParams) error {
+	return nil
+}
+func (s *stubJobsRepo) ListAssetPackItems(context.Context, string) ([]jobs.AssetPackItem, error) {
+	return nil, nil
+}
 
 func newJobsRouter(repo jobs.Repository) chi.Router {
 	h := NewJobsHandler(repo)

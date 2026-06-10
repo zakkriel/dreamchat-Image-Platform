@@ -19,10 +19,18 @@ type fakeJobsRepo struct {
 	markRunningCalls int
 	markCompleted    []string
 	markFailed       []string
+
+	// Pack fan-out tracking (Phase 5A).
+	packStatuses map[string][]string // packID -> status transitions
+	packItems    map[string][]AssetPackItem
 }
 
 func newFakeJobsRepo() *fakeJobsRepo {
-	return &fakeJobsRepo{jobs: map[string]Job{}}
+	return &fakeJobsRepo{
+		jobs:         map[string]Job{},
+		packStatuses: map[string][]string{},
+		packItems:    map[string][]AssetPackItem{},
+	}
 }
 
 func (r *fakeJobsRepo) Insert(_ context.Context, params InsertParams) (Job, error) {
@@ -147,6 +155,41 @@ func (r *fakeJobsRepo) InsertCostEvent(_ context.Context, params CostEventInsert
 	defer r.mu.Unlock()
 	r.costEvents = append(r.costEvents, params)
 	return nil
+}
+
+func (r *fakeJobsRepo) UpdateAssetPackStatus(_ context.Context, packID, status string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.packStatuses[packID] = append(r.packStatuses[packID], status)
+	return nil
+}
+
+func (r *fakeJobsRepo) InsertAssetPackItem(_ context.Context, params AssetPackItemInsertParams) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, item := range r.packItems[params.AssetPackID] {
+		if item.VariantKey == params.VariantKey {
+			return errors.New("duplicate variant_key for pack")
+		}
+	}
+	r.packItems[params.AssetPackID] = append(r.packItems[params.AssetPackID], AssetPackItem(params))
+	return nil
+}
+
+func (r *fakeJobsRepo) ListAssetPackItems(_ context.Context, packID string) ([]AssetPackItem, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]AssetPackItem(nil), r.packItems[packID]...), nil
+}
+
+func (r *fakeJobsRepo) lastPackStatus(packID string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	transitions := r.packStatuses[packID]
+	if len(transitions) == 0 {
+		return ""
+	}
+	return transitions[len(transitions)-1]
 }
 
 type fakeAssetsRepo struct {
