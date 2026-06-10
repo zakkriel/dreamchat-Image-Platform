@@ -811,3 +811,90 @@ func TestPackWorkerRetryAfterCompletionDoesNotRefanOut(t *testing.T) {
 		t.Fatalf("budget after retry: expected reserved 0 / spent 0.0600, got %s / %s", reserved, spent)
 	}
 }
+
+// TestEndToEndGeneratedPackAssetIsRetrievable proves the 6A1 provenance fix:
+// an asset produced by the real pack generation path persists style_profile_id
+// and is therefore findable by the retrieval layer (which matches on a
+// concrete style_profile_id). Before the fix, generated rows had
+// style_profile_id = NULL and retrieval could never find them — only manually
+// seeded rows worked. This test deliberately uses NO manual visual_assets
+// insert; the rows come entirely from the worker.
+func TestEndToEndGeneratedPackAssetIsRetrievable(t *testing.T) {
+	pool := openTestPool(t)
+	defer pool.Close()
+	cleanup(t, pool)
+	defer cleanup(t, pool)
+	seedFixtures(t, pool)
+	seedPackIdentities(t, pool)
+	seedBudget(t, pool, "bud_pack_retrieve", "tenant", itTenant, "active", "1.0000")
+
+	jobsRepo := jobs.NewRepository(pool)
+	enq := newRecordingEnqueuer()
+	svc := newCostService(pool, enq)
+	r := mountPackTestRouter(svc, pool, jobsRepo)
+
+	rec := sendPackRequest(t, r, "/v1/characters/"+itCharacterID+"/generate-pack", map[string]any{
+		"world_id":         "w1",
+		"style_profile_id": itStyleID,
+	}, "")
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("POST expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	jobID, _ := resp["job_id"].(string)
+	if jobID == "" {
+		t.Fatalf("expected job_id, got %v", resp)
+	}
+
+	w := newPackTestWorker(pool, mock.New())
+	if err := w.ProcessPack(context.Background(), jobID); err != nil {
+		t.Fatalf("worker pack process: %v", err)
+	}
+
+	// Provenance: every generated asset persists the requested style_profile_id
+	// (non-null), so the next assertion's retrieval can match on it.
+	if got := scalar(t, pool,
+		`SELECT count(*) FROM visual_assets WHERE generation_job_id = $1 AND style_profile_id = $2`,
+		jobID, itStyleID); got != "7" {
+		t.Fatalf("expected 7 generated assets with style_profile_id=%s, got %s", itStyleID, got)
+	}
+	if got := scalar(t, pool,
+		`SELECT count(*) FROM visual_assets WHERE generation_job_id = $1 AND style_profile_id IS NULL`,
+		jobID); got != "0" {
+		t.Fatalf("no generated asset should have NULL style_profile_id, got %s", got)
+	}
+
+	// Retrieval against a generated row (NOT a manual seed): exact match on the
+	// platform-produced neutral_front_portrait, scoped by the requested style.
+	retriever := assets.NewRetriever(assets.NewRepository(pool))
+	res, err := retriever.Retrieve(context.Background(), assets.RetrievalQuery{
+		TenantID:         itTenant,
+		WorldID:          "w1",
+		VisualIdentityID: itIdentityCh,
+		EntityType:       assets.EntityCharacter,
+		VariantKey:       "neutral_front_portrait",
+		StyleProfileID:   itStyleID,
+		StateVersion:     1,
+		QualityTier:      "standard",
+		FallbackPolicy:   assets.FallbackPolicyCompatibleOnly,
+	})
+	if err != nil {
+		t.Fatalf("Retrieve: %v", err)
+	}
+	if res.MatchType != assets.OutcomeExactMatch {
+		t.Fatalf("want exact_match on a generated asset, got %s", res.MatchType)
+	}
+	if res.Asset == nil {
+		t.Fatal("expected a returned asset")
+	}
+	if res.Asset.StyleProfileID == nil || *res.Asset.StyleProfileID != itStyleID {
+		t.Fatalf("returned asset style_profile_id: want %s, got %v", itStyleID, res.Asset.StyleProfileID)
+	}
+	// The returned asset is one of the rows this job generated.
+	if got := scalar(t, pool,
+		`SELECT count(*) FROM visual_assets WHERE id = $1 AND generation_job_id = $2`,
+		res.Asset.ID, jobID); got != "1" {
+		t.Fatalf("returned asset %s is not one of the generated rows for job %s", res.Asset.ID, jobID)
+	}
+}

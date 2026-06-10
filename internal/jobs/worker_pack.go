@@ -263,21 +263,23 @@ func (w *Worker) generatePackItem(ctx context.Context, job Job, plan packPlan, p
 	// An unrecognized key classifies as family "unknown" with no fallback
 	// eligibility — never silently generic-safe.
 	assetParams := assets.InsertParams{
-		ID:               assetID,
-		TenantID:         job.TenantID,
-		WorldID:          plan.worldID,
-		VisualIdentityID: &identityID,
-		AssetType:        plan.assetType,
-		VariantKey:       variantKey,
-		QualityTier:      plan.qualityTier,
-		LowResUrl:        strPtr(urls.low),
-		HighResUrl:       strPtr(urls.high),
-		ThumbnailUrl:     strPtr(urls.thumb),
-		ProviderID:       &providerID,
-		ModelID:          &modelID,
-		PromptHash:       strPtr(result.PromptHash),
-		Seed:             strPtr(result.Seed),
-		GenerationJobID:  &jobIDRef,
+		ID:                  assetID,
+		TenantID:            job.TenantID,
+		WorldID:             plan.worldID,
+		VisualIdentityID:    &identityID,
+		AssetType:           plan.assetType,
+		VariantKey:          variantKey,
+		StyleProfileID:      plan.styleProfileID,
+		StyleProfileVersion: plan.styleProfileVersion,
+		QualityTier:         plan.qualityTier,
+		LowResUrl:           strPtr(urls.low),
+		HighResUrl:          strPtr(urls.high),
+		ThumbnailUrl:        strPtr(urls.thumb),
+		ProviderID:          &providerID,
+		ModelID:             &modelID,
+		PromptHash:          strPtr(result.PromptHash),
+		Seed:                strPtr(result.Seed),
+		GenerationJobID:     &jobIDRef,
 	}
 	assets.ClassifyVariant(plan.entityType, variantKey).ApplyTo(&assetParams)
 	if err := w.Jobs.InsertPackItemWithAsset(ctx, assetParams, AssetPackItemInsertParams{
@@ -306,14 +308,16 @@ func (w *Worker) markPackAttemptFailed(ctx context.Context, attemptID string, ca
 // packPlan is the per-run view of the pack job's input payload, written by
 // the generate-pack handlers at request time so the worker needs only job_id.
 type packPlan struct {
-	packID           string
-	variantKeys      []string
-	worldID          string
-	visualIdentityID string
-	displayName      string
-	assetType        string
-	entityType       string // assets.EntityCharacter | assets.EntityPlace
-	qualityTier      string
+	packID              string
+	variantKeys         []string
+	worldID             string
+	visualIdentityID    string
+	displayName         string
+	assetType           string
+	entityType          string // assets.EntityCharacter | assets.EntityPlace
+	qualityTier         string
+	styleProfileID      *string
+	styleProfileVersion *int32
 }
 
 func packPlanFromJob(job Job) (packPlan, error) {
@@ -356,5 +360,10 @@ func packPlanFromJob(job Job) (packPlan, error) {
 	if plan.qualityTier == "" {
 		plan.qualityTier = "standard"
 	}
+	// Style profile provenance from the pack request (carried in
+	// input_payload) so retrieval can later find generated pack assets by
+	// style. style_profile_version is optional (no request carries one yet).
+	plan.styleProfileID = payloadStrPtr(job.InputPayload, "style_profile_id")
+	plan.styleProfileVersion = payloadInt32Ptr(job.InputPayload, "style_profile_version")
 	return plan, nil
 }

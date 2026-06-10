@@ -281,10 +281,18 @@ type AssetSearchRequest struct {
 	// OwnerType Owning entity of a visual identity.
 	OwnerType *OwnerType `json:"owner_type,omitempty"`
 
+	// QualityTier Output quality tier requested for generation.
+	QualityTier *QualityTier `json:"quality_tier,omitempty"`
+
 	// StateVersion Requested state version for the entity. Defaults to current.
 	// Set explicitly when requesting historical/flashback assets.
 	StateVersion   *int    `json:"state_version,omitempty"`
 	StyleProfileId *string `json:"style_profile_id,omitempty"`
+
+	// StyleProfileVersion Requested style profile version. Optional; when set it must match
+	// exactly for an `exact_match`. See
+	// `docs/architecture/variant-compatibility-matrix.md` §4.
+	StyleProfileVersion *int `json:"style_profile_version,omitempty"`
 
 	// VariantFamily Filter / matrix-lookup family for the request. See
 	// `docs/architecture/variant-compatibility-matrix.md` §6.

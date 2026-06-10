@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -216,6 +217,76 @@ func (s *stubAssetsRepo) GetByIDForTenant(_ context.Context, id, tenantID string
 	return row, nil
 }
 
+// seed registers an asset for the retrieval/search tests.
+func (s *stubAssetsRepo) seed(a assets.VisualAsset) {
+	s.byID[a.ID] = a
+}
+
+// FindExact mirrors the SQL exact-match predicate in memory: same tenant /
+// world / identity / variant / state / style, status 'ready', optional
+// style_profile_version and quality_tier exact match.
+func (s *stubAssetsRepo) FindExact(_ context.Context, q assets.RetrievalQuery) (assets.VisualAsset, error) {
+	var matches []assets.VisualAsset
+	for _, a := range s.byID {
+		if a.TenantID != q.TenantID || a.WorldID != q.WorldID {
+			continue
+		}
+		if strVal(a.VisualIdentityID) != q.VisualIdentityID {
+			continue
+		}
+		if a.VariantKey != q.VariantKey || a.StateVersion != q.StateVersion {
+			continue
+		}
+		if strVal(a.StyleProfileID) != q.StyleProfileID {
+			continue
+		}
+		if a.Status != "ready" {
+			continue
+		}
+		if q.StyleProfileVersion != nil {
+			if a.StyleProfileVersion == nil || *a.StyleProfileVersion != *q.StyleProfileVersion {
+				continue
+			}
+		}
+		if q.QualityTier != "" && a.QualityTier != q.QualityTier {
+			continue
+		}
+		matches = append(matches, a)
+	}
+	if len(matches) == 0 {
+		return assets.VisualAsset{}, assets.ErrNotFound
+	}
+	sort.Slice(matches, func(i, j int) bool { return matches[i].ID < matches[j].ID })
+	return matches[0], nil
+}
+
+// ListRetrievalCandidates mirrors the SQL candidate predicate: ready,
+// non-anchor assets for the same tenant/world/identity/state/style.
+func (s *stubAssetsRepo) ListRetrievalCandidates(_ context.Context, q assets.RetrievalQuery) ([]assets.VisualAsset, error) {
+	var out []assets.VisualAsset
+	for _, a := range s.byID {
+		if a.TenantID != q.TenantID || a.WorldID != q.WorldID {
+			continue
+		}
+		if strVal(a.VisualIdentityID) != q.VisualIdentityID {
+			continue
+		}
+		if a.StateVersion != q.StateVersion || strVal(a.StyleProfileID) != q.StyleProfileID {
+			continue
+		}
+		if a.Status != "ready" || a.IsIdentityAnchor {
+			continue
+		}
+		out = append(out, a)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+func (s *stubAssetsRepo) ListRetrievalCandidatesByCompatTag(ctx context.Context, q assets.RetrievalQuery, _ []string) ([]assets.VisualAsset, error) {
+	return s.ListRetrievalCandidates(ctx, q)
+}
+
 func (s *stubAssetsRepo) Insert(_ context.Context, params assets.InsertParams) (assets.VisualAsset, error) {
 	asset := assets.VisualAsset{
 		ID:           params.ID,
@@ -278,9 +349,10 @@ func newStylesRouter(repo styles.Repository, idFn func() string) chi.Router {
 }
 
 func newAssetsRouter(repo assets.Repository) chi.Router {
-	h := NewAssetsHandler(repo)
+	h := NewAssetsHandler(repo, assets.NewRetriever(repo))
 	r := chi.NewRouter()
 	r.Get("/v1/assets/{asset_id}", h.Get)
+	r.Post("/v1/assets/search", h.Search)
 	return r
 }
 
@@ -760,6 +832,191 @@ func TestAssetGetCrossTenantReturns404(t *testing.T) {
 	}
 	rec := sendJSON(t, newAssetsRouter(repo), http.MethodGet, "/v1/assets/asset_1", tenantB, nil)
 	assertError(t, rec, http.StatusNotFound, "not_found")
+}
+
+// ---------------------------------------------------------------------------
+// Asset search (POST /v1/assets/search) tests
+// ---------------------------------------------------------------------------
+
+const (
+	searchWorld    = "w_search"
+	searchIdentity = "vi_search"
+	searchStyle    = "sty_search"
+)
+
+// readyAsset builds a ready, classified character/place asset for the search
+// tests (mirrors what the pack worker would have written in Phase 5B).
+func readyAsset(id, tenant, entity, variantKey string) assets.VisualAsset {
+	cv := assets.ClassifyVariant(entity, variantKey)
+	fam := cv.Family
+	rank := cv.FallbackRank
+	world := searchWorld
+	identity := searchIdentity
+	style := searchStyle
+	return assets.VisualAsset{
+		ID:                id,
+		TenantID:          tenant,
+		WorldID:           world,
+		VisualIdentityID:  &identity,
+		AssetType:         "character_portrait",
+		VariantKey:        variantKey,
+		VariantFamily:     &fam,
+		StateVersion:      1,
+		StyleProfileID:    &style,
+		QualityTier:       "standard",
+		Status:            "ready",
+		CompatibilityTags: cv.CompatibilityTags,
+		FallbackAllowed:   cv.FallbackAllowed,
+		FallbackRank:      &rank,
+	}
+}
+
+// searchBody is the minimal valid request body; callers override fields.
+func searchBody(ownerType, variantKey, policy string) map[string]any {
+	return map[string]any{
+		"world_id":           searchWorld,
+		"visual_identity_id": searchIdentity,
+		"owner_type":         ownerType,
+		"variant_key":        variantKey,
+		"style_profile_id":   searchStyle,
+		"state_version":      1,
+		"quality_tier":       "standard",
+		"fallback_policy":    policy,
+	}
+}
+
+func TestAssetSearchExactMatch(t *testing.T) {
+	repo := newStubAssetsRepo()
+	repo.seed(readyAsset("a1", tenantA, "character", "neutral_front_portrait"))
+
+	body := searchBody("character", "neutral_front_portrait", "compatible_only")
+	rec := sendJSON(t, newAssetsRouter(repo), http.MethodPost, "/v1/assets/search", tenantA, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	resp := decode[map[string]any](t, rec)
+	if resp["match_type"] != "exact_match" {
+		t.Fatalf("want exact_match, got %v", resp["match_type"])
+	}
+	assetsList, _ := resp["assets"].([]any)
+	if len(assetsList) != 1 {
+		t.Fatalf("want 1 asset, got %d", len(assetsList))
+	}
+	if score, _ := resp["compatibility_score"].(float64); score != 1.0 {
+		t.Fatalf("want score 1.0, got %v", resp["compatibility_score"])
+	}
+}
+
+func TestAssetSearchCompatibleMatch(t *testing.T) {
+	repo := newStubAssetsRepo()
+	// neutral_front candidate, requesting neutral_three_quarter → compatible.
+	repo.seed(readyAsset("a1", tenantA, "character", "neutral_front_portrait"))
+
+	body := searchBody("character", "neutral_three_quarter_portrait", "compatible_only")
+	rec := sendJSON(t, newAssetsRouter(repo), http.MethodPost, "/v1/assets/search", tenantA, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	resp := decode[map[string]any](t, rec)
+	if resp["match_type"] != "compatible_match" {
+		t.Fatalf("want compatible_match, got %v", resp["match_type"])
+	}
+	if resp["fallback_reason"] == nil || resp["fallback_reason"] == "" {
+		t.Fatal("compatible match should carry a fallback_reason")
+	}
+	if gr, _ := resp["generation_recommended"].(bool); !gr {
+		t.Fatal("compatible match should recommend generation")
+	}
+}
+
+func TestAssetSearchPreviewFallback(t *testing.T) {
+	repo := newStubAssetsRepo()
+	// side_profile candidate, requesting neutral_front → preview-only.
+	repo.seed(readyAsset("a1", tenantA, "character", "side_angle_portrait"))
+
+	body := searchBody("character", "neutral_front_portrait", "preview_allowed")
+	rec := sendJSON(t, newAssetsRouter(repo), http.MethodPost, "/v1/assets/search", tenantA, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	resp := decode[map[string]any](t, rec)
+	if resp["match_type"] != "preview_fallback" {
+		t.Fatalf("want preview_fallback, got %v", resp["match_type"])
+	}
+}
+
+func TestAssetSearchGeneratedRequired(t *testing.T) {
+	repo := newStubAssetsRepo()
+	// day_view candidate, requesting night_view (strict) → generate.
+	repo.seed(readyAsset("p1", tenantA, "place", "day_view"))
+
+	body := searchBody("place", "night_view", "compatible_only")
+	rec := sendJSON(t, newAssetsRouter(repo), http.MethodPost, "/v1/assets/search", tenantA, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	resp := decode[map[string]any](t, rec)
+	if resp["match_type"] != "generated_required" {
+		t.Fatalf("want generated_required, got %v", resp["match_type"])
+	}
+	assetsList, _ := resp["assets"].([]any)
+	if len(assetsList) != 0 {
+		t.Fatalf("generated_required should carry no asset, got %d", len(assetsList))
+	}
+	if gr, _ := resp["generation_recommended"].(bool); !gr {
+		t.Fatal("generated_required should recommend generation")
+	}
+}
+
+func TestAssetSearchTenantScoping(t *testing.T) {
+	repo := newStubAssetsRepo()
+	// Asset belongs to tenantB; tenantA must not see it.
+	repo.seed(readyAsset("a1", tenantB, "character", "neutral_front_portrait"))
+
+	body := searchBody("character", "neutral_front_portrait", "preview_allowed")
+	rec := sendJSON(t, newAssetsRouter(repo), http.MethodPost, "/v1/assets/search", tenantA, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	resp := decode[map[string]any](t, rec)
+	if resp["match_type"] != "generated_required" {
+		t.Fatalf("cross-tenant: want generated_required, got %v", resp["match_type"])
+	}
+}
+
+func TestAssetSearchMissingRequiredField(t *testing.T) {
+	repo := newStubAssetsRepo()
+	for _, missing := range []string{"world_id", "visual_identity_id", "owner_type", "variant_key", "style_profile_id", "state_version"} {
+		body := searchBody("character", "neutral_front_portrait", "compatible_only")
+		delete(body, missing)
+		rec := sendJSON(t, newAssetsRouter(repo), http.MethodPost, "/v1/assets/search", tenantA, body)
+		assertError(t, rec, http.StatusBadRequest, "invalid_request")
+	}
+}
+
+func TestAssetSearchInvalidFallbackPolicy(t *testing.T) {
+	repo := newStubAssetsRepo()
+	repo.seed(readyAsset("a1", tenantA, "character", "neutral_front_portrait"))
+
+	body := searchBody("character", "neutral_front_portrait", "bogus_policy")
+	rec := sendJSON(t, newAssetsRouter(repo), http.MethodPost, "/v1/assets/search", tenantA, body)
+	assertError(t, rec, http.StatusBadRequest, "invalid_request")
+}
+
+func TestAssetSearchMissingReadScope(t *testing.T) {
+	repo := newStubAssetsRepo()
+	h := NewAssetsHandler(repo, assets.NewRetriever(repo))
+	r := chi.NewRouter()
+	r.With(auth.RequireScopes("images:read")).Post("/v1/assets/search", h.Search)
+
+	var buf bytes.Buffer
+	_ = json.NewEncoder(&buf).Encode(searchBody("character", "neutral_front_portrait", "compatible_only"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/assets/search", &buf).
+		WithContext(authedContext(tenantA, "images:write")) // no images:read
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assertError(t, rec, http.StatusForbidden, "forbidden")
 }
 
 // ---------------------------------------------------------------------------

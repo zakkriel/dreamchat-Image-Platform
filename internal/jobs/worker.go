@@ -153,20 +153,25 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 	// the pricing path already resolves against it). Stamping it on the asset
 	// records provenance; real provider routing still picks the model upstream.
 	asset, err := w.Assets.Insert(ctx, assets.InsertParams{
-		ID:              assetID,
-		TenantID:        job.TenantID,
-		WorldID:         worldID,
-		AssetType:       "artifact",
-		VariantKey:      "default",
-		QualityTier:     "standard",
-		LowResUrl:       strPtr(urls.low),
-		HighResUrl:      strPtr(urls.high),
-		ThumbnailUrl:    strPtr(urls.thumb),
-		ProviderID:      &providerID,
-		ModelID:         &modelID,
-		PromptHash:      strPtr(promptHash),
-		Seed:            strPtr(seed),
-		GenerationJobID: &jobIDRef,
+		ID:         assetID,
+		TenantID:   job.TenantID,
+		WorldID:    worldID,
+		AssetType:  "artifact",
+		VariantKey: "default",
+		// Persist the style profile provenance from the request (carried in
+		// input_payload) so retrieval can later find this asset by style. The
+		// request has no style_profile_version yet, so it stays nil.
+		StyleProfileID:      payloadStrPtr(job.InputPayload, "style_profile_id"),
+		StyleProfileVersion: payloadInt32Ptr(job.InputPayload, "style_profile_version"),
+		QualityTier:         "standard",
+		LowResUrl:           strPtr(urls.low),
+		HighResUrl:          strPtr(urls.high),
+		ThumbnailUrl:        strPtr(urls.thumb),
+		ProviderID:          &providerID,
+		ModelID:             &modelID,
+		PromptHash:          strPtr(promptHash),
+		Seed:                strPtr(seed),
+		GenerationJobID:     &jobIDRef,
 	})
 	if err != nil {
 		w.recordFailure(ctx, job, attempt.ID, attempt.ProviderID, fmt.Errorf("insert asset: %w", err), latency, finalAttempt)
@@ -314,4 +319,31 @@ func strPtr(s string) *string {
 	}
 	out := s
 	return &out
+}
+
+// payloadStrPtr reads an optional string out of a job input payload, returning
+// nil when the key is absent or empty.
+func payloadStrPtr(payload map[string]any, key string) *string {
+	s, _ := payload[key].(string)
+	return strPtr(s)
+}
+
+// payloadInt32Ptr reads an optional integer out of a job input payload. JSON
+// numbers decode as float64; an absent or non-numeric value yields nil. This
+// lets a style_profile_version flow through if a future request carries one,
+// while today's requests (which don't) leave it nil.
+func payloadInt32Ptr(payload map[string]any, key string) *int32 {
+	switch v := payload[key].(type) {
+	case float64:
+		n := int32(v)
+		return &n
+	case int:
+		n := int32(v)
+		return &n
+	case int32:
+		n := v
+		return &n
+	default:
+		return nil
+	}
 }

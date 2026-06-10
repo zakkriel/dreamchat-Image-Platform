@@ -154,7 +154,9 @@ func mountAssets(v1 chi.Router, deps Deps) {
 	if deps.AssetsRepo == nil {
 		return
 	}
-	h := handlers.NewAssetsHandler(deps.AssetsRepo)
+	retriever := assets.NewRetriever(deps.AssetsRepo)
+	h := handlers.NewAssetsHandler(deps.AssetsRepo, retriever)
+	v1.With(auth.RequireScopes("images:read")).Post("/assets/search", h.Search)
 	v1.With(auth.RequireScopes("images:read")).Get("/assets/{asset_id}", h.Get)
 }
 
