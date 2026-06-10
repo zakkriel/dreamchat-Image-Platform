@@ -249,10 +249,15 @@ func (w *Worker) generatePackItem(ctx context.Context, job Job, plan packPlan, p
 		return "", err
 	}
 
+	// The visual_assets row and its asset_pack_items row commit in one
+	// transaction: a delivered variant is observable atomically, so a failed
+	// item insert can't strand an orphan asset the retry path (which detects
+	// delivery via asset_pack_items) would never see — and therefore can't
+	// produce duplicate assets for the same pack variant.
 	modelID := mockProviderModelID
 	jobIDRef := job.ID
 	identityID := plan.visualIdentityID
-	if _, err := w.Assets.Insert(ctx, assets.InsertParams{
+	if err := w.Jobs.InsertPackItemWithAsset(ctx, assets.InsertParams{
 		ID:               assetID,
 		TenantID:         job.TenantID,
 		WorldID:          plan.worldID,
@@ -268,19 +273,14 @@ func (w *Worker) generatePackItem(ctx context.Context, job Job, plan packPlan, p
 		PromptHash:       strPtr(result.PromptHash),
 		Seed:             strPtr(result.Seed),
 		GenerationJobID:  &jobIDRef,
-	}); err != nil {
-		w.markPackAttemptFailed(ctx, attempt.ID, fmt.Errorf("%w: insert asset: %v", errPersistence, err), latency)
-		return "", err
-	}
-
-	if err := w.Jobs.InsertAssetPackItem(ctx, AssetPackItemInsertParams{
+	}, AssetPackItemInsertParams{
 		ID:            ids.NewAssetPackItemID(),
 		AssetPackID:   plan.packID,
 		VisualAssetID: assetID,
 		VariantKey:    variantKey,
 		SortOrder:     int32(index),
 	}); err != nil {
-		w.markPackAttemptFailed(ctx, attempt.ID, fmt.Errorf("%w: insert pack item: %v", errPersistence, err), latency)
+		w.markPackAttemptFailed(ctx, attempt.ID, fmt.Errorf("%w: insert asset + pack item: %v", errPersistence, err), latency)
 		return "", err
 	}
 

@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
 )
 
@@ -60,6 +61,9 @@ func (s *stubJobsRepo) InsertCostEvent(context.Context, jobs.CostEventInsertPara
 }
 func (s *stubJobsRepo) UpdateAssetPackStatus(context.Context, string, string) error { return nil }
 func (s *stubJobsRepo) InsertAssetPackItem(context.Context, jobs.AssetPackItemInsertParams) error {
+	return nil
+}
+func (s *stubJobsRepo) InsertPackItemWithAsset(context.Context, assets.InsertParams, jobs.AssetPackItemInsertParams) error {
 	return nil
 }
 func (s *stubJobsRepo) ListAssetPackItems(context.Context, string) ([]jobs.AssetPackItem, error) {

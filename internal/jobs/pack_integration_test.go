@@ -317,6 +317,11 @@ func TestPackPartialFailureCompletesWithWarnings(t *testing.T) {
 	if got := scalar(t, pool, `SELECT count(*) FROM asset_pack_items WHERE asset_pack_id = $1`, packID); got != "2" {
 		t.Fatalf("expected 2 delivered items, got %s", got)
 	}
+	// Atomicity invariant: one visual asset per delivered item, no orphans —
+	// the asset and its pack item commit in a single transaction.
+	if got := scalar(t, pool, `SELECT count(*) FROM visual_assets WHERE generation_job_id = $1`, jobID); got != "2" {
+		t.Fatalf("expected exactly 2 visual_assets (no orphans), got %s", got)
+	}
 	// Cost rule for 5A: partial success still commits the full N × price
 	// hold (the provider was called N times).
 	if got := scalar(t, pool, `SELECT status FROM cost_reservations WHERE generation_job_id = $1`, jobID); got != "committed" {
@@ -428,6 +433,82 @@ func TestPackPreflightBudgetExceededIsNeverEnqueued(t *testing.T) {
 	}
 	if reserved, _ := budgetAmounts(t, pool, "bud_pack_tight"); reserved != "0.0000" {
 		t.Fatalf("budget must hold nothing on denial, got reserved %s", reserved)
+	}
+	// A denied pre-flight must not leave an asset pack behind: the pack row
+	// is only inserted after the reservation succeeds, so nothing can sit at
+	// status=planned for a job that will never run.
+	if got := scalar(t, pool, `SELECT count(*) FROM asset_packs WHERE tenant_id = $1`, itTenant); got != "0" {
+		t.Fatalf("expected no asset_packs row on denied pre-flight, got %s", got)
+	}
+	if got := scalar(t, pool, `SELECT count(*) FROM asset_packs WHERE tenant_id = $1 AND status = 'planned'`, itTenant); got != "0" {
+		t.Fatalf("no asset_pack may remain planned, got %s", got)
+	}
+	// The 422 body carries no asset_pack_id (none exists).
+	var errResp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &errResp)
+	if _, found := errResp["asset_pack_id"]; found {
+		t.Fatalf("denied pre-flight response must not carry asset_pack_id: %v", errResp)
+	}
+	// The failed job has no pack link either.
+	var packLink *string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT asset_pack_id FROM generation_jobs WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 1`,
+		itTenant).Scan(&packLink); err != nil {
+		t.Fatalf("read job pack link: %v", err)
+	}
+	if packLink != nil {
+		t.Fatalf("denied job must not link an asset pack, got %v", *packLink)
+	}
+}
+
+func TestPackEnqueueFailureFailsPackAndReleasesReservation(t *testing.T) {
+	pool := openTestPool(t)
+	defer pool.Close()
+	cleanup(t, pool)
+	defer cleanup(t, pool)
+	seedFixtures(t, pool)
+	seedPackIdentities(t, pool)
+	seedBudget(t, pool, "bud_pack_enq", "tenant", itTenant, "active", "1.0000")
+
+	jobsRepo := jobs.NewRepository(pool)
+	enq := newRecordingEnqueuer()
+	enq.failOn["*"] = true
+	svc := newCostService(pool, enq).WithFinalizer(cost.NewLifecycle(pool, nil))
+	r := mountPackTestRouter(svc, pool, jobsRepo)
+
+	rec := sendPackRequest(t, r, "/v1/characters/"+itCharacterID+"/generate-pack", map[string]any{
+		"world_id":         "w1",
+		"style_profile_id": itStyleID,
+	}, "")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 on enqueue failure, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Job failed with enqueue_failed.
+	var jobID, jobStatus string
+	var errorCode *string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT id, status, error_code FROM generation_jobs WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 1`,
+		itTenant).Scan(&jobID, &jobStatus, &errorCode); err != nil {
+		t.Fatalf("read job: %v", err)
+	}
+	if jobStatus != "failed" || errorCode == nil || *errorCode != "enqueue_failed" {
+		t.Fatalf("expected failed/enqueue_failed, got %s/%v", jobStatus, errorCode)
+	}
+	// Reservation released, budget refunded.
+	if got := scalar(t, pool, `SELECT status FROM cost_reservations WHERE generation_job_id = $1`, jobID); got != "released" {
+		t.Fatalf("reservation: expected released, got %s", got)
+	}
+	if reserved, spent := budgetAmounts(t, pool, "bud_pack_enq"); reserved != "0.0000" || spent != "0.0000" {
+		t.Fatalf("budget: expected full refund, got reserved %s / spent %s", reserved, spent)
+	}
+	// The pack (created after the successful pre-flight) is failed, never
+	// stuck at planned.
+	if got := scalar(t, pool, `SELECT status FROM asset_packs WHERE created_by_job_id = $1`, jobID); got != "failed" {
+		t.Fatalf("pack: expected failed after enqueue failure, got %s", got)
+	}
+	if got := scalar(t, pool, `SELECT count(*) FROM asset_packs WHERE tenant_id = $1 AND status = 'planned'`, itTenant); got != "0" {
+		t.Fatalf("no asset_pack may remain planned, got %s", got)
 	}
 }
 

@@ -105,8 +105,8 @@ func TestProcessPackFanOutHappyPath(t *testing.T) {
 		t.Fatalf("ProcessPack: %v", err)
 	}
 
-	if len(assetsRepo.stored) != 3 {
-		t.Fatalf("expected 3 assets, got %d", len(assetsRepo.stored))
+	if len(repo.packAssets) != 3 {
+		t.Fatalf("expected 3 assets, got %d", len(repo.packAssets))
 	}
 	items := repo.packItems["pack_1"]
 	if len(items) != 3 {
@@ -120,7 +120,7 @@ func TestProcessPackFanOutHappyPath(t *testing.T) {
 			t.Fatalf("item %d: expected sort_order %d, got %d", i, i, item.SortOrder)
 		}
 	}
-	for _, a := range assetsRepo.stored {
+	for _, a := range repo.packAssets {
 		if a.AssetType != "character_portrait" {
 			t.Fatalf("expected asset_type=character_portrait, got %q", a.AssetType)
 		}
@@ -155,10 +155,10 @@ func TestProcessPackPlaceUsesPlaceSceneAssetType(t *testing.T) {
 	if err := w.ProcessPack(context.Background(), "job_pack_place"); err != nil {
 		t.Fatalf("ProcessPack: %v", err)
 	}
-	if len(assetsRepo.stored) != 2 {
-		t.Fatalf("expected 2 assets, got %d", len(assetsRepo.stored))
+	if len(repo.packAssets) != 2 {
+		t.Fatalf("expected 2 assets, got %d", len(repo.packAssets))
 	}
-	for _, a := range assetsRepo.stored {
+	for _, a := range repo.packAssets {
 		if a.AssetType != "place_scene" {
 			t.Fatalf("expected asset_type=place_scene, got %q", a.AssetType)
 		}
@@ -178,8 +178,8 @@ func TestProcessPackPartialFailureCompletesWithWarnings(t *testing.T) {
 		t.Fatalf("ProcessPack: %v", err)
 	}
 
-	if len(assetsRepo.stored) != 2 || len(repo.packItems["pack_2"]) != 2 {
-		t.Fatalf("expected 2 assets + 2 items, got %d/%d", len(assetsRepo.stored), len(repo.packItems["pack_2"]))
+	if len(repo.packAssets) != 2 || len(repo.packItems["pack_2"]) != 2 {
+		t.Fatalf("expected 2 assets + 2 items, got %d/%d", len(repo.packAssets), len(repo.packItems["pack_2"]))
 	}
 	job := repo.jobs["job_pack2"]
 	if job.Status != "completed" || len(job.FinalAssetIds) != 2 {
@@ -211,8 +211,8 @@ func TestProcessPackTotalFailureFailsPackAndReleases(t *testing.T) {
 		t.Fatalf("ProcessPack (total failure is terminal, not retryable): %v", err)
 	}
 
-	if len(assetsRepo.stored) != 0 || len(repo.packItems["pack_3"]) != 0 {
-		t.Fatalf("expected no assets/items, got %d/%d", len(assetsRepo.stored), len(repo.packItems["pack_3"]))
+	if len(repo.packAssets) != 0 || len(repo.packItems["pack_3"]) != 0 {
+		t.Fatalf("expected no assets/items, got %d/%d", len(repo.packAssets), len(repo.packItems["pack_3"]))
 	}
 	job := repo.jobs["job_pack3"]
 	if job.Status != "failed" {
@@ -249,8 +249,8 @@ func TestProcessPackTerminalCompletedJobOnlyCommits(t *testing.T) {
 	if provider.callCount() != 0 {
 		t.Fatalf("terminal job must never re-fan-out, got %d provider calls", provider.callCount())
 	}
-	if len(assetsRepo.stored) != 0 {
-		t.Fatalf("expected no new assets on terminal job, got %d", len(assetsRepo.stored))
+	if len(repo.packAssets) != 0 {
+		t.Fatalf("expected no new assets on terminal job, got %d", len(repo.packAssets))
 	}
 	if len(fin.committed) != 1 || len(fin.released) != 0 {
 		t.Fatalf("expected commit-only, got %v / %v", fin.committed, fin.released)
@@ -333,5 +333,73 @@ func TestProcessPackMissingPackLinkFailsTerminally(t *testing.T) {
 	}
 	if len(fin.released) != 1 {
 		t.Fatalf("expected reservation released for invalid pack job, got %v", fin.released)
+	}
+}
+
+// TestProcessPackItemInsertFailureRollsBackAtomically pins the Blocker 2
+// fix: the visual_assets insert and the asset_pack_items insert commit
+// together or not at all. Run 1 has variant "b"'s combined insert fail
+// (atomic rollback — no orphan asset) and the terminal MarkCompleted fail
+// (forcing the asynq retry path). The retry must skip the delivered
+// variants ("a", "c") via asset_pack_items, re-attempt only "b", and end
+// with exactly one asset per variant — no duplicates, items consistent.
+func TestProcessPackItemInsertFailureRollsBackAtomically(t *testing.T) {
+	repo := newFakeJobsRepo()
+	provider := &selectiveProvider{}
+	fin := &fakeFinalizer{}
+	seedPackJob(repo, "job_pack8", "pack_8", JobTypeCharacterPack, []string{"a", "b", "c"})
+	repo.failPackInsertFor["b"] = 1
+	repo.failNextMarkCompleted = true
+
+	w := newPackWorker(repo, &fakeAssetsRepo{}, provider, fin)
+
+	// Run 1: a delivered, b rolled back (counted as item failure), c
+	// delivered; the terminal job write fails → error → asynq would retry.
+	if err := w.ProcessPack(context.Background(), "job_pack8"); err == nil {
+		t.Fatalf("expected error from forced terminal-write failure")
+	}
+	if len(repo.packAssets) != 2 || len(repo.packItems["pack_8"]) != 2 {
+		t.Fatalf("run 1: expected 2 atomically-committed asset+item pairs, got %d/%d",
+			len(repo.packAssets), len(repo.packItems["pack_8"]))
+	}
+	if provider.callCount() != 3 {
+		t.Fatalf("run 1: expected 3 provider calls, got %d", provider.callCount())
+	}
+
+	// Run 2 (retry): job is still running, so fan-out re-enters; "a" and
+	// "c" are visible in asset_pack_items and must not hit the provider
+	// again; "b" is retried and now succeeds.
+	if err := w.ProcessPack(context.Background(), "job_pack8"); err != nil {
+		t.Fatalf("retry ProcessPack: %v", err)
+	}
+	if provider.callCount() != 4 {
+		t.Fatalf("retry must call the provider only for the undelivered variant: expected 4 total calls, got %d", provider.callCount())
+	}
+
+	// No duplicate visual assets: exactly one per variant.
+	if len(repo.packAssets) != 3 {
+		t.Fatalf("expected exactly 3 assets after retry, got %d", len(repo.packAssets))
+	}
+	seen := map[string]int{}
+	for _, a := range repo.packAssets {
+		seen[a.VariantKey]++
+	}
+	for variant, n := range seen {
+		if n != 1 {
+			t.Fatalf("variant %q has %d assets, expected exactly 1", variant, n)
+		}
+	}
+	// asset_pack_items is eventually correct: one item per variant, each
+	// pointing at the asset committed alongside it.
+	items := repo.packItems["pack_8"]
+	if len(items) != 3 {
+		t.Fatalf("expected 3 items after retry, got %d", len(items))
+	}
+	job := repo.jobs["job_pack8"]
+	if job.Status != "completed" || len(job.FinalAssetIds) != 3 {
+		t.Fatalf("expected completed job with 3 final assets, got %s/%v", job.Status, job.FinalAssetIds)
+	}
+	if len(fin.committed) != 1 {
+		t.Fatalf("expected exactly one commit across both runs, got %v", fin.committed)
 	}
 }

@@ -179,22 +179,6 @@ func (s *Service) CreateAndEnqueue(ctx context.Context, params CreateAndEnqueueP
 		return CreateResult{}, fmt.Errorf("insert job: %w", err)
 	}
 
-	// 1b. Pack jobs: insert the asset_packs row (status=planned) and link it
-	//     onto the job, all inside the same transaction (Phase 5A, ADR-008).
-	packID := ""
-	if params.AssetPack != nil {
-		packID = ids.NewAssetPackID()
-		if err := s.insertPack(ctx, q, packID, jobID, params); err != nil {
-			return CreateResult{}, fmt.Errorf("insert asset pack: %w", err)
-		}
-		if err := q.SetGenerationJobAssetPack(ctx, dbgen.SetGenerationJobAssetPackParams{
-			ID:          jobID,
-			AssetPackID: &packID,
-		}); err != nil {
-			return CreateResult{}, fmt.Errorf("link asset pack: %w", err)
-		}
-	}
-
 	// 2. Pre-flight: price → estimate → atomic budget hold. On a denied
 	//    request this inserts a failed reservation (estimated/reserved per
 	//    the failure mode) but holds no budget.
@@ -239,6 +223,25 @@ func (s *Service) CreateAndEnqueue(ctx context.Context, params CreateAndEnqueueP
 		}
 	}
 
+	// 4b. Pack jobs: insert the asset_packs row (status=planned) and link it
+	//     onto the job, in the same transaction (Phase 5A, ADR-008). Only
+	//     after the pre-flight passed — a denied request commits the failed
+	//     job + failed reservation but never an asset pack, so no pack can
+	//     sit at status=planned for a job that will never run.
+	packID := ""
+	if params.AssetPack != nil && !res.Failed() {
+		packID = ids.NewAssetPackID()
+		if err := s.insertPack(ctx, q, packID, jobID, params); err != nil {
+			return CreateResult{}, fmt.Errorf("insert asset pack: %w", err)
+		}
+		if err := q.SetGenerationJobAssetPack(ctx, dbgen.SetGenerationJobAssetPackParams{
+			ID:          jobID,
+			AssetPackID: &packID,
+		}); err != nil {
+			return CreateResult{}, fmt.Errorf("link asset pack: %w", err)
+		}
+	}
+
 	// 5. Idempotency row (when a key was supplied). On a lost race the whole
 	//    transaction — job, reservation, and any budget hold — rolls back,
 	//    and we replay the winner's row.
@@ -273,7 +276,8 @@ func (s *Service) CreateAndEnqueue(ctx context.Context, params CreateAndEnqueueP
 	rolled = true
 
 	// 6. Terminal outcomes. A denied pre-flight returns its sentinel error
-	//    (handler → 422) alongside the committed-job metadata.
+	//    (handler → 422) alongside the committed-job metadata. No asset pack
+	//    exists for a denied request (step 4b skipped it).
 	if res.Failed() {
 		return CreateResult{
 			JobID:             jobID,
@@ -281,11 +285,10 @@ func (s *Service) CreateAndEnqueue(ctx context.Context, params CreateAndEnqueueP
 			EstimatedCostUSD:  res.EstimateUSD,
 			Currency:          res.Currency,
 			CostReservationID: res.ID,
-			AssetPackID:       packID,
 		}, failureError(res.FailureReason)
 	}
 
-	if err := s.enqueue(ctx, jobID, params.TenantID, params.AssetPack != nil); err != nil {
+	if err := s.enqueue(ctx, jobID, params.TenantID, packID); err != nil {
 		return CreateResult{JobID: jobID, Status: "failed", AssetPackID: packID}, err
 	}
 	return CreateResult{
@@ -416,19 +419,23 @@ func stylePayloadString(payload map[string]any) string {
 	return s
 }
 
-// enqueue places the task on the queue. If the queue is unreachable the
-// already-committed generation_jobs row is marked failed so it doesn't sit
-// at queued forever.
-func (s *Service) enqueue(ctx context.Context, jobID, tenantID string, pack bool) error {
+// enqueue places the task on the queue. packID is non-empty for pack jobs
+// (selecting the pack task) and empty for artifacts. If the queue is
+// unreachable the already-committed generation_jobs row is marked failed so
+// it doesn't sit at queued forever — and a pack job's asset_packs row is
+// marked failed too, so no pack can sit at status=planned for a job that
+// will never run.
+func (s *Service) enqueue(ctx context.Context, jobID, tenantID, packID string) error {
 	enqueueFn := s.enqueuer.EnqueueGenerateArtifact
-	if pack {
+	if packID != "" {
 		enqueueFn = s.enqueuer.EnqueueGeneratePack
 	}
 	if err := enqueueFn(ctx, jobID); err != nil {
+		q := dbgen.New(s.pool)
 		ec := "enqueue_failed"
 		em := err.Error()
 		rb := false
-		if _, markErr := dbgen.New(s.pool).MarkGenerationJobFailed(ctx, dbgen.MarkGenerationJobFailedParams{
+		if _, markErr := q.MarkGenerationJobFailed(ctx, dbgen.MarkGenerationJobFailedParams{
 			ID:           jobID,
 			TenantID:     tenantID,
 			ErrorCode:    &ec,
@@ -438,6 +445,14 @@ func (s *Service) enqueue(ctx context.Context, jobID, tenantID string, pack bool
 			// Caller still gets ErrEnqueueFailed; the markFailed failure
 			// is logged through the wrapped error so it doesn't get lost.
 			return fmt.Errorf("%w (also mark-failed: %v): %v", ErrEnqueueFailed, markErr, err)
+		}
+		if packID != "" {
+			if packErr := q.UpdateAssetPackStatus(ctx, dbgen.UpdateAssetPackStatusParams{
+				ID:     packID,
+				Status: "failed",
+			}); packErr != nil {
+				return fmt.Errorf("%w (also mark-pack-failed: %v): %v", ErrEnqueueFailed, packErr, err)
+			}
 		}
 		// Enqueue failure after a successful reservation is a terminal failure
 		// for this job: release the budget hold so it doesn't sit reserved

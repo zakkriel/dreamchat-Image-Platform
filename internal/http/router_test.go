@@ -90,6 +90,9 @@ func (noopJobsRepo) UpdateAssetPackStatus(context.Context, string, string) error
 func (noopJobsRepo) InsertAssetPackItem(context.Context, jobs.AssetPackItemInsertParams) error {
 	return nil
 }
+func (noopJobsRepo) InsertPackItemWithAsset(context.Context, assets.InsertParams, jobs.AssetPackItemInsertParams) error {
+	return nil
+}
 func (noopJobsRepo) ListAssetPackItems(context.Context, string) ([]jobs.AssetPackItem, error) {
 	return nil, nil
 }

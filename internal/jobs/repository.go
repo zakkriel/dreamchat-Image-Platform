@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/db/dbgen"
 )
 
@@ -121,18 +122,23 @@ type Repository interface {
 
 	// Pack fan-out (Phase 5A). The pack row itself is created in the jobs
 	// service's create transaction; the worker only moves its status and
-	// appends items.
+	// appends items. InsertPackItemWithAsset writes the visual_assets row
+	// and its asset_pack_items row in one transaction so a delivered variant
+	// is observable atomically — a failed item insert rolls the asset back
+	// instead of leaving an orphan the retry path can't see.
 	UpdateAssetPackStatus(ctx context.Context, packID, status string) error
+	InsertPackItemWithAsset(ctx context.Context, asset assets.InsertParams, item AssetPackItemInsertParams) error
 	InsertAssetPackItem(ctx context.Context, params AssetPackItemInsertParams) error
 	ListAssetPackItems(ctx context.Context, packID string) ([]AssetPackItem, error)
 }
 
 type pgRepository struct {
-	q *dbgen.Queries
+	q    *dbgen.Queries
+	pool *pgxpool.Pool
 }
 
 func NewRepository(pool *pgxpool.Pool) Repository {
-	return &pgRepository{q: dbgen.New(pool)}
+	return &pgRepository{q: dbgen.New(pool), pool: pool}
 }
 
 func (r *pgRepository) Insert(ctx context.Context, params InsertParams) (Job, error) {
@@ -278,6 +284,37 @@ func (r *pgRepository) UpdateAssetPackStatus(ctx context.Context, packID, status
 		ID:     packID,
 		Status: status,
 	})
+}
+
+func (r *pgRepository) InsertPackItemWithAsset(ctx context.Context, asset assets.InsertParams, item AssetPackItemInsertParams) error {
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+	q := dbgen.New(tx)
+	if _, err := assets.InsertWithQueries(ctx, q, asset); err != nil {
+		return err
+	}
+	if err := q.InsertAssetPackItem(ctx, dbgen.InsertAssetPackItemParams{
+		ID:            item.ID,
+		AssetPackID:   item.AssetPackID,
+		VisualAssetID: item.VisualAssetID,
+		VariantKey:    item.VariantKey,
+		SortOrder:     item.SortOrder,
+	}); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 func (r *pgRepository) InsertAssetPackItem(ctx context.Context, params AssetPackItemInsertParams) error {

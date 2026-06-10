@@ -74,7 +74,15 @@ func NewRepository(pool *pgxpool.Pool) Repository {
 }
 
 func (r *pgRepository) Insert(ctx context.Context, params InsertParams) (VisualAsset, error) {
-	row, err := r.q.InsertVisualAsset(ctx, dbgen.InsertVisualAssetParams{
+	return InsertWithQueries(ctx, r.q, params)
+}
+
+// InsertWithQueries runs the visual_assets insert against the supplied
+// queries object, so callers that need the insert inside their own
+// transaction (e.g. the pack worker's atomic asset + pack-item write) can
+// pass dbgen.New(tx) without duplicating the column mapping.
+func InsertWithQueries(ctx context.Context, q *dbgen.Queries, params InsertParams) (VisualAsset, error) {
+	row, err := q.InsertVisualAsset(ctx, dbgen.InsertVisualAssetParams{
 		ID:               params.ID,
 		TenantID:         params.TenantID,
 		WorldID:          params.WorldID,
