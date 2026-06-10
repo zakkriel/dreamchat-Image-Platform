@@ -13,6 +13,10 @@ const (
 	// `POST /v1/artifacts/{id}/generate` flow Phase 3 implements.
 	TaskGenerateArtifact = "image:generate_artifact"
 
+	// TaskGeneratePack is the asynq task name for the generate-pack flows
+	// (Phase 5A). One task per pack job; the worker fans out per variant.
+	TaskGeneratePack = "image:generate_pack"
+
 	// MaxAttempts caps asynq's retry count for generation tasks. Worker
 	// callers rely on it to know when to set retryable=false on the final
 	// failure.
@@ -30,6 +34,7 @@ type TaskPayload struct {
 // be stubbed without a real Redis.
 type Enqueuer interface {
 	EnqueueGenerateArtifact(ctx context.Context, jobID string) error
+	EnqueueGeneratePack(ctx context.Context, jobID string) error
 	Close() error
 }
 
@@ -46,6 +51,14 @@ func NewEnqueuer(addr, password string) Enqueuer {
 }
 
 func (e *asynqEnqueuer) EnqueueGenerateArtifact(ctx context.Context, jobID string) error {
+	return e.enqueue(ctx, TaskGenerateArtifact, jobID)
+}
+
+func (e *asynqEnqueuer) EnqueueGeneratePack(ctx context.Context, jobID string) error {
+	return e.enqueue(ctx, TaskGeneratePack, jobID)
+}
+
+func (e *asynqEnqueuer) enqueue(ctx context.Context, taskName, jobID string) error {
 	payload, err := json.Marshal(TaskPayload{JobID: jobID})
 	if err != nil {
 		return err
@@ -53,7 +66,7 @@ func (e *asynqEnqueuer) EnqueueGenerateArtifact(ctx context.Context, jobID strin
 	if e == nil || e.client == nil {
 		return errors.New("jobs: enqueuer not initialized")
 	}
-	_, err = e.client.EnqueueContext(ctx, asynq.NewTask(TaskGenerateArtifact, payload), asynq.MaxRetry(MaxAttempts-1))
+	_, err = e.client.EnqueueContext(ctx, asynq.NewTask(taskName, payload), asynq.MaxRetry(MaxAttempts-1))
 	return err
 }
 

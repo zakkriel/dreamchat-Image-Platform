@@ -574,7 +574,12 @@ type GeneratePlacePackRequest struct {
 
 // GenerationJob defines model for GenerationJob.
 type GenerationJob struct {
-	ActualCostUsd   *string   `json:"actual_cost_usd,omitempty"`
+	ActualCostUsd *string `json:"actual_cost_usd,omitempty"`
+
+	// AssetPackId Set when this job created/extended an asset pack
+	// (generate-pack endpoints). Pack progress is observed through
+	// this job: `final_asset_ids` carries the per-item assets.
+	AssetPackId     *string   `json:"asset_pack_id,omitempty"`
 	CostEstimateUsd *string   `json:"cost_estimate_usd,omitempty"`
 	CreatedAt       time.Time `json:"created_at"`
 	ErrorCode       *string   `json:"error_code,omitempty"`
@@ -593,6 +598,11 @@ type GenerationJob struct {
 
 // GenerationJobAccepted defines model for GenerationJobAccepted.
 type GenerationJobAccepted struct {
+	// AssetPackId ID of the `asset_pack` row created for this job. Returned only
+	// by the two generate-pack endpoints (PRD 04 / ADR-008); absent
+	// for single-asset jobs.
+	AssetPackId *string `json:"asset_pack_id,omitempty"`
+
 	// CostReservationId ID of the `cost_reservation` row created for this job. The
 	// reservation is committed against the budget on job success and
 	// released on failure/cancel.

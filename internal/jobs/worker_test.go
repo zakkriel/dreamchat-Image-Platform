@@ -19,10 +19,27 @@ type fakeJobsRepo struct {
 	markRunningCalls int
 	markCompleted    []string
 	markFailed       []string
+
+	// Pack fan-out tracking (Phase 5A).
+	packStatuses map[string][]string // packID -> status transitions
+	packItems    map[string][]AssetPackItem
+	packAssets   []assets.InsertParams
+	// failPackInsertFor makes InsertPackItemWithAsset fail N times for a
+	// variant key, atomically (nothing recorded) — modelling a rolled-back
+	// asset + item transaction.
+	failPackInsertFor map[string]int
+	// failNextMarkCompleted makes the next MarkCompleted fail once, to force
+	// the asynq-retry path after a successful fan-out.
+	failNextMarkCompleted bool
 }
 
 func newFakeJobsRepo() *fakeJobsRepo {
-	return &fakeJobsRepo{jobs: map[string]Job{}}
+	return &fakeJobsRepo{
+		jobs:              map[string]Job{},
+		packStatuses:      map[string][]string{},
+		packItems:         map[string][]AssetPackItem{},
+		failPackInsertFor: map[string]int{},
+	}
 }
 
 func (r *fakeJobsRepo) Insert(_ context.Context, params InsertParams) (Job, error) {
@@ -79,6 +96,10 @@ func (r *fakeJobsRepo) MarkRunning(_ context.Context, id, tenantID string) (Job,
 func (r *fakeJobsRepo) MarkCompleted(_ context.Context, id, tenantID string, finalAssetIDs []string) (Job, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.failNextMarkCompleted {
+		r.failNextMarkCompleted = false
+		return Job{}, errors.New("forced mark-completed failure")
+	}
 	job, ok := r.jobs[id]
 	if !ok || job.TenantID != tenantID {
 		return Job{}, ErrNotFound
@@ -147,6 +168,61 @@ func (r *fakeJobsRepo) InsertCostEvent(_ context.Context, params CostEventInsert
 	defer r.mu.Unlock()
 	r.costEvents = append(r.costEvents, params)
 	return nil
+}
+
+func (r *fakeJobsRepo) UpdateAssetPackStatus(_ context.Context, packID, status string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.packStatuses[packID] = append(r.packStatuses[packID], status)
+	return nil
+}
+
+func (r *fakeJobsRepo) InsertAssetPackItem(_ context.Context, params AssetPackItemInsertParams) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.insertPackItemLocked(params)
+}
+
+func (r *fakeJobsRepo) insertPackItemLocked(params AssetPackItemInsertParams) error {
+	for _, item := range r.packItems[params.AssetPackID] {
+		if item.VariantKey == params.VariantKey {
+			return errors.New("duplicate variant_key for pack")
+		}
+	}
+	r.packItems[params.AssetPackID] = append(r.packItems[params.AssetPackID], AssetPackItem(params))
+	return nil
+}
+
+// InsertPackItemWithAsset mirrors the production semantics: the asset and
+// the item are recorded together or not at all.
+func (r *fakeJobsRepo) InsertPackItemWithAsset(_ context.Context, asset assets.InsertParams, item AssetPackItemInsertParams) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if n := r.failPackInsertFor[item.VariantKey]; n > 0 {
+		r.failPackInsertFor[item.VariantKey] = n - 1
+		return errors.New("forced pack insert failure (atomic rollback)")
+	}
+	if err := r.insertPackItemLocked(item); err != nil {
+		return err
+	}
+	r.packAssets = append(r.packAssets, asset)
+	return nil
+}
+
+func (r *fakeJobsRepo) ListAssetPackItems(_ context.Context, packID string) ([]AssetPackItem, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]AssetPackItem(nil), r.packItems[packID]...), nil
+}
+
+func (r *fakeJobsRepo) lastPackStatus(packID string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	transitions := r.packStatuses[packID]
+	if len(transitions) == 0 {
+		return ""
+	}
+	return transitions[len(transitions)-1]
 }
 
 type fakeAssetsRepo struct {

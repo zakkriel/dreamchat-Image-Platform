@@ -54,6 +54,10 @@ func toGenerationJobAPI(job jobs.Job) apigen.GenerationJob {
 		CreatedAt: job.CreatedAt,
 		UpdatedAt: job.UpdatedAt,
 	}
+	if job.AssetPackID != nil {
+		pid := *job.AssetPackID
+		out.AssetPackId = &pid
+	}
 	if len(job.PreviewAssetIds) > 0 {
 		ids := append([]string(nil), job.PreviewAssetIds...)
 		out.PreviewAssetIds = &ids

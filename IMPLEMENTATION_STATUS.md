@@ -17,11 +17,13 @@ before this is production-ready.**
   budget reservation, failed-preflight replay.
 - **Phase 4B** — cost lifecycle (commit/release, budget-hold
   reversibility) + admin cost surface + asset provenance (`model_id`).
+- **Phase 5A** — pack fan-out basics: character/place pack jobs, multiple
+  variants per job, batch orchestration (per-item generation, partial
+  completion), pack status lifecycle. Variant keys are opaque strings;
+  retrieval/reuse and preview-first remain 6A/6B.
 
 ## Remaining
 
-- **Phase 5A — Pack fan-out basics**: character/place pack jobs, multiple
-  variants per job, batch orchestration, pack status.
 - **Phase 5B — Variant logic**: expressions, angles, fallback
   compatibility, variant keys, pack-completeness rules.
 - **Phase 6A — Retrieval-before-generation**: asset search, exact match,

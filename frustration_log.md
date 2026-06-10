@@ -370,3 +370,52 @@ Format per entry:
 - **Trigger**: Audit-in-same-transaction requirement and the separate admin token
 - **Category**: process (resolution)
 - **Note**: Every admin mutation runs inside one `admincost.Service.inTx`: the price/budget write and the `audit_events` insert share a transaction, so a failed audit insert rolls the mutation back (handler → 500). Audit metadata carries `request_id`, `actor_token_id`, `tenant_id` (where applicable), the resource id, and the changed/created field set. `make seed-admin` (new `scripts/seed_admin_token.sh`) mints a **separate** dev token scoped to `admin:costs` only — the normal `make seed` token deliberately carries no admin scope, so the scope gate is real. No new error codes were added: immutable-field mutation and bad enum values map to the existing `400 invalid_request`, missing scope to `403 forbidden` (via `auth.RequireScopes`), missing resource to `404 not_found`. `admin_only_field`, `budget_paused`, and `not_implemented` were **not** added, per the explicit non-goal.
+
+## 2026-06-10 — Phase 5A (pack fan-out basics)
+
+### Entry 57
+- **Trigger**: "Add `asset_pack_id` to the accepted response" vs. "do not touch the OpenAPI beyond what's already specified for the two pack POSTs"
+- **Category**: drift (scope decision)
+- **Note**: These two requirements conflict as written: the 202 body is the codegen type `apigen.GenerationJobAccepted`, which is generated from `docs/api/openapi.yaml` — there is no way to return `asset_pack_id` without the field existing in the spec. Resolution: the smallest possible additive spec change — `asset_pack_id` added to `GenerationJobAccepted` (the pack 202) and to `GenerationJob` (so `GET /v1/jobs/{job_id}` can surface pack progress, which §5 of the task explicitly requires). Version bumped 0.5.0 → 0.5.1 with a changelog note; both spec copies (`docs/api/` + `api/` embed mirror) updated identically so CI's mirror-diff stays green. No other schema, path, or enum was touched.
+
+### Entry 58
+- **Trigger**: Pack cost rule — what does the reservation do on partial completion?
+- **Category**: assumption (documented per spec)
+- **Note**: The reservation holds `N × price` (`Units = len(variant_keys)`; the variant list is both the unit of fan-out and the unit of pricing) and **commits in full on any success**: provider cost is per attempt/call, not per delivered asset, so a pack that delivered 2 of 3 variants still incurred 3 provider calls. Total failure (0 delivered) releases in full, mirroring 4B's artifact behavior. Proportional per-item reconciliation is explicitly deferred to real provider reconciliation (Phase 7+). Asserted by `TestPackPartialFailureCompletesWithWarnings` (committed, spent moved by 0.0300) and `TestPackTotalFailureFailsAndReleasesBudget` (released, refunded).
+
+### Entry 59
+- **Trigger**: ProcessPack retry semantics differ from the single-artifact Process
+- **Category**: assumption (resolution)
+- **Note**: The artifact worker retries the whole job up to MaxAttempts on provider failure. A pack run instead reaches a terminal state in **one pass**: per-item failures (provider/storage/persistence) are recorded on the item's `provider_attempts` row and the batch continues — so an all-items-failed pack is marked `failed` with `retryable=false` and ProcessPack returns nil (returning an error would make asynq retry a deliberately terminal state). Only infra errors before/after the fan-out loop (job lookup, mark-running, terminal bookkeeping) return an error for asynq to retry. Two layers make that retry safe: (a) the 4B terminal short-circuit (completed → Commit only; failed → Release only; never re-fan-out), and (b) an existing-items skip — the worker lists `asset_pack_items` before fanning out and counts already-delivered variants as succeeded, because `UNIQUE (asset_pack_id, variant_key)` would reject a re-insert. The pack status is also written *before* the job status at terminal time so a partial terminal write re-enters fan-out rather than stranding the pack at `in_progress`. Covered by the unit short-circuit/skip tests and `TestPackWorkerRetryAfterCompletionDoesNotRefanOut` (attempt count and budget unchanged on the second run).
+
+### Entry 60
+- **Trigger**: `provider_attempts.attempt_number` semantics for a fan-out job
+- **Category**: assumption
+- **Note**: For artifact jobs `attempt_number` is the per-job retry counter (asynq retryCount+1). A pack job makes N provider calls in one run, so I set `attempt_number = variant index + 1` — one row per item, distinct numbers within the job. The column has no uniqueness constraint and nothing downstream interprets it yet; when real provider routing lands (Phase 7) this may want a dedicated per-item column instead.
+
+### Entry 61
+- **Trigger**: `InsertVisualAsset` had no `visual_identity_id` column in its insert list
+- **Category**: surprise (small)
+- **Note**: Pack assets must link the identity (`visual_assets.visual_identity_id`), but the Phase 3 insert query never wrote that column (artifacts have no identity). Extended the sqlc query + `assets.InsertParams` with a nullable `VisualIdentityID`; the artifact path passes nil so its behavior is unchanged. Pack asset rows also carry `asset_type = character_portrait | place_scene` (per the canonical AssetType list) and `variant_key` = the opaque role string.
+
+### Entry 62
+- **Trigger**: 5A prompt construction and the two structurally-identical request types
+- **Category**: assumption (deliberately minimal)
+- **Note**: (1) The per-item prompt is `"<identity display_name> — <variant_key>"` — trivially derived, no interpretation of the key (expressions/angles/time-of-day are 5B). The handler resolves the identity at request time and stores `visual_identity_id` + `display_name` (plus `variant_keys`, `style_profile_id`, `world_id`, the entity id) in `input_payload`, so the worker needs only `job_id`. (2) `GenerateCharacterPackRequest` and `GeneratePlacePackRequest` are field-for-field identical, so the handler decodes both bodies into the character type; a `packKind` struct carries the per-entity constants (owner_type, path param, job_type, pack_type, default variants). (3) `latency_tier` is validated and recorded but has no routing effect (no router until Phase 7); `fallback_policy` is accepted and stored but its behavior is 6A — both explicitly allowed by the task.
+
+### Entry 63
+- **Trigger**: Integration cleanup ordering with the new pack tables + visual identities
+- **Category**: process
+- **Note**: `asset_pack_items` FKs both `visual_assets` and `asset_packs` (and `asset_packs` FKs `visual_identities`, `style_profiles`, `api_tokens`), so the cleanup helper now deletes in the order: pack items → visual_assets → asset_packs → visual_identity_versions → visual_identities → (existing reservation/job teardown) → budgets/tokens/styles. No new tables were added — `asset_packs`/`asset_pack_items` shipped in 0001 — so CI's table-count assertion stays 18 and no migration was needed.
+
+## 2026-06-10 — Phase 5A patch (PR #11 review blockers)
+
+### Entry 64
+- **Trigger**: Blocker 1 — a denied cost pre-flight left the asset pack at `status=planned`
+- **Category**: drift / process (resolution)
+- **Note**: The original 5A create transaction inserted the `asset_packs` row before `cost.Reserve`, so a `budget_exceeded` / `no_price_entry` denial committed a failed job + failed reservation *and* a planned pack that no worker would ever touch. Fixed with the preferred (narrower) option: the pack insert + `asset_pack_id` link now run **after** the pre-flight, gated on `!res.Failed()` — a denied request commits exactly what 4B committed (failed job, failed reservation, optional idempotency row) and never an asset pack, so the 422 carries no `asset_pack_id` and the job row has no pack link. The same invariant is enforced on the enqueue-failure path: `Service.enqueue` now also flips the (already-created) pack to `failed` alongside the job before releasing the reservation, so no pack can sit at `planned` for a job that will never run. Integration tests assert both: the budget-exceeded test checks `count(asset_packs)=0` / none planned / no `asset_pack_id` in the 422 body, and the new enqueue-failure test checks job `failed`+`enqueue_failed`, reservation `released`, budget refunded, pack `failed`, none planned.
+
+### Entry 65
+- **Trigger**: Blocker 2 — `visual_assets` insert and `asset_pack_items` insert were two separate writes
+- **Category**: drift / process (resolution)
+- **Note**: Delivered-variant detection on retry reads only `asset_pack_items`, so an asset insert that succeeded followed by an item insert that failed produced an orphan asset the retry could never see — and a subsequent re-generation of the same variant would duplicate it. Fixed with the preferred option: a new `jobs.Repository.InsertPackItemWithAsset` writes the `visual_assets` row and its `asset_pack_items` row in **one transaction** (the assets column mapping is shared via a new `assets.InsertWithQueries(ctx, q, params)` that the assets repo's own `Insert` also delegates to — no duplicated SQL). The worker's per-variant success path makes a single call; if the item insert fails the asset rolls back too, so "delivered" is observable atomically. The artifact path is untouched. Unit test `TestProcessPackItemInsertFailureRollsBackAtomically` drives the full failure-then-retry sequence with an atomically-failing fake: run 1 rolls back variant b and fails the terminal write; the retry skips delivered a/c (no provider re-calls), re-attempts only b, and ends with exactly one asset per variant and consistent items. The partial-failure integration test gains the orphan invariant (`count(visual_assets for job) == count(asset_pack_items)`).

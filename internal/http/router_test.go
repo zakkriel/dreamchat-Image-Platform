@@ -86,6 +86,16 @@ func (noopJobsRepo) CountProviderAttempts(context.Context, string) (int32, error
 func (noopJobsRepo) InsertCostEvent(context.Context, jobs.CostEventInsertParams) error {
 	return nil
 }
+func (noopJobsRepo) UpdateAssetPackStatus(context.Context, string, string) error { return nil }
+func (noopJobsRepo) InsertAssetPackItem(context.Context, jobs.AssetPackItemInsertParams) error {
+	return nil
+}
+func (noopJobsRepo) InsertPackItemWithAsset(context.Context, assets.InsertParams, jobs.AssetPackItemInsertParams) error {
+	return nil
+}
+func (noopJobsRepo) ListAssetPackItems(context.Context, string) ([]jobs.AssetPackItem, error) {
+	return nil, nil
+}
 
 type noopJobsService struct{}
 
