@@ -191,8 +191,8 @@ func (e *recordingEnqueuer) snapshot() []string {
 	return out
 }
 
-func mountTestRouter(svc jobs.Creator, stylesRepo styles.Repository, jobsRepo jobs.Repository) *chi.Mux {
-	h := handlers.NewArtifactsHandler(svc, stylesRepo, config.ProviderMock)
+func mountTestRouter(svc jobs.Creator, stylesRepo styles.Repository, jobsRepo jobs.Repository, assetsRepo assets.Repository) *chi.Mux {
+	h := handlers.NewArtifactsHandler(svc, stylesRepo, config.ProviderMock, assetsRepo)
 	jobsH := handlers.NewJobsHandler(jobsRepo)
 	r := chi.NewRouter()
 	r.Post("/v1/artifacts/{artifact_id}/generate", h.Generate)
@@ -234,7 +234,7 @@ func TestEndToEndArtifactGeneration(t *testing.T) {
 	stylesRepo := styles.NewRepository(pool)
 	enq := newRecordingEnqueuer()
 	svc := jobs.NewService(pool, enq, cost.NewService(nil))
-	r := mountTestRouter(svc, stylesRepo, jobsRepo)
+	r := mountTestRouter(svc, stylesRepo, jobsRepo, assets.NewRepository(pool))
 
 	rec := sendArtifactRequest(t, r, map[string]any{
 		"world_id":         "w1",
@@ -305,6 +305,228 @@ func TestEndToEndArtifactGeneration(t *testing.T) {
 	}
 }
 
+// countScalar runs a count(*) query and returns it as an int.
+func countScalar(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(), sql, args...).Scan(&n); err != nil {
+		t.Fatalf("count %q: %v", sql, err)
+	}
+	return n
+}
+
+// TestEndToEndArtifactExactReuse is the Phase 6A2 acceptance test: generating
+// the same artifact twice reuses the first asset on the second request without
+// any provider work, new asset, new reservation, or budget spend.
+func TestEndToEndArtifactExactReuse(t *testing.T) {
+	pool := openTestPool(t)
+	defer pool.Close()
+	cleanup(t, pool)
+	defer cleanup(t, pool)
+	seedFixtures(t, pool)
+	seedBudget(t, pool, "bud_reuse_tenant", "tenant", itTenant, "active", "1.0000")
+	store := openTestStorage(t)
+
+	jobsRepo := jobs.NewRepository(pool)
+	assetsRepo := assets.NewRepository(pool)
+	stylesRepo := styles.NewRepository(pool)
+	enq := newRecordingEnqueuer()
+	fin := cost.NewLifecycle(pool, nil)
+	svc := jobs.NewService(pool, enq, cost.NewService(nil)).WithFinalizer(fin)
+	r := mountTestRouter(svc, stylesRepo, jobsRepo, assetsRepo)
+
+	body := map[string]any{
+		"world_id":         "w1",
+		"style_profile_id": itStyleID,
+		"description":      "A bronze key",
+	}
+
+	// 1. Generate the artifact normally and run the worker to ready the asset.
+	first := sendArtifactRequest(t, r, body, "")
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("first POST: expected 202, got %d body=%s", first.Code, first.Body.String())
+	}
+	var firstResp map[string]any
+	_ = json.Unmarshal(first.Body.Bytes(), &firstResp)
+	firstJobID, _ := firstResp["job_id"].(string)
+	if firstJobID == "" {
+		t.Fatalf("first: missing job_id: %v", firstResp)
+	}
+
+	worker := &jobs.Worker{Jobs: jobsRepo, Assets: assetsRepo, Storage: store, Provider: mock.New(), Finalizer: fin}
+	if err := worker.Process(context.Background(), firstJobID, 0); err != nil {
+		t.Fatalf("worker process: %v", err)
+	}
+
+	// Capture the generated asset id and the post-generation baseline.
+	var firstAssetID string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT id FROM visual_assets WHERE tenant_id = $1`, itTenant).Scan(&firstAssetID); err != nil {
+		t.Fatalf("read first asset: %v", err)
+	}
+	attemptsBefore := countScalar(t, pool, `SELECT count(*) FROM provider_attempts WHERE generation_job_id IN (SELECT id FROM generation_jobs WHERE tenant_id = $1)`, itTenant)
+	assetsBefore := countScalar(t, pool, `SELECT count(*) FROM visual_assets WHERE tenant_id = $1`, itTenant)
+	reservationsBefore := countScalar(t, pool, `SELECT count(*) FROM cost_reservations WHERE tenant_id = $1`, itTenant)
+	spentBefore := scalar(t, pool, `SELECT spent_amount::text FROM cost_budgets WHERE id = 'bud_reuse_tenant'`)
+	reservedBefore := scalar(t, pool, `SELECT reserved_amount::text FROM cost_budgets WHERE id = 'bud_reuse_tenant'`)
+	enqAfterFirst := len(enq.snapshot())
+
+	// 2. Generate the same artifact again — must be an exact reuse.
+	second := sendArtifactRequest(t, r, body, "")
+	if second.Code != http.StatusAccepted {
+		t.Fatalf("second POST: expected 202, got %d body=%s", second.Code, second.Body.String())
+	}
+	var secondResp map[string]any
+	_ = json.Unmarshal(second.Body.Bytes(), &secondResp)
+	secondJobID, _ := secondResp["job_id"].(string)
+	if secondJobID == "" || secondJobID == firstJobID {
+		t.Fatalf("second: expected a distinct job_id, got %q (first %q)", secondJobID, firstJobID)
+	}
+
+	// The second job is a completed exact-match reusing the first asset.
+	var status, cacheResult string
+	var finalIDs []string
+	var costReservationID *string
+	var actualCost string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT status, cache_result, final_asset_ids, cost_reservation_id, actual_cost_usd::text
+		 FROM generation_jobs WHERE id = $1`, secondJobID,
+	).Scan(&status, &cacheResult, &finalIDs, &costReservationID, &actualCost); err != nil {
+		t.Fatalf("read second job: %v", err)
+	}
+	if status != "completed" {
+		t.Fatalf("second job: expected status=completed, got %q", status)
+	}
+	if cacheResult != "exact_match" {
+		t.Fatalf("second job: expected cache_result=exact_match, got %q", cacheResult)
+	}
+	if len(finalIDs) != 1 || finalIDs[0] != firstAssetID {
+		t.Fatalf("second job: expected final_asset_ids=[%s], got %v", firstAssetID, finalIDs)
+	}
+	if costReservationID != nil {
+		t.Fatalf("cache-hit job must have no cost_reservation_id, got %v", *costReservationID)
+	}
+	if actualCost != "0.0000" {
+		t.Fatalf("cache-hit job actual_cost_usd must be 0, got %s", actualCost)
+	}
+
+	// No second provider attempt, no second visual asset, no second reservation.
+	if got := countScalar(t, pool, `SELECT count(*) FROM provider_attempts WHERE generation_job_id IN (SELECT id FROM generation_jobs WHERE tenant_id = $1)`, itTenant); got != attemptsBefore {
+		t.Fatalf("expected no new provider_attempt (had %d), got %d", attemptsBefore, got)
+	}
+	if got := countScalar(t, pool, `SELECT count(*) FROM visual_assets WHERE tenant_id = $1`, itTenant); got != assetsBefore {
+		t.Fatalf("expected no new visual_asset (had %d), got %d", assetsBefore, got)
+	}
+	if got := countScalar(t, pool, `SELECT count(*) FROM cost_reservations WHERE tenant_id = $1`, itTenant); got != reservationsBefore {
+		t.Fatalf("expected no new cost_reservation (had %d), got %d", reservationsBefore, got)
+	}
+	// Specifically: no reservation row points at the cache-hit job.
+	if got := countScalar(t, pool, `SELECT count(*) FROM cost_reservations WHERE generation_job_id = $1`, secondJobID); got != 0 {
+		t.Fatalf("cache-hit job must have zero cost_reservations, got %d", got)
+	}
+
+	// Tenant budget spend and held amounts did not move.
+	if got := scalar(t, pool, `SELECT spent_amount::text FROM cost_budgets WHERE id = 'bud_reuse_tenant'`); got != spentBefore {
+		t.Fatalf("budget spent must not increase on a cache hit: was %s, now %s", spentBefore, got)
+	}
+	if got := scalar(t, pool, `SELECT reserved_amount::text FROM cost_budgets WHERE id = 'bud_reuse_tenant'`); got != reservedBefore {
+		t.Fatalf("budget reserved must not change on a cache hit: was %s, now %s", reservedBefore, got)
+	}
+
+	// No new enqueue for the cache hit.
+	if got := len(enq.snapshot()); got != enqAfterFirst {
+		t.Fatalf("cache hit must not enqueue: had %d enqueues, now %d", enqAfterFirst, got)
+	}
+
+	// No generation_cost_event with a positive actual cost was added for the
+	// cache-hit job.
+	if got := countScalar(t, pool, `SELECT count(*) FROM generation_cost_events WHERE job_id = $1`, secondJobID); got != 0 {
+		t.Fatalf("cache-hit job must have no generation_cost_event, got %d", got)
+	}
+}
+
+// TestEndToEndArtifactReuseMisses covers the negative cases: a different
+// description, a different quality tier, and a different artifact_id each
+// generate a new job (no reuse) even against an existing ready asset.
+func TestEndToEndArtifactReuseMisses(t *testing.T) {
+	pool := openTestPool(t)
+	defer pool.Close()
+	cleanup(t, pool)
+	defer cleanup(t, pool)
+	seedFixtures(t, pool)
+	seedBudget(t, pool, "bud_miss_tenant", "tenant", itTenant, "active", "1.0000")
+	store := openTestStorage(t)
+
+	jobsRepo := jobs.NewRepository(pool)
+	assetsRepo := assets.NewRepository(pool)
+	stylesRepo := styles.NewRepository(pool)
+	enq := newRecordingEnqueuer()
+	fin := cost.NewLifecycle(pool, nil)
+	svc := jobs.NewService(pool, enq, cost.NewService(nil)).WithFinalizer(fin)
+
+	// Mount with a per-artifact path so we can vary artifact_id.
+	h := handlers.NewArtifactsHandler(svc, stylesRepo, config.ProviderMock, assetsRepo)
+	r := chi.NewRouter()
+	r.Post("/v1/artifacts/{artifact_id}/generate", h.Generate)
+
+	send := func(artifactID string, body map[string]any) string {
+		raw, _ := json.Marshal(body)
+		req := httptest.NewRequest(http.MethodPost, "/v1/artifacts/"+artifactID+"/generate", strings.NewReader(string(raw)))
+		req.Header.Set("Content-Type", "application/json")
+		ctx := auth.ContextWithPrincipal(req.Context(), &auth.Principal{TokenID: itTokenID, TenantID: itTenant, Scopes: []string{"images:write"}})
+		ctx = telemetry.ContextWithRequestLog(telemetry.ContextWithRequestID(ctx, "req_test"), &telemetry.RequestLog{})
+		req = req.WithContext(ctx)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("POST %s: expected 202, got %d body=%s", artifactID, rec.Code, rec.Body.String())
+		}
+		var resp map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+		id, _ := resp["job_id"].(string)
+		return id
+	}
+
+	cacheResultOf := func(jobID string) string {
+		var cr string
+		if err := pool.QueryRow(context.Background(), `SELECT cache_result FROM generation_jobs WHERE id = $1`, jobID).Scan(&cr); err != nil {
+			t.Fatalf("read cache_result: %v", err)
+		}
+		return cr
+	}
+
+	// Seed an existing ready artifact for art_base / "A bronze key" / standard.
+	baseJob := send("art_base", map[string]any{"world_id": "w1", "style_profile_id": itStyleID, "description": "A bronze key"})
+	worker := &jobs.Worker{Jobs: jobsRepo, Assets: assetsRepo, Storage: store, Provider: mock.New(), Finalizer: fin}
+	if err := worker.Process(context.Background(), baseJob, 0); err != nil {
+		t.Fatalf("worker process base: %v", err)
+	}
+
+	// (a) Different description → generated_required.
+	diffDesc := send("art_base", map[string]any{"world_id": "w1", "style_profile_id": itStyleID, "description": "A silver key"})
+	if cr := cacheResultOf(diffDesc); cr != "generated_required" {
+		t.Fatalf("different description must generate, got cache_result=%q", cr)
+	}
+
+	// (b) Different quality tier → generated_required.
+	diffTier := send("art_base", map[string]any{"world_id": "w1", "style_profile_id": itStyleID, "description": "A bronze key", "quality_tier": "high"})
+	if cr := cacheResultOf(diffTier); cr != "generated_required" {
+		t.Fatalf("different quality_tier must generate, got cache_result=%q", cr)
+	}
+
+	// (c) Different artifact_id, same description → generated_required.
+	diffArtifact := send("art_other", map[string]any{"world_id": "w1", "style_profile_id": itStyleID, "description": "A bronze key"})
+	if cr := cacheResultOf(diffArtifact); cr != "generated_required" {
+		t.Fatalf("different artifact_id must generate even with same description, got cache_result=%q", cr)
+	}
+
+	// Sanity: an identical repeat of the base request IS a reuse.
+	repeat := send("art_base", map[string]any{"world_id": "w1", "style_profile_id": itStyleID, "description": "A bronze key"})
+	if cr := cacheResultOf(repeat); cr != "exact_match" {
+		t.Fatalf("identical repeat must reuse, got cache_result=%q", cr)
+	}
+}
+
 func TestIdempotencyConcurrentRequestsCreateExactlyOneJob(t *testing.T) {
 	pool := openTestPool(t)
 	defer pool.Close()
@@ -316,7 +538,7 @@ func TestIdempotencyConcurrentRequestsCreateExactlyOneJob(t *testing.T) {
 	stylesRepo := styles.NewRepository(pool)
 	enq := newRecordingEnqueuer()
 	svc := jobs.NewService(pool, enq, cost.NewService(nil))
-	r := mountTestRouter(svc, stylesRepo, jobsRepo)
+	r := mountTestRouter(svc, stylesRepo, jobsRepo, assets.NewRepository(pool))
 
 	body := map[string]any{
 		"world_id":         "w1",
@@ -392,7 +614,7 @@ func TestIdempotencyDifferentBodyReturns409(t *testing.T) {
 	stylesRepo := styles.NewRepository(pool)
 	enq := newRecordingEnqueuer()
 	svc := jobs.NewService(pool, enq, cost.NewService(nil))
-	r := mountTestRouter(svc, stylesRepo, jobsRepo)
+	r := mountTestRouter(svc, stylesRepo, jobsRepo, assets.NewRepository(pool))
 
 	first := sendArtifactRequest(t, r, map[string]any{
 		"world_id": "w1", "style_profile_id": itStyleID, "description": "A bronze key",
@@ -421,7 +643,7 @@ func TestEnqueueFailureMarksJobFailedAndReturns500(t *testing.T) {
 	enq := newRecordingEnqueuer()
 	enq.failOn["*"] = true
 	svc := jobs.NewService(pool, enq, cost.NewService(nil))
-	r := mountTestRouter(svc, stylesRepo, jobsRepo)
+	r := mountTestRouter(svc, stylesRepo, jobsRepo, assets.NewRepository(pool))
 
 	rec := sendArtifactRequest(t, r, map[string]any{
 		"world_id": "w1", "style_profile_id": itStyleID, "description": "Will fail to enqueue",
@@ -464,7 +686,7 @@ func TestIdempotencyReplayEchoesCurrentJobStatus(t *testing.T) {
 	enq := newRecordingEnqueuer()
 	enq.failOn["*"] = true
 	svc := jobs.NewService(pool, enq, cost.NewService(nil))
-	r := mountTestRouter(svc, stylesRepo, jobsRepo)
+	r := mountTestRouter(svc, stylesRepo, jobsRepo, assets.NewRepository(pool))
 
 	body := map[string]any{
 		"world_id": "w1", "style_profile_id": itStyleID, "description": "A bronze key",

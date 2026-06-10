@@ -72,9 +72,30 @@ type InsertParams struct {
 	GenerationJobID     *string
 }
 
+// ArtifactLookup is the narrow exact-reuse query for the single-artifact
+// generation path (Phase 6A2). Artifacts have no visual identity / variant /
+// state in the generation path, so the lookup is keyed on owner (tenant/world)
+// + style + quality + the deterministic artifact render hash (stored in
+// prompt_hash). StyleProfileVersion is optional and only narrows when set.
+type ArtifactLookup struct {
+	TenantID            string
+	WorldID             string
+	StyleProfileID      string
+	StyleProfileVersion *int32
+	QualityTier         string
+	PromptHash          string
+}
+
 type Repository interface {
 	GetByIDForTenant(ctx context.Context, id, tenantID string) (VisualAsset, error)
 	Insert(ctx context.Context, params InsertParams) (VisualAsset, error)
+
+	// FindReadyArtifactByPromptHash returns the single reusable (status =
+	// 'ready') artifact asset whose owner + style + quality + render hash match
+	// the lookup exactly, or ErrNotFound. This is the SQL half of Phase 6A2
+	// single-artifact exact reuse; it deliberately uses no matrix/compatibility
+	// logic (artifacts reuse on exact hash only).
+	FindReadyArtifactByPromptHash(ctx context.Context, q ArtifactLookup) (VisualAsset, error)
 
 	// FindExact returns the single reusable (status = 'ready') asset that
 	// matches the query's owner + variant + state + style exactly, or
@@ -166,6 +187,24 @@ func (r *pgRepository) FindExact(ctx context.Context, q RetrievalQuery) (VisualA
 		StyleProfileID:      strPtr(q.StyleProfileID),
 		StyleProfileVersion: q.StyleProfileVersion,
 		QualityTier:         strPtr(q.QualityTier),
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return VisualAsset{}, ErrNotFound
+		}
+		return VisualAsset{}, err
+	}
+	return fromRow(row), nil
+}
+
+func (r *pgRepository) FindReadyArtifactByPromptHash(ctx context.Context, q ArtifactLookup) (VisualAsset, error) {
+	row, err := r.q.FindReadyArtifactByPromptHash(ctx, dbgen.FindReadyArtifactByPromptHashParams{
+		TenantID:            q.TenantID,
+		WorldID:             q.WorldID,
+		StyleProfileID:      strPtr(q.StyleProfileID),
+		QualityTier:         q.QualityTier,
+		PromptHash:          strPtr(q.PromptHash),
+		StyleProfileVersion: q.StyleProfileVersion,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

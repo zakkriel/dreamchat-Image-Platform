@@ -38,6 +38,18 @@ type Querier interface {
 	// A stable id ASC tie-break keeps the single returned row deterministic when
 	// several exact rows exist (e.g. regenerations).
 	FindExactVisualAsset(ctx context.Context, arg FindExactVisualAssetParams) (VisualAsset, error)
+	// Phase 6A2 single-artifact exact reuse: the narrow deterministic lookup behind
+	// the artifact retrieval-before-generation path. Artifacts have no durable
+	// visual identity in the generation path (they are asset_type = 'artifact',
+	// variant_key = 'default'), so reuse is keyed on the deterministic artifact
+	// render hash stored in prompt_hash rather than on identity/matrix retrieval.
+	// Owner (tenant/world) + style + quality + the render hash must all match and
+	// the asset must be reusable (status = 'ready'). style_profile_version is
+	// optional: when provided it must match exactly (the render hash already folds
+	// it in, so this is a belt-and-suspenders narrowing). A stable id ASC tie-break
+	// keeps the single returned row deterministic when several ready rows share the
+	// same hash (e.g. a re-run that raced before this reuse path existed).
+	FindReadyArtifactByPromptHash(ctx context.Context, arg FindReadyArtifactByPromptHashParams) (VisualAsset, error)
 	GetActiveAPITokenByPrefix(ctx context.Context, tokenPrefix string) (GetActiveAPITokenByPrefixRow, error)
 	GetAssetPackByID(ctx context.Context, id string) (AssetPack, error)
 	GetCostBudget(ctx context.Context, id string) (GetCostBudgetRow, error)
@@ -67,6 +79,15 @@ type Querier interface {
 	// budget increment so a denied reservation rolls the hold back too. Release /
 	// commit reverse exactly the rows recorded here.
 	InsertBudgetHold(ctx context.Context, arg InsertBudgetHoldParams) error
+	// Phase 6A2 single-artifact exact reuse: insert a generation job that is
+	// already terminal (status = 'completed') because an existing ready asset
+	// satisfied the request via the deterministic artifact render hash. No provider
+	// work runs, so the job carries no cost_reservation_id, a zero estimate, and a
+	// zero actual cost — the request is genuinely free. cache_result is fixed to
+	// 'exact_match' and final_asset_ids points at the reused asset. This row is
+	// never enqueued and the worker never processes it, so the terminal-job
+	// finalizer (which would otherwise commit a reservation) is never invoked on it.
+	InsertCompletedCacheHitJob(ctx context.Context, arg InsertCompletedCacheHitJobParams) (GenerationJob, error)
 	// ---------------------------------------------------------------------------
 	// Cost budgets
 	// ---------------------------------------------------------------------------

@@ -523,3 +523,9 @@ func (c *estimatingPackCreator) CreateAndEnqueue(_ context.Context, params jobs.
 		AssetPackID:       "pack_test",
 	}, nil
 }
+
+// CreateCompletedCacheHitJob is unused by the pack path (pack reuse-first is
+// Phase 6A3); it exists only to satisfy the jobs.Creator interface.
+func (c *estimatingPackCreator) CreateCompletedCacheHitJob(_ context.Context, _ jobs.CreateCacheHitParams) (jobs.CreateResult, error) {
+	return jobs.CreateResult{}, nil
+}

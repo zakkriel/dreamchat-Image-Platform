@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/config"
 	"github.com/zakkriel/drchat-image-platform/internal/idempotency"
 	"github.com/zakkriel/drchat-image-platform/internal/ids"
@@ -31,9 +32,12 @@ var jobIDRe = regexp.MustCompile(`^job_[0-9a-f]{16}$`)
 type stubCreator struct {
 	mu            sync.Mutex
 	calls         []jobs.CreateAndEnqueueParams
+	cacheHitCalls []jobs.CreateCacheHitParams
 	byKey         map[string]storedKey
 	statusByJobID map[string]string
 	failErr       error
+	// cacheHitErr, when set, is returned by CreateCompletedCacheHitJob.
+	cacheHitErr error
 }
 
 type storedKey struct {
@@ -90,8 +94,45 @@ func (s *stubCreator) CreateAndEnqueue(_ context.Context, params jobs.CreateAndE
 	return jobs.CreateResult{JobID: jobID, Status: "queued", AssetPackID: packID}, nil
 }
 
+// CreateCompletedCacheHitJob records the cache-hit call and mirrors the
+// idempotency contract: same (token, key, endpoint, body) returns the same
+// job_id, a different endpoint/body returns ErrIdempotencyConflict.
+func (s *stubCreator) CreateCompletedCacheHitJob(_ context.Context, params jobs.CreateCacheHitParams) (jobs.CreateResult, error) {
+	if s.cacheHitErr != nil {
+		return jobs.CreateResult{}, s.cacheHitErr
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cacheHitCalls = append(s.cacheHitCalls, params)
+	result := func(jobID string) jobs.CreateResult {
+		return jobs.CreateResult{
+			JobID:         jobID,
+			Status:        "completed",
+			CacheResult:   "exact_match",
+			FinalAssetIDs: []string{params.FinalAssetID},
+		}
+	}
+	if params.IdempotencyKey == "" {
+		return result(ids.NewGenerationJobID()), nil
+	}
+	k := params.RequestedByTokenID + "|" + params.IdempotencyKey
+	if existing, ok := s.byKey[k]; ok {
+		if existing.endpoint != params.Endpoint || existing.requestHash != params.RequestHash {
+			return jobs.CreateResult{}, jobs.ErrIdempotencyConflict
+		}
+		return result(existing.jobID), nil
+	}
+	jobID := ids.NewGenerationJobID()
+	s.byKey[k] = storedKey{jobID: jobID, endpoint: params.Endpoint, requestHash: params.RequestHash}
+	return result(jobID), nil
+}
+
 func newArtifactsRouter(creator jobs.Creator, stylesRepo styles.Repository, provider config.Provider) chi.Router {
-	h := NewArtifactsHandler(creator, stylesRepo, provider)
+	return newArtifactsRouterWithReuse(creator, stylesRepo, provider, nil)
+}
+
+func newArtifactsRouterWithReuse(creator jobs.Creator, stylesRepo styles.Repository, provider config.Provider, reuse ArtifactReuseLookup) chi.Router {
+	h := NewArtifactsHandler(creator, stylesRepo, provider, reuse)
 	r := chi.NewRouter()
 	r.Post("/v1/artifacts/{artifact_id}/generate", h.Generate)
 	return r
@@ -220,6 +261,15 @@ func (c *estimatingCreator) CreateAndEnqueue(_ context.Context, params jobs.Crea
 	}, nil
 }
 
+func (c *estimatingCreator) CreateCompletedCacheHitJob(_ context.Context, params jobs.CreateCacheHitParams) (jobs.CreateResult, error) {
+	return jobs.CreateResult{
+		JobID:         ids.NewGenerationJobID(),
+		Status:        "completed",
+		CacheResult:   "exact_match",
+		FinalAssetIDs: []string{params.FinalAssetID},
+	}, nil
+}
+
 func TestArtifactGenerateMissingWorldIDReturns400(t *testing.T) {
 	router := newArtifactsRouter(newStubCreator(), seededStyles(), config.ProviderMock)
 	body := map[string]any{"style_profile_id": "sty_ok", "description": "x"}
@@ -300,4 +350,171 @@ func seededStyles() *stubStylesRepo {
 	repo := newStubStylesRepo()
 	repo.seed(styles.StyleProfile{ID: "sty_ok", TenantID: tenantA, Status: "active"})
 	return repo
+}
+
+func artifactStrPtr(s string) *string { return &s }
+
+// seedReadyArtifact registers a ready artifact whose prompt_hash is the render
+// hash for the given request fields, so the handler's exact-reuse lookup finds
+// it. Returns the asset id.
+func seedReadyArtifact(repo *stubAssetsRepo, assetID, worldID, artifactID, description, styleProfileID, qualityTier string) string {
+	hash := assets.ArtifactRenderHash(assets.ArtifactHashInput{
+		TenantID:       tenantA,
+		WorldID:        worldID,
+		ArtifactID:     artifactID,
+		Description:    description,
+		StyleProfileID: styleProfileID,
+		QualityTier:    qualityTier,
+	})
+	repo.seed(assets.VisualAsset{
+		ID:             assetID,
+		TenantID:       tenantA,
+		WorldID:        worldID,
+		AssetType:      "artifact",
+		VariantKey:     "default",
+		StyleProfileID: artifactStrPtr(styleProfileID),
+		QualityTier:    qualityTier,
+		PromptHash:     artifactStrPtr(hash),
+		Status:         "ready",
+	})
+	return assetID
+}
+
+func TestArtifactGenerateExactHitCreatesCompletedJobAndDoesNotEnqueue(t *testing.T) {
+	creator := newStubCreator()
+	assetsRepo := newStubAssetsRepo()
+	existingID := seedReadyArtifact(assetsRepo, "asset_existing1", "w1", "art_bronze_key", "A bronze key", "sty_ok", "standard")
+
+	router := newArtifactsRouterWithReuse(creator, seededStyles(), config.ProviderMock, assetsRepo)
+	body := map[string]any{
+		"world_id":         "w1",
+		"style_profile_id": "sty_ok",
+		"description":      "A bronze key",
+	}
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/artifacts/art_bronze_key/generate",
+		tenantA, []string{"images:write"}, body, nil)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 on cache hit, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	// No normal create/reserve/enqueue happened — that path is what reserves
+	// cost and enqueues provider work.
+	if len(creator.calls) != 0 {
+		t.Fatalf("cache hit must not call CreateAndEnqueue (no reservation/enqueue), got %d calls", len(creator.calls))
+	}
+	if len(creator.cacheHitCalls) != 1 {
+		t.Fatalf("expected exactly one cache-hit job creation, got %d", len(creator.cacheHitCalls))
+	}
+	if got := creator.cacheHitCalls[0].FinalAssetID; got != existingID {
+		t.Fatalf("cache-hit job must reuse the existing asset id %q, got %q", existingID, got)
+	}
+	// The 202 is an acceptance envelope; estimated cost signals the reuse is free.
+	resp := decode[map[string]any](t, rec)
+	if resp["estimated_cost_usd"] != "0.0000" {
+		t.Fatalf("expected estimated_cost_usd=0.0000 on cache hit, got %v", resp["estimated_cost_usd"])
+	}
+	if !jobIDRe.MatchString(resp["job_id"].(string)) {
+		t.Fatalf("expected a job_id in the cache-hit response, got %v", resp["job_id"])
+	}
+}
+
+func TestArtifactGenerateExactHitRecordsExactMatchResult(t *testing.T) {
+	creator := newStubCreator()
+	assetsRepo := newStubAssetsRepo()
+	existingID := seedReadyArtifact(assetsRepo, "asset_existing2", "w1", "art_1", "A bronze key", "sty_ok", "standard")
+
+	router := newArtifactsRouterWithReuse(creator, seededStyles(), config.ProviderMock, assetsRepo)
+	body := map[string]any{"world_id": "w1", "style_profile_id": "sty_ok", "description": "A bronze key"}
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/artifacts/art_1/generate",
+		tenantA, []string{"images:write"}, body, nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", rec.Code)
+	}
+	call := creator.cacheHitCalls[0]
+	if call.FallbackPolicy != "compatible_only" {
+		t.Fatalf("expected default fallback_policy compatible_only carried into cache-hit job, got %q", call.FallbackPolicy)
+	}
+	if call.InputPayload["prompt_hash"] == "" || call.InputPayload["prompt_hash"] == nil {
+		t.Fatalf("cache-hit job payload must carry the render hash, got %v", call.InputPayload["prompt_hash"])
+	}
+	if call.FinalAssetID != existingID {
+		t.Fatalf("expected reused asset id %q, got %q", existingID, call.FinalAssetID)
+	}
+}
+
+func TestArtifactGenerateMissGoesThroughNormalGeneratePath(t *testing.T) {
+	creator := newStubCreator()
+	assetsRepo := newStubAssetsRepo() // empty: nothing to reuse
+
+	router := newArtifactsRouterWithReuse(creator, seededStyles(), config.ProviderMock, assetsRepo)
+	body := map[string]any{"world_id": "w1", "style_profile_id": "sty_ok", "description": "A novel artifact"}
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/artifacts/art_novel/generate",
+		tenantA, []string{"images:write"}, body, nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(creator.cacheHitCalls) != 0 {
+		t.Fatalf("a miss must not create a cache-hit job, got %d", len(creator.cacheHitCalls))
+	}
+	if len(creator.calls) != 1 {
+		t.Fatalf("a miss must go through the normal create/reserve/enqueue path, got %d calls", len(creator.calls))
+	}
+	if creator.calls[0].CacheResult != "generated_required" {
+		t.Fatalf("expected cache_result=generated_required on a miss, got %q", creator.calls[0].CacheResult)
+	}
+	// The render hash must be carried so the worker persists it on the asset.
+	if creator.calls[0].InputPayload["prompt_hash"] == nil || creator.calls[0].InputPayload["prompt_hash"] == "" {
+		t.Fatalf("miss path must carry prompt_hash in the payload, got %v", creator.calls[0].InputPayload["prompt_hash"])
+	}
+}
+
+func TestArtifactGenerateFallbackNoneStillReusesExactHit(t *testing.T) {
+	creator := newStubCreator()
+	assetsRepo := newStubAssetsRepo()
+	existingID := seedReadyArtifact(assetsRepo, "asset_existing3", "w1", "art_none", "A bronze key", "sty_ok", "standard")
+
+	router := newArtifactsRouterWithReuse(creator, seededStyles(), config.ProviderMock, assetsRepo)
+	body := map[string]any{
+		"world_id":         "w1",
+		"style_profile_id": "sty_ok",
+		"description":      "A bronze key",
+		"fallback_policy":  "none",
+	}
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/artifacts/art_none/generate",
+		tenantA, []string{"images:write"}, body, nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	// fallback_policy=none gates compatible/preview fallback, not exact reuse:
+	// an exact hash hit must still be reused (no generation).
+	if len(creator.calls) != 0 {
+		t.Fatalf("fallback_policy=none must still reuse an exact hit (no generate), got %d generate calls", len(creator.calls))
+	}
+	if len(creator.cacheHitCalls) != 1 || creator.cacheHitCalls[0].FinalAssetID != existingID {
+		t.Fatalf("expected exact reuse of %q under fallback_policy=none, got %+v", existingID, creator.cacheHitCalls)
+	}
+	if creator.cacheHitCalls[0].FallbackPolicy != "none" {
+		t.Fatalf("expected the request fallback_policy 'none' carried onto the cache-hit job, got %q", creator.cacheHitCalls[0].FallbackPolicy)
+	}
+}
+
+func TestArtifactGenerateDifferentArtifactIDMissesEvenWithSameDescription(t *testing.T) {
+	creator := newStubCreator()
+	assetsRepo := newStubAssetsRepo()
+	// Seed an asset for art_one; request art_two with the same description.
+	seedReadyArtifact(assetsRepo, "asset_one", "w1", "art_one", "A bronze key", "sty_ok", "standard")
+
+	router := newArtifactsRouterWithReuse(creator, seededStyles(), config.ProviderMock, assetsRepo)
+	body := map[string]any{"world_id": "w1", "style_profile_id": "sty_ok", "description": "A bronze key"}
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/artifacts/art_two/generate",
+		tenantA, []string{"images:write"}, body, nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", rec.Code)
+	}
+	if len(creator.cacheHitCalls) != 0 {
+		t.Fatalf("a different artifact_id must not reuse another artifact's asset, got %d cache hits", len(creator.cacheHitCalls))
+	}
+	if len(creator.calls) != 1 {
+		t.Fatalf("expected the normal generate path for a different artifact_id, got %d", len(creator.calls))
+	}
 }

@@ -104,11 +104,48 @@ type CreateResult struct {
 	// AssetPackID is set for pack jobs (Phase 5A): the asset_packs row
 	// created in the same transaction (or the replayed job's pack).
 	AssetPackID string
+
+	// CacheResult and FinalAssetIDs are set for Phase 6A2 exact artifact
+	// reuse: a completed cache-hit job reports cache_result=exact_match and the
+	// reused asset id(s). Empty for the normal generate path (the cache result
+	// lives on the job row and the worker fills final_asset_ids later).
+	CacheResult   string
+	FinalAssetIDs []string
+}
+
+// CreateCacheHitParams carries what the service needs to land an already-
+// completed generation job for a Phase 6A2 exact artifact reuse. There is no
+// cost, provider, or enqueue context because a cache hit does none of that
+// work: it records that an existing ready asset satisfied the request.
+type CreateCacheHitParams struct {
+	TenantID           string
+	RequestedByTokenID string
+	JobType            string
+	WorldID            string
+	InputPayload       map[string]any
+	FallbackPolicy     string
+	// FinalAssetID is the existing ready asset the request reuses; it becomes
+	// the job's single final_asset_ids entry.
+	FinalAssetID string
+	// RequestedOutputs mirrors the request's output set; defaults to
+	// ['default'] (the single artifact variant) when empty.
+	RequestedOutputs []string
+
+	// Idempotency context. When IdempotencyKey is empty the service skips the
+	// idempotency table and creates a fresh completed job (still reusing the
+	// same asset and doing no provider work).
+	IdempotencyKey string
+	Endpoint       string
+	RequestHash    string
 }
 
 // Creator is the handler-facing interface. Tests stub this.
 type Creator interface {
 	CreateAndEnqueue(ctx context.Context, params CreateAndEnqueueParams) (CreateResult, error)
+	// CreateCompletedCacheHitJob lands an already-completed job for an exact
+	// artifact reuse (Phase 6A2): no cost reservation, no provider attempt, no
+	// enqueue. Idempotency is honored exactly like CreateAndEnqueue.
+	CreateCompletedCacheHitJob(ctx context.Context, params CreateCacheHitParams) (CreateResult, error)
 }
 
 // Service implements Creator against Postgres + the asynq Enqueuer, running
@@ -298,6 +335,103 @@ func (s *Service) CreateAndEnqueue(ctx context.Context, params CreateAndEnqueueP
 		Currency:          res.Currency,
 		CostReservationID: res.ID,
 		AssetPackID:       packID,
+	}, nil
+}
+
+// CreateCompletedCacheHitJob lands an already-completed generation job for a
+// Phase 6A2 exact artifact reuse. It is deliberately NOT a thin wrapper over
+// CreateAndEnqueue: a cache hit must never reserve cost, insert a provider
+// attempt, or enqueue a task — so it shares only the idempotency machinery, not
+// the reserve/enqueue path. The job is committed at status=completed with
+// cache_result=exact_match, final_asset_ids=[asset], and zero estimated/actual
+// cost. It is never enqueued, so the worker never processes it and the
+// terminal-job cost finalizer is never invoked on it.
+func (s *Service) CreateCompletedCacheHitJob(ctx context.Context, params CreateCacheHitParams) (CreateResult, error) {
+	payload, err := marshalPayload(params.InputPayload)
+	if err != nil {
+		return CreateResult{}, err
+	}
+
+	requestedOutputs := params.RequestedOutputs
+	if len(requestedOutputs) == 0 {
+		requestedOutputs = []string{"default"}
+	}
+
+	jobID := ids.NewGenerationJobID()
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return CreateResult{}, err
+	}
+	rolled := false
+	defer func() {
+		if !rolled {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+	q := dbgen.New(tx)
+
+	worldID := params.WorldID
+	tokenID := params.RequestedByTokenID
+	fp := params.FallbackPolicy
+	if _, err := q.InsertCompletedCacheHitJob(ctx, dbgen.InsertCompletedCacheHitJobParams{
+		ID:                 jobID,
+		TenantID:           params.TenantID,
+		WorldID:            &worldID,
+		JobType:            params.JobType,
+		RequestedByTokenID: &tokenID,
+		InputPayload:       payload,
+		FallbackPolicy:     &fp,
+		RequestedOutputs:   requestedOutputs,
+		FinalAssetIds:      []string{params.FinalAssetID},
+	}); err != nil {
+		return CreateResult{}, fmt.Errorf("insert cache-hit job: %w", err)
+	}
+
+	// Idempotency: same machinery as CreateAndEnqueue. On a lost race the whole
+	// transaction (just the completed job) rolls back and we replay the
+	// winner's row, so a same-key replay returns the same cache-hit job without
+	// creating a duplicate.
+	if params.IdempotencyKey != "" {
+		jobIDRef := jobID
+		_, err = q.InsertIdempotencyKey(ctx, dbgen.InsertIdempotencyKeyParams{
+			ID:              ids.NewIdempotencyKeyID(),
+			TokenID:         params.RequestedByTokenID,
+			Key:             params.IdempotencyKey,
+			Endpoint:        params.Endpoint,
+			RequestHash:     params.RequestHash,
+			GenerationJobID: &jobIDRef,
+			ExpiresAt:       pgtype.Timestamptz{Time: s.now().Add(s.ttl), Valid: true},
+		})
+		switch {
+		case err == nil:
+			// won the race; fall through to commit
+		case errors.Is(err, pgx.ErrNoRows):
+			if err := tx.Rollback(ctx); err != nil {
+				return CreateResult{}, err
+			}
+			rolled = true
+			return s.replayExisting(ctx, CreateAndEnqueueParams{
+				RequestedByTokenID: params.RequestedByTokenID,
+				IdempotencyKey:     params.IdempotencyKey,
+				Endpoint:           params.Endpoint,
+				RequestHash:        params.RequestHash,
+			})
+		default:
+			return CreateResult{}, err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return CreateResult{}, err
+	}
+	rolled = true
+
+	return CreateResult{
+		JobID:            jobID,
+		Status:           "completed",
+		EstimatedCostUSD: "0.0000",
+		CacheResult:      "exact_match",
+		FinalAssetIDs:    []string{params.FinalAssetID},
 	}, nil
 }
 

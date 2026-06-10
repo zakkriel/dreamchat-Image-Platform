@@ -287,21 +287,57 @@ func (s *stubAssetsRepo) ListRetrievalCandidatesByCompatTag(ctx context.Context,
 	return s.ListRetrievalCandidates(ctx, q)
 }
 
+// FindReadyArtifactByPromptHash mirrors the SQL artifact exact-reuse predicate
+// in memory: a ready artifact (variant_key 'default') for the same tenant /
+// world / style / quality with a matching prompt_hash, optionally narrowed by
+// style_profile_version.
+func (s *stubAssetsRepo) FindReadyArtifactByPromptHash(_ context.Context, q assets.ArtifactLookup) (assets.VisualAsset, error) {
+	var matches []assets.VisualAsset
+	for _, a := range s.byID {
+		if a.TenantID != q.TenantID || a.WorldID != q.WorldID {
+			continue
+		}
+		if a.AssetType != "artifact" || a.VariantKey != "default" {
+			continue
+		}
+		if strVal(a.StyleProfileID) != q.StyleProfileID || a.QualityTier != q.QualityTier {
+			continue
+		}
+		if strVal(a.PromptHash) != q.PromptHash || a.Status != "ready" {
+			continue
+		}
+		if q.StyleProfileVersion != nil {
+			if a.StyleProfileVersion == nil || *a.StyleProfileVersion != *q.StyleProfileVersion {
+				continue
+			}
+		}
+		matches = append(matches, a)
+	}
+	if len(matches) == 0 {
+		return assets.VisualAsset{}, assets.ErrNotFound
+	}
+	sort.Slice(matches, func(i, j int) bool { return matches[i].ID < matches[j].ID })
+	return matches[0], nil
+}
+
 func (s *stubAssetsRepo) Insert(_ context.Context, params assets.InsertParams) (assets.VisualAsset, error) {
 	asset := assets.VisualAsset{
-		ID:           params.ID,
-		TenantID:     params.TenantID,
-		WorldID:      params.WorldID,
-		AssetType:    params.AssetType,
-		VariantKey:   params.VariantKey,
-		Status:       "ready",
-		LowResUrl:    params.LowResUrl,
-		HighResUrl:   params.HighResUrl,
-		ThumbnailUrl: params.ThumbnailUrl,
-		ProviderID:   params.ProviderID,
-		ModelID:      params.ModelID,
-		PromptHash:   params.PromptHash,
-		Seed:         params.Seed,
+		ID:                  params.ID,
+		TenantID:            params.TenantID,
+		WorldID:             params.WorldID,
+		AssetType:           params.AssetType,
+		VariantKey:          params.VariantKey,
+		StyleProfileID:      params.StyleProfileID,
+		StyleProfileVersion: params.StyleProfileVersion,
+		QualityTier:         params.QualityTier,
+		Status:              "ready",
+		LowResUrl:           params.LowResUrl,
+		HighResUrl:          params.HighResUrl,
+		ThumbnailUrl:        params.ThumbnailUrl,
+		ProviderID:          params.ProviderID,
+		ModelID:             params.ModelID,
+		PromptHash:          params.PromptHash,
+		Seed:                params.Seed,
 	}
 	s.byID[params.ID] = asset
 	return asset, nil

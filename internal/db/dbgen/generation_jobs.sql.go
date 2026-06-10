@@ -111,6 +111,92 @@ func (q *Queries) GetGenerationJobByIDUnchecked(ctx context.Context, id string) 
 	return i, err
 }
 
+const insertCompletedCacheHitJob = `-- name: InsertCompletedCacheHitJob :one
+INSERT INTO generation_jobs (
+    id, tenant_id, world_id, job_type, status,
+    requested_by_token_id, input_payload, requested_outputs,
+    fallback_policy, cache_result, final_asset_ids,
+    cost_estimate_usd, actual_cost_usd, completed_at
+) VALUES (
+    $1, $2, $3, $4, 'completed',
+    $5, $6, $8,
+    $7, 'exact_match', $9,
+    0, 0, now()
+)
+RETURNING id, tenant_id, world_id, job_type, status,
+          requested_by_token_id, visual_identity_id, asset_pack_id,
+          input_payload, requested_outputs, fallback_policy, cache_result,
+          preview_asset_ids, final_asset_ids,
+          error_code, error_message, retryable,
+          cost_reservation_id, cost_estimate_usd, actual_cost_usd,
+          queue_duration_ms, generation_duration_ms,
+          created_at, updated_at, started_at, completed_at
+`
+
+type InsertCompletedCacheHitJobParams struct {
+	ID                 string   `json:"id"`
+	TenantID           string   `json:"tenant_id"`
+	WorldID            *string  `json:"world_id"`
+	JobType            string   `json:"job_type"`
+	RequestedByTokenID *string  `json:"requested_by_token_id"`
+	InputPayload       []byte   `json:"input_payload"`
+	FallbackPolicy     *string  `json:"fallback_policy"`
+	RequestedOutputs   []string `json:"requested_outputs"`
+	FinalAssetIds      []string `json:"final_asset_ids"`
+}
+
+// Phase 6A2 single-artifact exact reuse: insert a generation job that is
+// already terminal (status = 'completed') because an existing ready asset
+// satisfied the request via the deterministic artifact render hash. No provider
+// work runs, so the job carries no cost_reservation_id, a zero estimate, and a
+// zero actual cost — the request is genuinely free. cache_result is fixed to
+// 'exact_match' and final_asset_ids points at the reused asset. This row is
+// never enqueued and the worker never processes it, so the terminal-job
+// finalizer (which would otherwise commit a reservation) is never invoked on it.
+func (q *Queries) InsertCompletedCacheHitJob(ctx context.Context, arg InsertCompletedCacheHitJobParams) (GenerationJob, error) {
+	row := q.db.QueryRow(ctx, insertCompletedCacheHitJob,
+		arg.ID,
+		arg.TenantID,
+		arg.WorldID,
+		arg.JobType,
+		arg.RequestedByTokenID,
+		arg.InputPayload,
+		arg.FallbackPolicy,
+		arg.RequestedOutputs,
+		arg.FinalAssetIds,
+	)
+	var i GenerationJob
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.WorldID,
+		&i.JobType,
+		&i.Status,
+		&i.RequestedByTokenID,
+		&i.VisualIdentityID,
+		&i.AssetPackID,
+		&i.InputPayload,
+		&i.RequestedOutputs,
+		&i.FallbackPolicy,
+		&i.CacheResult,
+		&i.PreviewAssetIds,
+		&i.FinalAssetIds,
+		&i.ErrorCode,
+		&i.ErrorMessage,
+		&i.Retryable,
+		&i.CostReservationID,
+		&i.CostEstimateUsd,
+		&i.ActualCostUsd,
+		&i.QueueDurationMs,
+		&i.GenerationDurationMs,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+	)
+	return i, err
+}
+
 const insertGenerationJob = `-- name: InsertGenerationJob :one
 INSERT INTO generation_jobs (
     id, tenant_id, world_id, job_type, status,

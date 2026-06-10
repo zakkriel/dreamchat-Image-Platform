@@ -67,6 +67,10 @@ func (noopAssetsRepo) ListRetrievalCandidatesByCompatTag(context.Context, assets
 	return nil, nil
 }
 
+func (noopAssetsRepo) FindReadyArtifactByPromptHash(context.Context, assets.ArtifactLookup) (assets.VisualAsset, error) {
+	return assets.VisualAsset{}, assets.ErrNotFound
+}
+
 type noopJobsRepo struct{}
 
 func (noopJobsRepo) Insert(context.Context, jobs.InsertParams) (jobs.Job, error) {
@@ -113,6 +117,10 @@ type noopJobsService struct{}
 
 func (noopJobsService) CreateAndEnqueue(context.Context, jobs.CreateAndEnqueueParams) (jobs.CreateResult, error) {
 	return jobs.CreateResult{JobID: "job_routerstubaaaaaaa"}, nil
+}
+
+func (noopJobsService) CreateCompletedCacheHitJob(context.Context, jobs.CreateCacheHitParams) (jobs.CreateResult, error) {
+	return jobs.CreateResult{JobID: "job_routerstubaaaaaaa", Status: "completed"}, nil
 }
 
 const (
