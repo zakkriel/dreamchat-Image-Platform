@@ -548,6 +548,16 @@ type GenerateCharacterPackRequest struct {
 	// LatencyTier Latency preference for provider routing.
 	LatencyTier *LatencyTier `json:"latency_tier,omitempty"`
 
+	// PackTemplate Named pack template (PRD 04 §8.1) selecting a fixed set of
+	// variant roles to generate:
+	// `character_minimal_portrait_pack`, `character_expression_pack`,
+	// `character_full_reference_pack`. Resolution precedence is
+	// explicit `variant_keys` > `pack_template` > minimal default.
+	// When `variant_keys` are supplied they win verbatim and the pack
+	// is labelled `character_custom_pack`. An unknown template is
+	// rejected with `400 invalid_request`.
+	PackTemplate *string `json:"pack_template,omitempty"`
+
 	// QualityTier Output quality tier requested for generation.
 	QualityTier    *QualityTier `json:"quality_tier,omitempty"`
 	StyleProfileId string       `json:"style_profile_id"`
@@ -564,6 +574,13 @@ type GeneratePlacePackRequest struct {
 
 	// LatencyTier Latency preference for provider routing.
 	LatencyTier *LatencyTier `json:"latency_tier,omitempty"`
+
+	// PackTemplate Named pack template (PRD 04 §8.2) selecting a fixed set of
+	// variant roles to generate: `place_minimal_scene_pack`,
+	// `place_time_of_day_pack`, `place_state_pack`. See
+	// GenerateCharacterPackRequest.pack_template for precedence and
+	// error semantics; the custom pack type is `place_custom_pack`.
+	PackTemplate *string `json:"pack_template,omitempty"`
 
 	// QualityTier Output quality tier requested for generation.
 	QualityTier    *QualityTier `json:"quality_tier,omitempty"`

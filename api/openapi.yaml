@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: DreamChat Image Platform API
-  version: 0.5.1
+  version: 0.5.2
   description: |
     Standalone API for generating, storing, retrieving, and versioning persistent visual assets for DreamChat worlds.
 
@@ -1281,6 +1281,17 @@ components:
       properties:
         world_id: { type: string }
         style_profile_id: { type: string }
+        pack_template:
+          type: string
+          description: |
+            Named pack template (PRD 04 §8.1) selecting a fixed set of
+            variant roles to generate:
+            `character_minimal_portrait_pack`, `character_expression_pack`,
+            `character_full_reference_pack`. Resolution precedence is
+            explicit `variant_keys` > `pack_template` > minimal default.
+            When `variant_keys` are supplied they win verbatim and the pack
+            is labelled `character_custom_pack`. An unknown template is
+            rejected with `400 invalid_request`.
         quality_tier:
           $ref: '#/components/schemas/QualityTier'
         latency_tier:
@@ -1302,6 +1313,14 @@ components:
       properties:
         world_id: { type: string }
         style_profile_id: { type: string }
+        pack_template:
+          type: string
+          description: |
+            Named pack template (PRD 04 §8.2) selecting a fixed set of
+            variant roles to generate: `place_minimal_scene_pack`,
+            `place_time_of_day_pack`, `place_state_pack`. See
+            GenerateCharacterPackRequest.pack_template for precedence and
+            error semantics; the custom pack type is `place_custom_pack`.
         quality_tier:
           $ref: '#/components/schemas/QualityTier'
         latency_tier:
@@ -1879,6 +1898,14 @@ components:
 # Confidence to Implement
 #
 # Score: 94/100 — Very High
+#
+# v0.5.2 — Phase 5B variant logic (additive):
+#   * `GenerateCharacterPackRequest.pack_template` and
+#     `GeneratePlacePackRequest.pack_template` — optional named pack
+#     template selecting a fixed variant-role set. Resolution precedence
+#     is explicit `variant_keys` > `pack_template` > minimal default; an
+#     unknown template is `400 invalid_request`. No retrieval, search,
+#     preview, or regeneration behavior is added (those remain 6A/6B).
 #
 # v0.5.1 — Phase 5A pack fan-out (additive):
 #   * `GenerationJobAccepted.asset_pack_id` — returned by the two

@@ -277,6 +277,188 @@ func TestEndToEndPlacePackGeneration(t *testing.T) {
 	}
 }
 
+// TestEndToEndCharacterExpressionPackClassification (Phase 5B): a pack_template
+// request fans out the template role set; every generated visual_assets row
+// carries a populated variant_family, the right compatibility_tags, structured
+// metadata tags, and the correct fallback_allowed flag (strong emotion off,
+// generic presence on).
+func TestEndToEndCharacterExpressionPackClassification(t *testing.T) {
+	pool := openTestPool(t)
+	defer pool.Close()
+	cleanup(t, pool)
+	defer cleanup(t, pool)
+	seedFixtures(t, pool)
+	seedPackIdentities(t, pool)
+	seedBudget(t, pool, "bud_pack_expr", "tenant", itTenant, "active", "1.0000")
+
+	jobsRepo := jobs.NewRepository(pool)
+	enq := newRecordingEnqueuer()
+	svc := newCostService(pool, enq)
+	r := mountPackTestRouter(svc, pool, jobsRepo)
+
+	rec := sendPackRequest(t, r, "/v1/characters/"+itCharacterID+"/generate-pack", map[string]any{
+		"world_id":         "w1",
+		"style_profile_id": itStyleID,
+		"pack_template":    "character_expression_pack",
+	}, "")
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("POST expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	jobID, _ := resp["job_id"].(string)
+	packID, _ := resp["asset_pack_id"].(string)
+	// character_expression_pack = 5 variants → estimate 5 × 0.0100.
+	if resp["estimated_cost_usd"] != "0.0500" {
+		t.Fatalf("expected estimated_cost_usd=0.0500, got %v", resp["estimated_cost_usd"])
+	}
+	// The pack carries the template name as its pack_type.
+	if got := scalar(t, pool, `SELECT pack_type FROM asset_packs WHERE id = $1`, packID); got != "character_expression_pack" {
+		t.Fatalf("pack_type: expected character_expression_pack, got %s", got)
+	}
+
+	w := newPackTestWorker(pool, mock.New())
+	if err := w.ProcessPack(context.Background(), jobID); err != nil {
+		t.Fatalf("worker pack process: %v", err)
+	}
+
+	if got := scalar(t, pool, `SELECT status FROM asset_packs WHERE id = $1`, packID); got != "completed" {
+		t.Fatalf("pack status: expected completed, got %s", got)
+	}
+	// Every generated asset has a populated (non-unknown, non-null) family.
+	if got := scalar(t, pool,
+		`SELECT count(*) FROM visual_assets WHERE generation_job_id = $1 AND variant_family IS NOT NULL AND variant_family <> 'unknown'`,
+		jobID); got != "5" {
+		t.Fatalf("expected 5 assets with a meaningful variant_family, got %s", got)
+	}
+	// Neutral portrait: family neutral, generic_presence compatibility tag,
+	// fallback allowed, metadata angle tag.
+	if got := scalar(t, pool,
+		`SELECT variant_family FROM visual_assets WHERE generation_job_id = $1 AND variant_key = 'neutral_front_portrait'`,
+		jobID); got != "neutral" {
+		t.Fatalf("neutral family: expected neutral, got %s", got)
+	}
+	if got := scalar(t, pool,
+		`SELECT ('generic_presence' = ANY(compatibility_tags))::text FROM visual_assets WHERE generation_job_id = $1 AND variant_key = 'neutral_front_portrait'`,
+		jobID); got != "true" {
+		t.Fatalf("neutral must carry generic_presence compatibility tag, got %s", got)
+	}
+	if got := scalar(t, pool,
+		`SELECT fallback_allowed::text FROM visual_assets WHERE generation_job_id = $1 AND variant_key = 'neutral_front_portrait'`,
+		jobID); got != "true" {
+		t.Fatalf("neutral fallback_allowed: expected true, got %s", got)
+	}
+	if got := scalar(t, pool,
+		`SELECT metadata->'variant_tags'->>'angle' FROM visual_assets WHERE generation_job_id = $1 AND variant_key = 'neutral_front_portrait'`,
+		jobID); got != "front" {
+		t.Fatalf("neutral metadata angle: expected front, got %s", got)
+	}
+	// Warm expression: family warm, metadata expression tag, fallback allowed.
+	if got := scalar(t, pool,
+		`SELECT variant_family FROM visual_assets WHERE generation_job_id = $1 AND variant_key = 'expression_warm'`,
+		jobID); got != "warm" {
+		t.Fatalf("warm family: expected warm, got %s", got)
+	}
+	if got := scalar(t, pool,
+		`SELECT metadata->'variant_tags'->>'expression' FROM visual_assets WHERE generation_job_id = $1 AND variant_key = 'expression_warm'`,
+		jobID); got != "warm" {
+		t.Fatalf("warm metadata expression: expected warm, got %s", got)
+	}
+	// Strong-emotion expression: family strong_emotion, fallback NOT allowed,
+	// no compatibility tags.
+	if got := scalar(t, pool,
+		`SELECT variant_family FROM visual_assets WHERE generation_job_id = $1 AND variant_key = 'expression_angry'`,
+		jobID); got != "strong_emotion" {
+		t.Fatalf("angry family: expected strong_emotion, got %s", got)
+	}
+	if got := scalar(t, pool,
+		`SELECT fallback_allowed::text FROM visual_assets WHERE generation_job_id = $1 AND variant_key = 'expression_angry'`,
+		jobID); got != "false" {
+		t.Fatalf("angry fallback_allowed: expected false, got %s", got)
+	}
+	if got := scalar(t, pool,
+		`SELECT cardinality(compatibility_tags)::text FROM visual_assets WHERE generation_job_id = $1 AND variant_key = 'expression_angry'`,
+		jobID); got != "0" {
+		t.Fatalf("angry must carry no compatibility tags, got %s", got)
+	}
+
+	// Query sanity: compatibility_tags is populated and queryable (GIN overlap).
+	// Exactly one row in this pack carries generic_presence (neutral_front).
+	if got := scalar(t, pool,
+		`SELECT count(*) FROM visual_assets WHERE generation_job_id = $1 AND compatibility_tags && ARRAY['generic_presence']`,
+		jobID); got != "1" {
+		t.Fatalf("expected 1 generic_presence asset via array overlap, got %s", got)
+	}
+}
+
+// TestEndToEndPlaceTimeOfDayPackClassification (Phase 5B): a place
+// time-of-day template stamps the time_of_day metadata and time_of_day family
+// on each generated scene.
+func TestEndToEndPlaceTimeOfDayPackClassification(t *testing.T) {
+	pool := openTestPool(t)
+	defer pool.Close()
+	cleanup(t, pool)
+	defer cleanup(t, pool)
+	seedFixtures(t, pool)
+	seedPackIdentities(t, pool)
+	seedBudget(t, pool, "bud_pack_tod", "tenant", itTenant, "active", "1.0000")
+
+	jobsRepo := jobs.NewRepository(pool)
+	enq := newRecordingEnqueuer()
+	svc := newCostService(pool, enq)
+	r := mountPackTestRouter(svc, pool, jobsRepo)
+
+	rec := sendPackRequest(t, r, "/v1/places/"+itPlaceID+"/generate-pack", map[string]any{
+		"world_id":         "w1",
+		"style_profile_id": itStyleID,
+		"pack_template":    "place_time_of_day_pack",
+	}, "")
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("POST expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	jobID, _ := resp["job_id"].(string)
+	packID, _ := resp["asset_pack_id"].(string)
+	if resp["estimated_cost_usd"] != "0.0400" {
+		t.Fatalf("expected estimated_cost_usd=0.0400 (4 variants), got %v", resp["estimated_cost_usd"])
+	}
+
+	w := newPackTestWorker(pool, mock.New())
+	if err := w.ProcessPack(context.Background(), jobID); err != nil {
+		t.Fatalf("worker pack process: %v", err)
+	}
+
+	if got := scalar(t, pool, `SELECT pack_type FROM asset_packs WHERE id = $1`, packID); got != "place_time_of_day_pack" {
+		t.Fatalf("pack_type: expected place_time_of_day_pack, got %s", got)
+	}
+	// All four rows carry the time_of_day family.
+	if got := scalar(t, pool,
+		`SELECT count(*) FROM visual_assets WHERE generation_job_id = $1 AND variant_family = 'time_of_day'`,
+		jobID); got != "4" {
+		t.Fatalf("expected 4 time_of_day assets, got %s", got)
+	}
+	// Each carries its time_of_day metadata tag.
+	for _, tc := range []struct{ key, tod string }{
+		{"day_view", "day"},
+		{"night_view", "night"},
+		{"dawn_view", "dawn"},
+		{"dusk_view", "dusk"},
+	} {
+		if got := scalar(t, pool,
+			`SELECT metadata->'variant_tags'->>'time_of_day' FROM visual_assets WHERE generation_job_id = $1 AND variant_key = $2`,
+			jobID, tc.key); got != tc.tod {
+			t.Fatalf("%s metadata time_of_day: expected %s, got %s", tc.key, tc.tod, got)
+		}
+	}
+	// day_view is the fallback-safe daylight; night/dawn/dusk are strict.
+	if got := scalar(t, pool,
+		`SELECT count(*) FROM visual_assets WHERE generation_job_id = $1 AND fallback_allowed = true`,
+		jobID); got != "1" {
+		t.Fatalf("expected exactly 1 fallback-allowed time-of-day asset (day), got %s", got)
+	}
+}
+
 func TestPackPartialFailureCompletesWithWarnings(t *testing.T) {
 	pool := openTestPool(t)
 	defer pool.Close()

@@ -257,7 +257,12 @@ func (w *Worker) generatePackItem(ctx context.Context, job Job, plan packPlan, p
 	modelID := mockProviderModelID
 	jobIDRef := job.ID
 	identityID := plan.visualIdentityID
-	if err := w.Jobs.InsertPackItemWithAsset(ctx, assets.InsertParams{
+	// Phase 5B: classify the variant_key deterministically and stamp the
+	// compatibility/provenance fields (variant_family, compatibility_tags,
+	// fallback_allowed, fallback_rank) plus structured metadata onto the asset.
+	// An unrecognized key classifies as family "unknown" with no fallback
+	// eligibility — never silently generic-safe.
+	assetParams := assets.InsertParams{
 		ID:               assetID,
 		TenantID:         job.TenantID,
 		WorldID:          plan.worldID,
@@ -273,7 +278,9 @@ func (w *Worker) generatePackItem(ctx context.Context, job Job, plan packPlan, p
 		PromptHash:       strPtr(result.PromptHash),
 		Seed:             strPtr(result.Seed),
 		GenerationJobID:  &jobIDRef,
-	}, AssetPackItemInsertParams{
+	}
+	assets.ClassifyVariant(plan.entityType, variantKey).ApplyTo(&assetParams)
+	if err := w.Jobs.InsertPackItemWithAsset(ctx, assetParams, AssetPackItemInsertParams{
 		ID:            ids.NewAssetPackItemID(),
 		AssetPackID:   plan.packID,
 		VisualAssetID: assetID,
@@ -305,6 +312,7 @@ type packPlan struct {
 	visualIdentityID string
 	displayName      string
 	assetType        string
+	entityType       string // assets.EntityCharacter | assets.EntityPlace
 	qualityTier      string
 }
 
@@ -318,8 +326,10 @@ func packPlanFromJob(job Job) (packPlan, error) {
 	switch job.JobType {
 	case JobTypeCharacterPack:
 		plan.assetType = "character_portrait"
+		plan.entityType = assets.EntityCharacter
 	case JobTypePlacePack:
 		plan.assetType = "place_scene"
+		plan.entityType = assets.EntityPlace
 	default:
 		return plan, fmt.Errorf("job type %q is not a pack job", job.JobType)
 	}

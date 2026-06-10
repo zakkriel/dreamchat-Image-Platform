@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/auth"
 	"github.com/zakkriel/drchat-image-platform/internal/config"
 	"github.com/zakkriel/drchat-image-platform/internal/http/apigen"
@@ -41,21 +42,23 @@ func NewPacksHandler(service jobs.Creator, stylesRepo styles.Repository, identit
 // two starter-pack kinds; their default variant lists are deliberately
 // minimal (5B expands them with expression/angle/state semantics).
 type packKind struct {
-	ownerType       string // visual_identities.owner_type
+	ownerType       string // visual_identities.owner_type (also assets entity type)
 	pathParam       string // chi URL param carrying the entity id
 	payloadIDKey    string // input_payload key for the entity id
 	jobType         string // generation_jobs.job_type
-	packType        string // asset_packs.pack_type (PRD 04 names)
+	packType        string // asset_packs.pack_type for the minimal default
+	customPackType  string // asset_packs.pack_type when variant_keys override
 	defaultVariants []string
 }
 
 var (
 	characterPackKind = packKind{
-		ownerType:    "character",
-		pathParam:    "character_id",
-		payloadIDKey: "character_id",
-		jobType:      jobs.JobTypeCharacterPack,
-		packType:     "character_minimal_portrait_pack",
+		ownerType:      "character",
+		pathParam:      "character_id",
+		payloadIDKey:   "character_id",
+		jobType:        jobs.JobTypeCharacterPack,
+		packType:       assets.TemplateCharacterMinimalPortrait,
+		customPackType: assets.PackTypeCharacterCustom,
 		defaultVariants: []string{
 			"neutral_front_portrait",
 			"neutral_three_quarter_portrait",
@@ -63,11 +66,12 @@ var (
 		},
 	}
 	placePackKind = packKind{
-		ownerType:    "place",
-		pathParam:    "place_id",
-		payloadIDKey: "place_id",
-		jobType:      jobs.JobTypePlacePack,
-		packType:     "place_minimal_scene_pack",
+		ownerType:      "place",
+		pathParam:      "place_id",
+		payloadIDKey:   "place_id",
+		jobType:        jobs.JobTypePlacePack,
+		packType:       assets.TemplatePlaceMinimalScene,
+		customPackType: assets.PackTypePlaceCustom,
 		defaultVariants: []string{
 			"establishing_wide_view",
 			"closer_atmospheric_view",
@@ -79,15 +83,14 @@ var (
 // a single pack request.
 const maxPackVariants = 12
 
-// planPackVariants resolves the variant list at request time: an explicit
-// non-empty variant_keys wins verbatim (opaque strings, de-duplicated,
-// order-preserving); otherwise the kind's fixed default applies. Exceeding
-// maxPackVariants is a caller error (400).
-func planPackVariants(kind packKind, override []string) ([]string, error) {
-	source := kind.defaultVariants
-	if len(override) > 0 {
-		source = override
-	}
+// errUnknownPackTemplate is returned by resolvePackPlan when pack_template
+// names a template that is not defined for the entity → 400 invalid_request.
+var errUnknownPackTemplate = errors.New("unknown pack_template")
+
+// dedupVariants de-duplicates (order-preserving), rejects empty keys, and caps
+// the list at maxPackVariants. Variant keys stay opaque — no semantic
+// validation beyond empty/cap checks (5A contract, preserved in 5B).
+func dedupVariants(source []string) ([]string, error) {
 	seen := make(map[string]struct{}, len(source))
 	out := make([]string, 0, len(source))
 	for _, key := range source {
@@ -104,6 +107,51 @@ func planPackVariants(kind packKind, override []string) ([]string, error) {
 		return nil, fmt.Errorf("variant_keys must contain at most %d distinct keys", maxPackVariants)
 	}
 	return out, nil
+}
+
+// planPackVariants resolves the variant list when no template is in play: an
+// explicit non-empty variant_keys wins verbatim; otherwise the kind's fixed
+// default applies. Retained for the no-template path and unit tests.
+func planPackVariants(kind packKind, override []string) ([]string, error) {
+	source := kind.defaultVariants
+	if len(override) > 0 {
+		source = override
+	}
+	return dedupVariants(source)
+}
+
+// resolvePackPlan applies the 5B resolution precedence —
+// explicit variant_keys > pack_template > minimal default — and returns both
+// the variant list to fan out and the pack_type to record on asset_packs.
+//
+//   - variant_keys (non-empty): win verbatim (opaque, de-duplicated, capped);
+//     the pack is a custom pack, not the named template.
+//   - pack_template: resolves to its documented role set; unknown → error.
+//   - neither: the kind's minimal default.
+func resolvePackPlan(kind packKind, override []string, template string) (keys []string, packType string, err error) {
+	if len(override) > 0 {
+		keys, err = dedupVariants(override)
+		if err != nil {
+			return nil, "", err
+		}
+		return keys, kind.customPackType, nil
+	}
+	if template != "" {
+		roles, ok := assets.PackTemplateRoles(kind.ownerType, template)
+		if !ok {
+			return nil, "", fmt.Errorf("%w: %q", errUnknownPackTemplate, template)
+		}
+		keys, err = dedupVariants(roles)
+		if err != nil {
+			return nil, "", err
+		}
+		return keys, template, nil
+	}
+	keys, err = dedupVariants(kind.defaultVariants)
+	if err != nil {
+		return nil, "", err
+	}
+	return keys, kind.packType, nil
 }
 
 func (h *PacksHandler) GenerateCharacterPack(w http.ResponseWriter, r *http.Request) {
@@ -171,7 +219,11 @@ func (h *PacksHandler) generate(w http.ResponseWriter, r *http.Request, kind pac
 	if req.VariantKeys != nil {
 		override = *req.VariantKeys
 	}
-	variantKeys, err := planPackVariants(kind, override)
+	template := ""
+	if req.PackTemplate != nil {
+		template = *req.PackTemplate
+	}
+	variantKeys, packType, err := resolvePackPlan(kind, override, template)
 	if err != nil {
 		httperr.Write(w, r, http.StatusBadRequest, httperr.CodeInvalidRequest, err.Error())
 		return
@@ -232,7 +284,7 @@ func (h *PacksHandler) generate(w http.ResponseWriter, r *http.Request, kind pac
 		FallbackPolicy:     fallback,
 		CacheResult:        "generated_required",
 		AssetPack: &jobs.AssetPackSpec{
-			PackType:         kind.packType,
+			PackType:         packType,
 			VisualIdentityID: identity.ID,
 			QualityTier:      quality,
 		},

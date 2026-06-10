@@ -42,22 +42,29 @@ type VisualAsset struct {
 }
 
 // InsertParams captures what the worker writes when a generation succeeds.
+// The compatibility fields (Phase 5B) carry the deterministic variant
+// classification; the single-artifact path leaves them at safe defaults.
 type InsertParams struct {
-	ID               string
-	TenantID         string
-	WorldID          string
-	VisualIdentityID *string
-	AssetType        string
-	VariantKey       string
-	QualityTier      string
-	LowResUrl        *string
-	HighResUrl       *string
-	ThumbnailUrl     *string
-	ProviderID       *string
-	ModelID          *string
-	PromptHash       *string
-	Seed             *string
-	GenerationJobID  *string
+	ID                string
+	TenantID          string
+	WorldID           string
+	VisualIdentityID  *string
+	AssetType         string
+	VariantKey        string
+	VariantFamily     *string
+	CompatibilityTags []string
+	FallbackAllowed   bool
+	FallbackRank      *int32
+	Metadata          map[string]any
+	QualityTier       string
+	LowResUrl         *string
+	HighResUrl        *string
+	ThumbnailUrl      *string
+	ProviderID        *string
+	ModelID           *string
+	PromptHash        *string
+	Seed              *string
+	GenerationJobID   *string
 }
 
 type Repository interface {
@@ -82,27 +89,51 @@ func (r *pgRepository) Insert(ctx context.Context, params InsertParams) (VisualA
 // transaction (e.g. the pack worker's atomic asset + pack-item write) can
 // pass dbgen.New(tx) without duplicating the column mapping.
 func InsertWithQueries(ctx context.Context, q *dbgen.Queries, params InsertParams) (VisualAsset, error) {
+	// compatibility_tags and metadata are NOT NULL DEFAULT '{}' in the schema;
+	// an explicit insert must therefore supply non-null values.
+	tags := params.CompatibilityTags
+	if tags == nil {
+		tags = []string{}
+	}
+	metadata, err := marshalMetadata(params.Metadata)
+	if err != nil {
+		return VisualAsset{}, err
+	}
 	row, err := q.InsertVisualAsset(ctx, dbgen.InsertVisualAssetParams{
-		ID:               params.ID,
-		TenantID:         params.TenantID,
-		WorldID:          params.WorldID,
-		VisualIdentityID: params.VisualIdentityID,
-		AssetType:        params.AssetType,
-		VariantKey:       params.VariantKey,
-		QualityTier:      params.QualityTier,
-		LowResUrl:        params.LowResUrl,
-		HighResUrl:       params.HighResUrl,
-		ThumbnailUrl:     params.ThumbnailUrl,
-		ProviderID:       params.ProviderID,
-		ModelID:          params.ModelID,
-		PromptHash:       params.PromptHash,
-		Seed:             params.Seed,
-		GenerationJobID:  params.GenerationJobID,
+		ID:                params.ID,
+		TenantID:          params.TenantID,
+		WorldID:           params.WorldID,
+		VisualIdentityID:  params.VisualIdentityID,
+		AssetType:         params.AssetType,
+		VariantKey:        params.VariantKey,
+		VariantFamily:     params.VariantFamily,
+		CompatibilityTags: tags,
+		FallbackAllowed:   params.FallbackAllowed,
+		FallbackRank:      params.FallbackRank,
+		QualityTier:       params.QualityTier,
+		LowResUrl:         params.LowResUrl,
+		HighResUrl:        params.HighResUrl,
+		ThumbnailUrl:      params.ThumbnailUrl,
+		ProviderID:        params.ProviderID,
+		ModelID:           params.ModelID,
+		PromptHash:        params.PromptHash,
+		Seed:              params.Seed,
+		GenerationJobID:   params.GenerationJobID,
+		Metadata:          metadata,
 	})
 	if err != nil {
 		return VisualAsset{}, err
 	}
 	return fromRow(row), nil
+}
+
+// marshalMetadata serializes the asset metadata map, defaulting an empty/nil
+// map to the JSON object literal so the NOT NULL JSONB column is satisfied.
+func marshalMetadata(meta map[string]any) ([]byte, error) {
+	if len(meta) == 0 {
+		return []byte("{}"), nil
+	}
+	return json.Marshal(meta)
 }
 
 func (r *pgRepository) GetByIDForTenant(ctx context.Context, id, tenantID string) (VisualAsset, error) {

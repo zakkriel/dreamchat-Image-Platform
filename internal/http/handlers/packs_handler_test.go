@@ -76,6 +76,94 @@ func TestPlanPackVariantsRejectsEmptyKey(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Pack template resolution (no HTTP)
+// ---------------------------------------------------------------------------
+
+func TestResolvePackPlanMinimalDefault(t *testing.T) {
+	keys, packType, err := resolvePackPlan(characterPackKind, nil, "")
+	if err != nil {
+		t.Fatalf("resolvePackPlan: %v", err)
+	}
+	want := []string{"neutral_front_portrait", "neutral_three_quarter_portrait", "side_angle_portrait"}
+	if !reflect.DeepEqual(keys, want) {
+		t.Fatalf("default keys: expected %v, got %v", want, keys)
+	}
+	if packType != "character_minimal_portrait_pack" {
+		t.Fatalf("default pack_type: expected character_minimal_portrait_pack, got %q", packType)
+	}
+}
+
+func TestResolvePackPlanTemplateResolvesRoleSet(t *testing.T) {
+	keys, packType, err := resolvePackPlan(characterPackKind, nil, "character_expression_pack")
+	if err != nil {
+		t.Fatalf("resolvePackPlan: %v", err)
+	}
+	want := []string{
+		"neutral_front_portrait", "expression_warm", "expression_serious",
+		"expression_angry", "expression_surprised",
+	}
+	if !reflect.DeepEqual(keys, want) {
+		t.Fatalf("template keys: expected %v, got %v", want, keys)
+	}
+	if packType != "character_expression_pack" {
+		t.Fatalf("template pack_type: expected character_expression_pack, got %q", packType)
+	}
+}
+
+func TestResolvePackPlanPlaceTemplate(t *testing.T) {
+	keys, packType, err := resolvePackPlan(placePackKind, nil, "place_time_of_day_pack")
+	if err != nil {
+		t.Fatalf("resolvePackPlan: %v", err)
+	}
+	want := []string{"day_view", "night_view", "dawn_view", "dusk_view"}
+	if !reflect.DeepEqual(keys, want) {
+		t.Fatalf("place template keys: expected %v, got %v", want, keys)
+	}
+	if packType != "place_time_of_day_pack" {
+		t.Fatalf("place template pack_type: expected place_time_of_day_pack, got %q", packType)
+	}
+}
+
+func TestResolvePackPlanVariantKeysOverrideTemplate(t *testing.T) {
+	// Explicit variant_keys win verbatim over a template, and the pack is a
+	// custom pack — not the named template.
+	keys, packType, err := resolvePackPlan(characterPackKind, []string{"a", "b", "a", "c"}, "character_expression_pack")
+	if err != nil {
+		t.Fatalf("resolvePackPlan: %v", err)
+	}
+	want := []string{"a", "b", "c"}
+	if !reflect.DeepEqual(keys, want) {
+		t.Fatalf("override keys: expected de-duped %v, got %v", want, keys)
+	}
+	if packType != "character_custom_pack" {
+		t.Fatalf("override pack_type: expected character_custom_pack, got %q", packType)
+	}
+}
+
+func TestResolvePackPlanUnknownTemplateErrors(t *testing.T) {
+	if _, _, err := resolvePackPlan(characterPackKind, nil, "no_such_template"); err == nil {
+		t.Fatalf("expected error for unknown template")
+	}
+	// A place template under the character entity is unknown too.
+	if _, _, err := resolvePackPlan(characterPackKind, nil, "place_time_of_day_pack"); err == nil {
+		t.Fatalf("expected error for cross-entity template")
+	}
+}
+
+func TestResolvePackPlanOverrideCapAndEmpty(t *testing.T) {
+	var over []string
+	for i := 0; i < maxPackVariants+1; i++ {
+		over = append(over, fmt.Sprintf("v%02d", i))
+	}
+	if _, _, err := resolvePackPlan(characterPackKind, over, ""); err == nil {
+		t.Fatalf("expected over-cap error")
+	}
+	if _, _, err := resolvePackPlan(characterPackKind, []string{"ok", ""}, ""); err == nil {
+		t.Fatalf("expected empty-key error")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
@@ -285,6 +373,95 @@ func TestPackBudgetExceededReturns422(t *testing.T) {
 	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/characters/char_hero/generate-pack",
 		tenantA, []string{"images:write"}, body, nil)
 	assertError(t, rec, http.StatusUnprocessableEntity, "budget_exceeded")
+}
+
+func TestPackTemplateSelectsRoleSetAndPackType(t *testing.T) {
+	creator := &estimatingPackCreator{}
+	router := newPacksRouter(creator, seededPackIdentities(), config.ProviderMock)
+	body := map[string]any{
+		"world_id":         packWorldID,
+		"style_profile_id": "sty_ok",
+		"pack_template":    "character_expression_pack",
+	}
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/characters/char_hero/generate-pack",
+		tenantA, []string{"images:write"}, body, nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	got := creator.got
+	// character_expression_pack has 5 roles → 5 priced units.
+	if got.Units != 5 {
+		t.Fatalf("expected Units=5 for expression pack, got %d", got.Units)
+	}
+	if got.AssetPack == nil || got.AssetPack.PackType != "character_expression_pack" {
+		t.Fatalf("expected pack_type character_expression_pack, got %+v", got.AssetPack)
+	}
+	keys, _ := got.InputPayload["variant_keys"].([]string)
+	want := []string{"neutral_front_portrait", "expression_warm", "expression_serious", "expression_angry", "expression_surprised"}
+	if !reflect.DeepEqual(keys, want) {
+		t.Fatalf("expected template roles %v, got %v", want, keys)
+	}
+}
+
+func TestPackUnknownTemplateReturns400(t *testing.T) {
+	creator := newStubCreator()
+	router := newPacksRouter(creator, seededPackIdentities(), config.ProviderMock)
+	body := map[string]any{
+		"world_id":         packWorldID,
+		"style_profile_id": "sty_ok",
+		"pack_template":    "character_galaxy_brain_pack",
+	}
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/characters/char_hero/generate-pack",
+		tenantA, []string{"images:write"}, body, nil)
+	assertError(t, rec, http.StatusBadRequest, "invalid_request")
+	if len(creator.calls) != 0 {
+		t.Fatalf("expected zero service calls on unknown template, got %d", len(creator.calls))
+	}
+}
+
+func TestPackVariantKeysOverrideTemplateProducesCustomPack(t *testing.T) {
+	creator := &estimatingPackCreator{}
+	router := newPacksRouter(creator, seededPackIdentities(), config.ProviderMock)
+	body := map[string]any{
+		"world_id":         packWorldID,
+		"style_profile_id": "sty_ok",
+		"pack_template":    "character_expression_pack",
+		"variant_keys":     []string{"custom_a", "custom_b"},
+	}
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/characters/char_hero/generate-pack",
+		tenantA, []string{"images:write"}, body, nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	got := creator.got
+	if got.Units != 2 {
+		t.Fatalf("expected Units=2 from override, got %d", got.Units)
+	}
+	if got.AssetPack == nil || got.AssetPack.PackType != "character_custom_pack" {
+		t.Fatalf("expected pack_type character_custom_pack when override wins, got %+v", got.AssetPack)
+	}
+}
+
+func TestPlacePackTemplateSelectsRoleSet(t *testing.T) {
+	creator := &estimatingPackCreator{}
+	router := newPacksRouter(creator, seededPackIdentities(), config.ProviderMock)
+	body := map[string]any{
+		"world_id":         packWorldID,
+		"style_profile_id": "sty_ok",
+		"pack_template":    "place_time_of_day_pack",
+	}
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/places/place_dock/generate-pack",
+		tenantA, []string{"images:write"}, body, nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	got := creator.got
+	if got.Units != 4 {
+		t.Fatalf("expected Units=4 for time-of-day pack, got %d", got.Units)
+	}
+	if got.AssetPack == nil || got.AssetPack.PackType != "place_time_of_day_pack" {
+		t.Fatalf("expected pack_type place_time_of_day_pack, got %+v", got.AssetPack)
+	}
 }
 
 // estimatingPackCreator captures the params and returns a populated pack
