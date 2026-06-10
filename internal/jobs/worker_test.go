@@ -234,6 +234,18 @@ func (r *fakeAssetsRepo) GetByIDForTenant(context.Context, string, string) (asse
 	return assets.VisualAsset{}, assets.ErrNotFound
 }
 
+func (r *fakeAssetsRepo) FindExact(context.Context, assets.RetrievalQuery) (assets.VisualAsset, error) {
+	return assets.VisualAsset{}, assets.ErrNotFound
+}
+
+func (r *fakeAssetsRepo) ListRetrievalCandidates(context.Context, assets.RetrievalQuery) ([]assets.VisualAsset, error) {
+	return nil, nil
+}
+
+func (r *fakeAssetsRepo) ListRetrievalCandidatesByCompatTag(context.Context, assets.RetrievalQuery, []string) ([]assets.VisualAsset, error) {
+	return nil, nil
+}
+
 func (r *fakeAssetsRepo) Insert(_ context.Context, params assets.InsertParams) (assets.VisualAsset, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

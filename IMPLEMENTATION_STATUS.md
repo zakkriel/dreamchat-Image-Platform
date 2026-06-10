@@ -31,13 +31,31 @@ before this is production-ready.**
   pure compatibility-matrix library (`internal/assets/compatibility.go`)
   built and tested for Phase 6A to consume. No DB retrieval is wired to the
   matrix yet; pack-completeness storage is deferred (no column exists).
+- **Phase 6A1 — retrieval substrate / asset search**: the deterministic
+  retrieval decision layer (`internal/assets/retrieval.go`) consuming the 5B
+  classifier + matrix (exact → compatible → preview → generated_required,
+  gated by `fallback_policy`); exact/candidate/compat-tag SQL
+  (`internal/db/queries/visual_assets.sql`) on the existing indexes;
+  retrieval-facing repository methods (`FindExact`,
+  `ListRetrievalCandidates`, `ListRetrievalCandidatesByCompatTag`); and
+  `POST /v1/assets/search` (tenant-scoped, `images:read`). Substrate only —
+  **no generation, pack, cost, or preview behavior changed**; the
+  product-safety filter (matrix §2) is a deliberate stub. No migration
+  (table count stays 18); the search endpoint/schemas pre-existed and were
+  wired, with two additive `AssetSearchRequest` fields
+  (`style_profile_version`, `quality_tier`).
 
 ## Remaining
 
-- **Phase 6A — Retrieval-before-generation**: asset search, exact match,
-  compatible match (consumes the 5B compatibility matrix),
-  skip-generation-when-asset-exists, regeneration, pack-completeness
-  storage (delivered-vs-missing required roles).
+- **Phase 6A2 — single-artifact retrieval-before-generation**: call the 6A1
+  retrieval layer before creating an artifact generation job;
+  skip-generation-when-an-asset-exists; record the cache result on the job.
+- **Phase 6A3 — pack reuse-first + completeness storage**: retrieval-first
+  pack fan-out (reused vs. missing items), misses-only pricing, all-hits
+  completion, and pack-completeness storage (delivered-vs-missing required
+  roles) — likely a small schema phase.
+- **Phase 6A (remainder) — Retrieval-before-generation**: regeneration
+  endpoint / `force_regenerate`.
 - **Phase 6B — Delivery readiness**: S3 reads, presigned URLs, asset
   retrieval UX, style preview.
 - **Phase 7 — Real provider + production controls**: BFL adapter,

@@ -55,6 +55,18 @@ func (noopAssetsRepo) Insert(context.Context, assets.InsertParams) (assets.Visua
 	return assets.VisualAsset{}, nil
 }
 
+func (noopAssetsRepo) FindExact(context.Context, assets.RetrievalQuery) (assets.VisualAsset, error) {
+	return assets.VisualAsset{}, assets.ErrNotFound
+}
+
+func (noopAssetsRepo) ListRetrievalCandidates(context.Context, assets.RetrievalQuery) ([]assets.VisualAsset, error) {
+	return nil, nil
+}
+
+func (noopAssetsRepo) ListRetrievalCandidatesByCompatTag(context.Context, assets.RetrievalQuery, []string) ([]assets.VisualAsset, error) {
+	return nil, nil
+}
+
 type noopJobsRepo struct{}
 
 func (noopJobsRepo) Insert(context.Context, jobs.InsertParams) (jobs.Job, error) {

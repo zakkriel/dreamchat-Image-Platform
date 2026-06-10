@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: DreamChat Image Platform API
-  version: 0.5.2
+  version: 0.5.3
   description: |
     Standalone API for generating, storing, retrieving, and versioning persistent visual assets for DreamChat worlds.
 
@@ -1435,6 +1435,14 @@ components:
             Requested state version for the entity. Defaults to current.
             Set explicitly when requesting historical/flashback assets.
         style_profile_id: { type: string }
+        style_profile_version:
+          type: integer
+          description: |
+            Requested style profile version. Optional; when set it must match
+            exactly for an `exact_match`. See
+            `docs/architecture/variant-compatibility-matrix.md` §4.
+        quality_tier:
+          $ref: '#/components/schemas/QualityTier'
         fallback_policy:
           $ref: '#/components/schemas/FallbackPolicy'
     AssetSearchResponse:
@@ -1898,6 +1906,17 @@ components:
 # Confidence to Implement
 #
 # Score: 94/100 — Very High
+#
+# v0.5.3 — Phase 6A1 retrieval substrate (additive):
+#   * `AssetSearchRequest.style_profile_version` (integer) and
+#     `AssetSearchRequest.quality_tier` (QualityTier) — optional retrieval
+#     inputs so POST /v1/assets/search can resolve an exact match against a
+#     specific style version / quality tier. No request fields are removed
+#     or made required; existing callers are unaffected. The /v1/assets/search
+#     endpoint, the `AssetSearchRequest`/`AssetSearchResponse` schemas, and the
+#     `MatchType` / `FallbackPolicy` enums were already defined (v0.4.0) and are
+#     only wired in this phase — not redesigned. No generation, pack, preview,
+#     or regeneration behavior changes (those remain 6A2/6A3/6B).
 #
 # v0.5.2 — Phase 5B variant logic (additive):
 #   * `GenerateCharacterPackRequest.pack_template` and

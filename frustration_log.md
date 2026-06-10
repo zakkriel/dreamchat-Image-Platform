@@ -463,3 +463,40 @@ Format per entry:
 - **Trigger**: Pack-template contract drift — `character_minimal_portrait_pack` (3 roles) and `place_minimal_scene_pack` (2 roles) silently meant something smaller than PRD 04's "minimum/starter pack" (7 character roles §4.2, 6 place roles §5.2)
 - **Category**: drift (resolution — preferred fix)
 - **Note**: The original 5B templates reused the 5A minimal defaults verbatim, so "minimum/starter pack" meant one thing in the PRD and another in code. Fixed per the reviewer's **preferred** option (re-align, don't split): `character_minimal_portrait_pack` now carries the 7 PRD §4.2 roles (`neutral_front_portrait`, `neutral_three_quarter_portrait`, `side_angle_portrait`, `warm_or_smiling_expression`, `serious_or_tense_expression`, `angry_or_defensive_expression`, `surprised_or_shocked_expression`) and `place_minimal_scene_pack` the 6 PRD §5.2 roles (`establishing_wide_view`, `closer_atmospheric_view`, `day_view`, `night_view`, `calm_or_empty_view`, `busy_or_active_view`). The six PRD `_or_` spellings were added as classifier aliases (warm→warm, serious→tense, angry/surprised→strong_emotion, calm/busy crowd) so they classify deterministically; `calm_or_empty_view`/`busy_or_active_view` already existed. To kill drift permanently, the handler's no-template default is now **derived from** the named minimal template (`minimalTemplateRoles`), and a unit test (`TestMinimalDefaultMatchesNamedTemplate`) asserts default == named-template so "minimal/starter" can never diverge again. Pricing/units follow: character starter = 7 × 0.0100 = 0.0700, place starter = 6 × 0.0100 = 0.0600. Unit + integration tests updated to the PRD-aligned counts, ordered keys, pack-item counts, and budget movements. Phase 5B boundary untouched — no retrieval, skip-generation, BFL/routing, pack-completeness persistence, or preview/final changes. No migration; table count stays 18. OpenAPI is unchanged by this fix (templates are code, not schema); both copies stay identical and valid.
+
+## 2026-06-10 — Phase 6A1: retrieval substrate / asset search
+
+### Entry 74
+- **Trigger**: The matrix doc and `compatibility.go` disagree on neutral↔warm (doc §7.2 = preview_fallback; code = compatible_match), and the task says "neutral/warm compatible behavior comes from `CompareVariants`" and "do not reimplement the matrix inside retrieval"
+- **Category**: assumption (resolution — code is authoritative)
+- **Note**: Phase 5B already resolved this conflict in favor of `compatible_match` (frustration log Entry 68, with the task overriding the doc). Phase 6A1 must consume `CompareVariants` verbatim, so retrieval inherits that decision: requesting `expression_warm` against a `neutral_front_portrait` candidate yields `compatible_match`, not `preview_fallback`. To get a *genuine* `preview_fallback` for tests I used the pairs the implemented matrix actually previews: a `side_angle_portrait` candidate for a front request (character angle), and a time-agnostic `establishing_wide` candidate for a missing time-of-day place request. My first draft of the retrieval unit tests encoded the doc's behavior and failed — I corrected the *tests*, never the matrix, to honor "do not reimplement."
+
+### Entry 75
+- **Trigger**: `status = 'ready'` vs. the matrix/docs phrase "active asset" — there is no `active` status in the `visual_assets` vocabulary
+- **Category**: drift (vocabulary, per task note)
+- **Note**: The task's schema note is explicit: map "active asset" → `status = 'ready'`. Both the exact and candidate SQL hard-code `status = 'ready'`; the in-memory test doubles and the decision layer (`candidateReusable`) repeat the invariant so the unit path matches the SQL path. `pending`/`preview_ready`/`failed`/`archived` are never reusable (unit + integration tested across all four).
+
+### Entry 76
+- **Trigger**: "quality_tier ≥ requested quality, if quality ordering exists" — no comparable quality ordering exists in the schema yet
+- **Category**: assumption (documented deferral)
+- **Note**: `quality_tier` is a CHECK enum (`draft|standard|high`) with an intuitive order, but nothing in code treats it as comparable. Per the task's escape hatch I used **exact equality** for `quality_tier` in `FindExactVisualAsset` (and made it optional — empty means "no filter") and documented the assumption in the SQL comment and `retrieval.go`. Promoting to ">= requested" is a localized follow-up when a quality-ordering concept lands.
+
+### Entry 77
+- **Trigger**: Deterministic tie-break choice — the task lists "oldest/generated_at first OR lowest id" and says pick one
+- **Category**: assumption (resolution)
+- **Note**: I chose **lowest id** as the single final tie-break (after outcome tier → compatibility_score → fallback_rank). It is total, stable, and free of clock skew / NULL `generated_at` ambiguity. The repository `ORDER BY` (`fallback_rank ASC NULLS LAST, id ASC`) mirrors the in-memory `pickBest`, so DB-ordered and decision-layer-ordered results agree. Determinism is asserted by repeating the same query 5× in both a unit and an integration test.
+
+### Entry 78
+- **Trigger**: `any_existing` is "debug/admin … allow the best non-exact existing candidate if the matrix does not produce a normal match" — which `match_type` should a matrix-invalid candidate carry?
+- **Category**: assumption (resolution)
+- **Note**: `any_existing` first runs the normal compatible/preview path (same as `preview_allowed`); only if that finds nothing does it fall back to the best ready, non-anchor candidate regardless of the matrix verdict. I label that debug tail `preview_fallback` (provisional, `generation_recommended=true`) because it is by definition *not* a matrix-approved compatible match — calling it `compatible_match` would lie about the matrix. It still never returns `failed`/`archived` (the candidate query is ready-only) or identity anchors (excluded by SQL and `candidateReusable`).
+
+### Entry 79
+- **Trigger**: Where do FK-required style/identity rows come from in the integration test, and how to avoid two tenants colliding on primary keys?
+- **Category**: process
+- **Note**: `visual_assets` FKs into `style_profiles` and `visual_identities`, which is into `style_profiles` again, so the integration test seeds both. My first run failed because both seeded tenants reused one `style_profiles`/`visual_identities` id (PRIMARY KEY collision). Fixed by tenant-scoping the ids (`styleID(tenant)`/`identityID(tenant)`). Ran the integration suite against a real local Postgres 16 (initdb + the three existing migrations, table count = 18) — all seven 6A1 integration cases plus every prior phase's integration test pass.
+
+### Entry 80
+- **Trigger**: Adding retrieval methods to the `assets.Repository` interface breaks every existing mock (`jobs.fakeAssetsRepo`, `http.noopAssetsRepo`, `handlers.stubAssetsRepo`)
+- **Category**: process
+- **Note**: The task asks to extend `repository.go` with retrieval-facing methods on the repository. Putting `FindExact`/`ListRetrievalCandidates`/`ListRetrievalCandidatesByCompatTag` on the interface forced three test doubles to implement them. The two unrelated mocks got trivial no-op/`ErrNotFound` stubs; `handlers.stubAssetsRepo` got a real in-memory implementation mirroring the SQL predicates so the handler tests exercise the *real* `Retriever`. The decision layer itself depends only on a narrow `CandidateSource` interface (exact + candidates), keeping it pure and DB-free for unit tests.

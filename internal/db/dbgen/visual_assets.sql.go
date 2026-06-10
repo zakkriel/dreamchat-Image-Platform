@@ -9,6 +9,101 @@ import (
 	"context"
 )
 
+const findExactVisualAsset = `-- name: FindExactVisualAsset :one
+SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
+       variant_family, version, state_version, style_profile_id,
+       style_profile_version, quality_tier, status,
+       compatibility_tags, fallback_allowed, fallback_rank, is_identity_anchor,
+       low_res_url, high_res_url, thumbnail_url,
+       provider_id, model_id, provider_route_id,
+       prompt_hash, seed, reference_asset_ids,
+       generation_job_id, metadata, generated_at,
+       created_at, updated_at
+FROM visual_assets
+WHERE tenant_id = $1
+  AND world_id = $2
+  AND visual_identity_id = $3
+  AND variant_key = $4
+  AND state_version = $5
+  AND style_profile_id = $6
+  AND status = 'ready'
+  AND ($7::int IS NULL
+       OR style_profile_version = $7)
+  AND ($8::text IS NULL
+       OR quality_tier = $8)
+ORDER BY id ASC
+LIMIT 1
+`
+
+type FindExactVisualAssetParams struct {
+	TenantID            string  `json:"tenant_id"`
+	WorldID             string  `json:"world_id"`
+	VisualIdentityID    *string `json:"visual_identity_id"`
+	VariantKey          string  `json:"variant_key"`
+	StateVersion        int32   `json:"state_version"`
+	StyleProfileID      *string `json:"style_profile_id"`
+	StyleProfileVersion *int32  `json:"style_profile_version"`
+	QualityTier         *string `json:"quality_tier"`
+}
+
+// Phase 6A1 retrieval substrate: the exact-match lookup behind
+// RetrievalResult.exact_match. Owner (tenant/world/visual_identity) + variant
+// + state + style must all match and the asset must be reusable (status =
+// 'ready' — the existing status vocabulary's "active asset"; there is no
+// 'active' status). style_profile_version and quality_tier are optional: when
+// provided they must match exactly. NOTE: quality ordering does not yet exist
+// as a comparable concept in the schema, so quality_tier uses exact equality
+// rather than ">= requested" (documented in internal/assets/retrieval.go).
+// A stable id ASC tie-break keeps the single returned row deterministic when
+// several exact rows exist (e.g. regenerations).
+func (q *Queries) FindExactVisualAsset(ctx context.Context, arg FindExactVisualAssetParams) (VisualAsset, error) {
+	row := q.db.QueryRow(ctx, findExactVisualAsset,
+		arg.TenantID,
+		arg.WorldID,
+		arg.VisualIdentityID,
+		arg.VariantKey,
+		arg.StateVersion,
+		arg.StyleProfileID,
+		arg.StyleProfileVersion,
+		arg.QualityTier,
+	)
+	var i VisualAsset
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.WorldID,
+		&i.VisualIdentityID,
+		&i.AssetType,
+		&i.VariantKey,
+		&i.VariantFamily,
+		&i.Version,
+		&i.StateVersion,
+		&i.StyleProfileID,
+		&i.StyleProfileVersion,
+		&i.QualityTier,
+		&i.Status,
+		&i.CompatibilityTags,
+		&i.FallbackAllowed,
+		&i.FallbackRank,
+		&i.IsIdentityAnchor,
+		&i.LowResUrl,
+		&i.HighResUrl,
+		&i.ThumbnailUrl,
+		&i.ProviderID,
+		&i.ModelID,
+		&i.ProviderRouteID,
+		&i.PromptHash,
+		&i.Seed,
+		&i.ReferenceAssetIds,
+		&i.GenerationJobID,
+		&i.Metadata,
+		&i.GeneratedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getVisualAssetByID = `-- name: GetVisualAssetByID :one
 SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
        variant_family, version, state_version, style_profile_id,
@@ -176,4 +271,198 @@ func (q *Queries) InsertVisualAsset(ctx context.Context, arg InsertVisualAssetPa
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const listVisualAssetCandidates = `-- name: ListVisualAssetCandidates :many
+SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
+       variant_family, version, state_version, style_profile_id,
+       style_profile_version, quality_tier, status,
+       compatibility_tags, fallback_allowed, fallback_rank, is_identity_anchor,
+       low_res_url, high_res_url, thumbnail_url,
+       provider_id, model_id, provider_route_id,
+       prompt_hash, seed, reference_asset_ids,
+       generation_job_id, metadata, generated_at,
+       created_at, updated_at
+FROM visual_assets
+WHERE tenant_id = $1
+  AND world_id = $2
+  AND visual_identity_id = $3
+  AND state_version = $4
+  AND style_profile_id = $5
+  AND status = 'ready'
+  AND is_identity_anchor = false
+ORDER BY fallback_rank ASC NULLS LAST, id ASC
+`
+
+type ListVisualAssetCandidatesParams struct {
+	TenantID         string  `json:"tenant_id"`
+	WorldID          string  `json:"world_id"`
+	VisualIdentityID *string `json:"visual_identity_id"`
+	StateVersion     int32   `json:"state_version"`
+	StyleProfileID   *string `json:"style_profile_id"`
+}
+
+// Phase 6A1 retrieval substrate: candidate ready assets for the same owner
+// and visual identity that the compatibility matrix
+// (internal/assets/compatibility.go) may approve as a compatible_match or
+// preview_fallback. State is strict (matrix §7.4/§8.4) so candidates share the
+// requested state_version; style is held constant (same style_profile_id) so a
+// substitution never silently changes the visual style. Identity anchors are
+// excluded here (matrix §10.1: anchors are reference inputs, never display
+// substitutes). Uses idx_visual_assets_identity_variant /
+// idx_visual_assets_identity_family. Deterministic order: fallback_rank ASC
+// (lower = preferred) then id ASC as the final tie-break.
+func (q *Queries) ListVisualAssetCandidates(ctx context.Context, arg ListVisualAssetCandidatesParams) ([]VisualAsset, error) {
+	rows, err := q.db.Query(ctx, listVisualAssetCandidates,
+		arg.TenantID,
+		arg.WorldID,
+		arg.VisualIdentityID,
+		arg.StateVersion,
+		arg.StyleProfileID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []VisualAsset
+	for rows.Next() {
+		var i VisualAsset
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.WorldID,
+			&i.VisualIdentityID,
+			&i.AssetType,
+			&i.VariantKey,
+			&i.VariantFamily,
+			&i.Version,
+			&i.StateVersion,
+			&i.StyleProfileID,
+			&i.StyleProfileVersion,
+			&i.QualityTier,
+			&i.Status,
+			&i.CompatibilityTags,
+			&i.FallbackAllowed,
+			&i.FallbackRank,
+			&i.IsIdentityAnchor,
+			&i.LowResUrl,
+			&i.HighResUrl,
+			&i.ThumbnailUrl,
+			&i.ProviderID,
+			&i.ModelID,
+			&i.ProviderRouteID,
+			&i.PromptHash,
+			&i.Seed,
+			&i.ReferenceAssetIds,
+			&i.GenerationJobID,
+			&i.Metadata,
+			&i.GeneratedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listVisualAssetCandidatesByCompatTag = `-- name: ListVisualAssetCandidatesByCompatTag :many
+SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
+       variant_family, version, state_version, style_profile_id,
+       style_profile_version, quality_tier, status,
+       compatibility_tags, fallback_allowed, fallback_rank, is_identity_anchor,
+       low_res_url, high_res_url, thumbnail_url,
+       provider_id, model_id, provider_route_id,
+       prompt_hash, seed, reference_asset_ids,
+       generation_job_id, metadata, generated_at,
+       created_at, updated_at
+FROM visual_assets
+WHERE tenant_id = $1
+  AND world_id = $2
+  AND visual_identity_id = $3
+  AND state_version = $4
+  AND style_profile_id = $5
+  AND status = 'ready'
+  AND is_identity_anchor = false
+  AND compatibility_tags && $6::text[]
+ORDER BY fallback_rank ASC NULLS LAST, id ASC
+`
+
+type ListVisualAssetCandidatesByCompatTagParams struct {
+	TenantID          string   `json:"tenant_id"`
+	WorldID           string   `json:"world_id"`
+	VisualIdentityID  *string  `json:"visual_identity_id"`
+	StateVersion      int32    `json:"state_version"`
+	StyleProfileID    *string  `json:"style_profile_id"`
+	CompatibilityTags []string `json:"compatibility_tags"`
+}
+
+// Phase 6A1 retrieval substrate: a compatibility_tags-optimized candidate
+// lookup over the same owner/identity/state/style scope as
+// ListVisualAssetCandidates, narrowed to assets whose compatibility_tags
+// overlap the requested set (e.g. {generic_presence}). Backed by the GIN index
+// idx_visual_assets_compat_tags. Used when retrieval only needs tag-eligible
+// candidates (and exercised directly by the integration tests). Anchors are
+// excluded; deterministic order matches ListVisualAssetCandidates.
+func (q *Queries) ListVisualAssetCandidatesByCompatTag(ctx context.Context, arg ListVisualAssetCandidatesByCompatTagParams) ([]VisualAsset, error) {
+	rows, err := q.db.Query(ctx, listVisualAssetCandidatesByCompatTag,
+		arg.TenantID,
+		arg.WorldID,
+		arg.VisualIdentityID,
+		arg.StateVersion,
+		arg.StyleProfileID,
+		arg.CompatibilityTags,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []VisualAsset
+	for rows.Next() {
+		var i VisualAsset
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.WorldID,
+			&i.VisualIdentityID,
+			&i.AssetType,
+			&i.VariantKey,
+			&i.VariantFamily,
+			&i.Version,
+			&i.StateVersion,
+			&i.StyleProfileID,
+			&i.StyleProfileVersion,
+			&i.QualityTier,
+			&i.Status,
+			&i.CompatibilityTags,
+			&i.FallbackAllowed,
+			&i.FallbackRank,
+			&i.IsIdentityAnchor,
+			&i.LowResUrl,
+			&i.HighResUrl,
+			&i.ThumbnailUrl,
+			&i.ProviderID,
+			&i.ModelID,
+			&i.ProviderRouteID,
+			&i.PromptHash,
+			&i.Seed,
+			&i.ReferenceAssetIds,
+			&i.GenerationJobID,
+			&i.Metadata,
+			&i.GeneratedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

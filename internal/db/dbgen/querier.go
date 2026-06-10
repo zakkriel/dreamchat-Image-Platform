@@ -27,6 +27,17 @@ type Querier interface {
 	// operation) and returns the pre-flight estimate for `units` of work. No row
 	// means there is no active price entry → fail closed (no_price_entry).
 	EstimateOperationCost(ctx context.Context, arg EstimateOperationCostParams) (EstimateOperationCostRow, error)
+	// Phase 6A1 retrieval substrate: the exact-match lookup behind
+	// RetrievalResult.exact_match. Owner (tenant/world/visual_identity) + variant
+	// + state + style must all match and the asset must be reusable (status =
+	// 'ready' — the existing status vocabulary's "active asset"; there is no
+	// 'active' status). style_profile_version and quality_tier are optional: when
+	// provided they must match exactly. NOTE: quality ordering does not yet exist
+	// as a comparable concept in the schema, so quality_tier uses exact equality
+	// rather than ">= requested" (documented in internal/assets/retrieval.go).
+	// A stable id ASC tie-break keeps the single returned row deterministic when
+	// several exact rows exist (e.g. regenerations).
+	FindExactVisualAsset(ctx context.Context, arg FindExactVisualAssetParams) (VisualAsset, error)
 	GetActiveAPITokenByPrefix(ctx context.Context, tokenPrefix string) (GetActiveAPITokenByPrefixRow, error)
 	GetAssetPackByID(ctx context.Context, id string) (AssetPack, error)
 	GetCostBudget(ctx context.Context, id string) (GetCostBudgetRow, error)
@@ -96,6 +107,25 @@ type Querier interface {
 	// released afterwards is belt-and-suspenders against a partial retry.
 	ListReservedBudgetHolds(ctx context.Context, costReservationID string) ([]ListReservedBudgetHoldsRow, error)
 	ListStyleProfilesByTenant(ctx context.Context, tenantID string) ([]StyleProfile, error)
+	// Phase 6A1 retrieval substrate: candidate ready assets for the same owner
+	// and visual identity that the compatibility matrix
+	// (internal/assets/compatibility.go) may approve as a compatible_match or
+	// preview_fallback. State is strict (matrix §7.4/§8.4) so candidates share the
+	// requested state_version; style is held constant (same style_profile_id) so a
+	// substitution never silently changes the visual style. Identity anchors are
+	// excluded here (matrix §10.1: anchors are reference inputs, never display
+	// substitutes). Uses idx_visual_assets_identity_variant /
+	// idx_visual_assets_identity_family. Deterministic order: fallback_rank ASC
+	// (lower = preferred) then id ASC as the final tie-break.
+	ListVisualAssetCandidates(ctx context.Context, arg ListVisualAssetCandidatesParams) ([]VisualAsset, error)
+	// Phase 6A1 retrieval substrate: a compatibility_tags-optimized candidate
+	// lookup over the same owner/identity/state/style scope as
+	// ListVisualAssetCandidates, narrowed to assets whose compatibility_tags
+	// overlap the requested set (e.g. {generic_presence}). Backed by the GIN index
+	// idx_visual_assets_compat_tags. Used when retrieval only needs tag-eligible
+	// candidates (and exercised directly by the integration tests). Anchors are
+	// excluded; deterministic order matches ListVisualAssetCandidates.
+	ListVisualAssetCandidatesByCompatTag(ctx context.Context, arg ListVisualAssetCandidatesByCompatTagParams) ([]VisualAsset, error)
 	// MarkBudgetHoldStatus records the hold's terminal state. The WHERE guard on
 	// status='reserved' makes a re-run a no-op.
 	MarkBudgetHoldStatus(ctx context.Context, arg MarkBudgetHoldStatusParams) error
