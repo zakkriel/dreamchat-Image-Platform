@@ -25,7 +25,9 @@ before this is production-ready.**
   (`internal/assets/variants.go`), compatibility/provenance fields stamped
   on generated pack assets (`variant_family`, `compatibility_tags`,
   `fallback_allowed`, `fallback_rank`, structured `metadata`), named pack
-  templates (`pack_template` request field, custom-pack override), and a
+  templates (`pack_template` request field, custom-pack override) — the
+  minimal templates are the PRD 04 §4.2/§5.2 starter packs (7 character / 6
+  place roles) and the no-template default derives from them — and a
   pure compatibility-matrix library (`internal/assets/compatibility.go`)
   built and tested for Phase 6A to consume. No DB retrieval is wired to the
   matrix yet; pack-completeness storage is deferred (no column exists).

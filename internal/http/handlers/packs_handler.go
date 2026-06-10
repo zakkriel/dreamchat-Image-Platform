@@ -38,9 +38,10 @@ func NewPacksHandler(service jobs.Creator, stylesRepo styles.Repository, identit
 	}
 }
 
-// packKind selects the per-entity constants of a pack request. 5A ships the
-// two starter-pack kinds; their default variant lists are deliberately
-// minimal (5B expands them with expression/angle/state semantics).
+// packKind selects the per-entity constants of a pack request. The
+// no-template default variant list is the PRD 04 §4.2/§5.2 minimum/starter
+// pack (7 character roles, 6 place roles), derived from the named minimal
+// template so the two can never diverge.
 type packKind struct {
 	ownerType       string // visual_identities.owner_type (also assets entity type)
 	pathParam       string // chi URL param carrying the entity id
@@ -59,25 +60,33 @@ var (
 		jobType:        jobs.JobTypeCharacterPack,
 		packType:       assets.TemplateCharacterMinimalPortrait,
 		customPackType: assets.PackTypeCharacterCustom,
-		defaultVariants: []string{
-			"neutral_front_portrait",
-			"neutral_three_quarter_portrait",
-			"side_angle_portrait",
-		},
+		// The no-template default IS the PRD 04 §4.2 minimum/starter pack.
+		// Deriving it from the template guarantees "minimal" means the same
+		// thing whether selected explicitly or by omission.
+		defaultVariants: minimalTemplateRoles("character", assets.TemplateCharacterMinimalPortrait),
 	}
 	placePackKind = packKind{
-		ownerType:      "place",
-		pathParam:      "place_id",
-		payloadIDKey:   "place_id",
-		jobType:        jobs.JobTypePlacePack,
-		packType:       assets.TemplatePlaceMinimalScene,
-		customPackType: assets.PackTypePlaceCustom,
-		defaultVariants: []string{
-			"establishing_wide_view",
-			"closer_atmospheric_view",
-		},
+		ownerType:       "place",
+		pathParam:       "place_id",
+		payloadIDKey:    "place_id",
+		jobType:         jobs.JobTypePlacePack,
+		packType:        assets.TemplatePlaceMinimalScene,
+		customPackType:  assets.PackTypePlaceCustom,
+		defaultVariants: minimalTemplateRoles("place", assets.TemplatePlaceMinimalScene),
 	}
 )
+
+// minimalTemplateRoles fetches a template's role set at init, panicking if the
+// template is undefined — a programming error, since these are compile-time
+// constants. Keeps the no-template default and the named minimal template in
+// lock-step so they can never silently diverge.
+func minimalTemplateRoles(entityType, template string) []string {
+	roles, ok := assets.PackTemplateRoles(entityType, template)
+	if !ok {
+		panic("packs: undefined minimal pack template " + template)
+	}
+	return roles
+}
 
 // maxPackVariants caps the fan-out (and therefore the priced unit count) of
 // a single pack request.

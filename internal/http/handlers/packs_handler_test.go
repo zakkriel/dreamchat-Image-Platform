@@ -18,12 +18,19 @@ import (
 // Pack planning (no HTTP)
 // ---------------------------------------------------------------------------
 
+// The no-template default is the PRD 04 §4.2 / §5.2 minimum/starter pack —
+// 7 character roles, 6 place roles — and must match the named minimal
+// template exactly (the handler derives one from the other).
 func TestPlanPackVariantsCharacterDefaults(t *testing.T) {
 	got, err := planPackVariants(characterPackKind, nil)
 	if err != nil {
 		t.Fatalf("planPackVariants: %v", err)
 	}
-	want := []string{"neutral_front_portrait", "neutral_three_quarter_portrait", "side_angle_portrait"}
+	want := []string{
+		"neutral_front_portrait", "neutral_three_quarter_portrait", "side_angle_portrait",
+		"warm_or_smiling_expression", "serious_or_tense_expression",
+		"angry_or_defensive_expression", "surprised_or_shocked_expression",
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("character defaults: expected %v, got %v", want, got)
 	}
@@ -34,9 +41,39 @@ func TestPlanPackVariantsPlaceDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planPackVariants: %v", err)
 	}
-	want := []string{"establishing_wide_view", "closer_atmospheric_view"}
+	want := []string{
+		"establishing_wide_view", "closer_atmospheric_view",
+		"day_view", "night_view", "calm_or_empty_view", "busy_or_active_view",
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("place defaults: expected %v, got %v", want, got)
+	}
+}
+
+// TestMinimalDefaultMatchesNamedTemplate locks the no-template default and the
+// named minimal template together so "minimal/starter" can never diverge.
+func TestMinimalDefaultMatchesNamedTemplate(t *testing.T) {
+	cKeys, cType, err := resolvePackPlan(characterPackKind, nil, "")
+	if err != nil {
+		t.Fatalf("character default: %v", err)
+	}
+	cTmpl, _, err := resolvePackPlan(characterPackKind, nil, "character_minimal_portrait_pack")
+	if err != nil {
+		t.Fatalf("character template: %v", err)
+	}
+	if !reflect.DeepEqual(cKeys, cTmpl) || cType != "character_minimal_portrait_pack" {
+		t.Fatalf("character default %v (%s) must equal minimal template %v", cKeys, cType, cTmpl)
+	}
+	pKeys, _, err := resolvePackPlan(placePackKind, nil, "")
+	if err != nil {
+		t.Fatalf("place default: %v", err)
+	}
+	pTmpl, _, err := resolvePackPlan(placePackKind, nil, "place_minimal_scene_pack")
+	if err != nil {
+		t.Fatalf("place template: %v", err)
+	}
+	if !reflect.DeepEqual(pKeys, pTmpl) {
+		t.Fatalf("place default %v must equal minimal template %v", pKeys, pTmpl)
 	}
 }
 
@@ -84,7 +121,11 @@ func TestResolvePackPlanMinimalDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolvePackPlan: %v", err)
 	}
-	want := []string{"neutral_front_portrait", "neutral_three_quarter_portrait", "side_angle_portrait"}
+	want := []string{
+		"neutral_front_portrait", "neutral_three_quarter_portrait", "side_angle_portrait",
+		"warm_or_smiling_expression", "serious_or_tense_expression",
+		"angry_or_defensive_expression", "surprised_or_shocked_expression",
+	}
 	if !reflect.DeepEqual(keys, want) {
 		t.Fatalf("default keys: expected %v, got %v", want, keys)
 	}
@@ -228,13 +269,13 @@ func TestCharacterPackHappyPathReturns202WithPackAndReservation(t *testing.T) {
 	if got.AssetPack.VisualIdentityID != "vi_hero" {
 		t.Fatalf("expected resolved identity vi_hero, got %q", got.AssetPack.VisualIdentityID)
 	}
-	// The default character pack is 3 variants → 3 priced units.
-	if got.Units != 3 {
-		t.Fatalf("expected Units=3 (default character variants), got %d", got.Units)
+	// The default character pack is the PRD 04 §4.2 starter pack = 7 variants.
+	if got.Units != 7 {
+		t.Fatalf("expected Units=7 (PRD starter character variants), got %d", got.Units)
 	}
 	keys, _ := got.InputPayload["variant_keys"].([]string)
-	if len(keys) != 3 {
-		t.Fatalf("expected 3 variant_keys in payload, got %v", got.InputPayload["variant_keys"])
+	if len(keys) != 7 {
+		t.Fatalf("expected 7 variant_keys in payload, got %v", got.InputPayload["variant_keys"])
 	}
 	if got.InputPayload["visual_identity_id"] != "vi_hero" || got.InputPayload["display_name"] != "Captain Mira" {
 		t.Fatalf("payload missing identity context: %v", got.InputPayload)
@@ -254,8 +295,9 @@ func TestPlacePackHappyPathUsesPlaceDefaults(t *testing.T) {
 	if got.JobType != "place_pack" || got.AssetPack == nil || got.AssetPack.PackType != "place_minimal_scene_pack" {
 		t.Fatalf("expected place pack spec, got job_type=%q spec=%+v", got.JobType, got.AssetPack)
 	}
-	if got.Units != 2 {
-		t.Fatalf("expected Units=2 (default place variants), got %d", got.Units)
+	// PRD 04 §5.2 starter place pack = 6 variants.
+	if got.Units != 6 {
+		t.Fatalf("expected Units=6 (PRD starter place variants), got %d", got.Units)
 	}
 }
 

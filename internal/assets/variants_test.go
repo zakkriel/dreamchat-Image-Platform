@@ -74,6 +74,35 @@ func TestClassifyCharacterRoles(t *testing.T) {
 			compatTags:      []string{},
 			fallbackAllowed: false,
 		},
+		// PRD 04 §4.2 minimum-pack spellings.
+		{
+			key:             "warm_or_smiling_expression",
+			family:          FamilyWarm,
+			tags:            map[string]string{"expression": "warm"},
+			compatTags:      []string{TagPreviewSafe},
+			fallbackAllowed: true,
+		},
+		{
+			key:             "serious_or_tense_expression",
+			family:          FamilyTense,
+			tags:            map[string]string{"expression": "serious"},
+			compatTags:      []string{TagPreviewSafe},
+			fallbackAllowed: true,
+		},
+		{
+			key:             "angry_or_defensive_expression",
+			family:          FamilyStrongEmotion,
+			tags:            map[string]string{"expression": "angry"},
+			compatTags:      []string{},
+			fallbackAllowed: false,
+		},
+		{
+			key:             "surprised_or_shocked_expression",
+			family:          FamilyStrongEmotion,
+			tags:            map[string]string{"expression": "surprised"},
+			compatTags:      []string{},
+			fallbackAllowed: false,
+		},
 		{
 			key:             "state_injured",
 			family:          FamilyState,
@@ -163,6 +192,21 @@ func TestClassifyPlaceRoles(t *testing.T) {
 		},
 		{
 			key:             "busy_active_view",
+			family:          FamilyCrowd,
+			tags:            map[string]string{"crowd": "busy", "mood": "active"},
+			compatTags:      []string{},
+			fallbackAllowed: false,
+		},
+		// PRD 04 §5.2 minimum-pack spellings.
+		{
+			key:             "calm_or_empty_view",
+			family:          FamilyCrowd,
+			tags:            map[string]string{"crowd": "empty", "mood": "calm"},
+			compatTags:      []string{TagPreviewSafe},
+			fallbackAllowed: true,
+		},
+		{
+			key:             "busy_or_active_view",
 			family:          FamilyCrowd,
 			tags:            map[string]string{"crowd": "busy", "mood": "active"},
 			compatTags:      []string{},

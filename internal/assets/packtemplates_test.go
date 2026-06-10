@@ -12,6 +12,8 @@ func TestPackTemplateRolesCharacter(t *testing.T) {
 	cases := map[string][]string{
 		TemplateCharacterMinimalPortrait: {
 			"neutral_front_portrait", "neutral_three_quarter_portrait", "side_angle_portrait",
+			"warm_or_smiling_expression", "serious_or_tense_expression",
+			"angry_or_defensive_expression", "surprised_or_shocked_expression",
 		},
 		TemplateCharacterExpression: {
 			"neutral_front_portrait", "expression_warm", "expression_serious",
@@ -42,9 +44,12 @@ func TestPackTemplateRolesCharacter(t *testing.T) {
 
 func TestPackTemplateRolesPlace(t *testing.T) {
 	cases := map[string][]string{
-		TemplatePlaceMinimalScene: {"establishing_wide_view", "closer_atmospheric_view"},
-		TemplatePlaceTimeOfDay:    {"day_view", "night_view", "dawn_view", "dusk_view"},
-		TemplatePlaceState:        {"state_damaged", "state_rebuilt", "state_occupied"},
+		TemplatePlaceMinimalScene: {
+			"establishing_wide_view", "closer_atmospheric_view",
+			"day_view", "night_view", "calm_or_empty_view", "busy_or_active_view",
+		},
+		TemplatePlaceTimeOfDay: {"day_view", "night_view", "dawn_view", "dusk_view"},
+		TemplatePlaceState:     {"state_damaged", "state_rebuilt", "state_occupied"},
 	}
 	for tmpl, want := range cases {
 		got, ok := PackTemplateRoles(EntityPlace, tmpl)

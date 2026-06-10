@@ -39,10 +39,18 @@ const (
 
 // characterPackTemplates maps each character template to its ordered roles.
 var characterPackTemplates = map[string][]string{
+	// PRD 04 §4.2 — the minimum/starter character pack is 7 roles. This is the
+	// product contract for "minimum pack"; the handler's no-template default
+	// resolves to this exact set (see NewPacksHandler wiring) so "minimal" and
+	// "starter" mean one thing in the PRD and in code.
 	TemplateCharacterMinimalPortrait: {
 		"neutral_front_portrait",
 		"neutral_three_quarter_portrait",
 		"side_angle_portrait",
+		"warm_or_smiling_expression",
+		"serious_or_tense_expression",
+		"angry_or_defensive_expression",
+		"surprised_or_shocked_expression",
 	},
 	TemplateCharacterExpression: {
 		"neutral_front_portrait",
@@ -66,9 +74,15 @@ var characterPackTemplates = map[string][]string{
 
 // placePackTemplates maps each place template to its ordered roles.
 var placePackTemplates = map[string][]string{
+	// PRD 04 §5.2 — the minimum/starter place pack is 6 roles. As with the
+	// character pack, the handler's no-template default resolves to this set.
 	TemplatePlaceMinimalScene: {
 		"establishing_wide_view",
 		"closer_atmospheric_view",
+		"day_view",
+		"night_view",
+		"calm_or_empty_view",
+		"busy_or_active_view",
 	},
 	TemplatePlaceTimeOfDay: {
 		"day_view",

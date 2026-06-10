@@ -47,6 +47,16 @@ later.
 
 ## Pack templates (92)
 
+- `character_minimal_portrait_pack` is the **PRD 04 §4.2 starter pack (7
+  roles)** and `place_minimal_scene_pack` is the **PRD 04 §5.2 starter pack
+  (6 roles)** — "minimum/starter" means the same thing in the PRD and in
+  code. The handler's no-template default is *derived from* the named
+  minimal template (one source of truth; a unit test locks them equal), so
+  omitting `pack_template` and selecting it explicitly produce identical
+  fan-out, pricing, and ordered keys.
+- PRD spellings (`warm_or_smiling_expression`, `serious_or_tense_expression`,
+  `angry_or_defensive_expression`, `surprised_or_shocked_expression`,
+  `calm_or_empty_view`, `busy_or_active_view`) classify deterministically.
 - Precedence `variant_keys > pack_template > minimal default`; templates
   set `pack_type` to the template name, explicit keys produce
   `*_custom_pack`. Unknown / cross-entity template → `400 invalid_request`.

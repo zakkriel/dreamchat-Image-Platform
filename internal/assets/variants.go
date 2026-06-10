@@ -177,6 +177,14 @@ var characterVariants = map[string]variantSpec{
 		fallbackAllowed:   true,
 		fallbackRank:      fallbackRankMild,
 	},
+	// PRD 04 §4.2 minimum-pack spelling ("warm_or_smiling").
+	"warm_or_smiling_expression": {
+		family:            FamilyWarm,
+		tags:              map[string]string{"expression": "warm"},
+		compatibilityTags: []string{TagPreviewSafe},
+		fallbackAllowed:   true,
+		fallbackRank:      fallbackRankMild,
+	},
 
 	// --- Serious / tense expressions -----------------------------------------
 	"expression_serious": {
@@ -207,17 +215,29 @@ var characterVariants = map[string]variantSpec{
 		fallbackAllowed:   true,
 		fallbackRank:      fallbackRankMild,
 	},
+	// PRD 04 §4.2 minimum-pack spelling ("serious_or_tense").
+	"serious_or_tense_expression": {
+		family:            FamilyTense,
+		tags:              map[string]string{"expression": "serious"},
+		compatibilityTags: []string{TagPreviewSafe},
+		fallbackAllowed:   true,
+		fallbackRank:      fallbackRankMild,
+	},
 
 	// --- Strong-emotion expressions (strict: never substitute) ---------------
 	"expression_angry":     strongEmotion("angry"),
 	"angry_expression":     strongEmotion("angry"),
 	"expression_surprised": strongEmotion("surprised"),
 	"surprised_expression": strongEmotion("surprised"),
-	"expression_sad":       strongEmotion("sad"),
-	"expression_afraid":    strongEmotion("afraid"),
-	"expression_terrified": strongEmotion("terrified"),
-	"expression_crying":    strongEmotion("crying"),
-	"expression_romantic":  strongEmotion("romantic"),
+	// PRD 04 §4.2 minimum-pack spellings ("angry_or_defensive",
+	// "surprised_or_shocked"). Strong emotion is strict: never substitutes.
+	"angry_or_defensive_expression":   strongEmotion("angry"),
+	"surprised_or_shocked_expression": strongEmotion("surprised"),
+	"expression_sad":                  strongEmotion("sad"),
+	"expression_afraid":               strongEmotion("afraid"),
+	"expression_terrified":            strongEmotion("terrified"),
+	"expression_crying":               strongEmotion("crying"),
+	"expression_romantic":             strongEmotion("romantic"),
 
 	// --- Outfits (strict) ----------------------------------------------------
 	"outfit_formal": outfit("formal"),
