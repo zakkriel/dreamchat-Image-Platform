@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/providers"
 )
 
@@ -144,6 +145,74 @@ func TestProcessPackFanOutHappyPath(t *testing.T) {
 	if len(repo.costEvents) != 1 || repo.costEvents[0].Status != "completed" {
 		t.Fatalf("expected one completed pack cost event, got %+v", repo.costEvents)
 	}
+}
+
+// TestProcessPackStampsVariantClassification pins Phase 5B: each generated
+// pack asset carries the deterministic variant classification — family,
+// compatibility tags, fallback flags, and structured metadata.
+func TestProcessPackStampsVariantClassification(t *testing.T) {
+	repo := newFakeJobsRepo()
+	assetsRepo := &fakeAssetsRepo{}
+	// A neutral portrait (generic-safe), a warm expression (fallback-able),
+	// and a strong emotion (strict, no fallback).
+	variants := []string{"neutral_front_portrait", "expression_warm", "expression_angry"}
+	seedPackJob(repo, "job_classify", "pack_cl", JobTypeCharacterPack, variants)
+
+	w := newPackWorker(repo, assetsRepo, &selectiveProvider{}, nil)
+	if err := w.ProcessPack(context.Background(), "job_classify"); err != nil {
+		t.Fatalf("ProcessPack: %v", err)
+	}
+
+	byKey := map[string]assets.InsertParams{}
+	for _, a := range repo.packAssets {
+		byKey[a.VariantKey] = a
+	}
+
+	neutral := byKey["neutral_front_portrait"]
+	if neutral.VariantFamily == nil || *neutral.VariantFamily != assets.FamilyNeutral {
+		t.Fatalf("neutral: expected family neutral, got %v", neutral.VariantFamily)
+	}
+	if !containsString(neutral.CompatibilityTags, assets.TagGenericPresence) {
+		t.Fatalf("neutral: expected generic_presence tag, got %v", neutral.CompatibilityTags)
+	}
+	if !neutral.FallbackAllowed {
+		t.Fatalf("neutral: expected fallback_allowed=true")
+	}
+	if neutral.Metadata == nil || neutral.Metadata["variant_family"] != assets.FamilyNeutral {
+		t.Fatalf("neutral: expected metadata variant_family, got %v", neutral.Metadata)
+	}
+	tags, _ := neutral.Metadata["variant_tags"].(map[string]any)
+	if tags == nil || tags["angle"] != "front" {
+		t.Fatalf("neutral: expected metadata variant_tags angle=front, got %v", neutral.Metadata["variant_tags"])
+	}
+
+	warm := byKey["expression_warm"]
+	if warm.VariantFamily == nil || *warm.VariantFamily != assets.FamilyWarm {
+		t.Fatalf("warm: expected family warm, got %v", warm.VariantFamily)
+	}
+	if !warm.FallbackAllowed {
+		t.Fatalf("warm: expected fallback_allowed=true")
+	}
+
+	angry := byKey["expression_angry"]
+	if angry.VariantFamily == nil || *angry.VariantFamily != assets.FamilyStrongEmotion {
+		t.Fatalf("angry: expected family strong_emotion, got %v", angry.VariantFamily)
+	}
+	if angry.FallbackAllowed {
+		t.Fatalf("angry (strong emotion): expected fallback_allowed=false")
+	}
+	if len(angry.CompatibilityTags) != 0 {
+		t.Fatalf("angry: expected no compatibility tags, got %v", angry.CompatibilityTags)
+	}
+}
+
+func containsString(s []string, want string) bool {
+	for _, v := range s {
+		if v == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestProcessPackPlaceUsesPlaceSceneAssetType(t *testing.T) {

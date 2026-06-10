@@ -148,9 +148,9 @@ func TestEndToEndCharacterPackGeneration(t *testing.T) {
 	if jobID == "" || packID == "" {
 		t.Fatalf("expected job_id + asset_pack_id, got %v", resp)
 	}
-	// Default character pack = 3 variants → estimate 3 × 0.0100.
-	if resp["estimated_cost_usd"] != "0.0300" {
-		t.Fatalf("expected estimated_cost_usd=0.0300, got %v", resp["estimated_cost_usd"])
+	// PRD 04 §4.2 starter character pack = 7 variants → estimate 7 × 0.0100.
+	if resp["estimated_cost_usd"] != "0.0700" {
+		t.Fatalf("expected estimated_cost_usd=0.0700, got %v", resp["estimated_cost_usd"])
 	}
 	if resp["cost_reservation_id"] == "" || resp["cost_reservation_id"] == nil {
 		t.Fatalf("expected cost_reservation_id, got %v", resp)
@@ -161,8 +161,8 @@ func TestEndToEndCharacterPackGeneration(t *testing.T) {
 	if got := scalar(t, pool, `SELECT status FROM asset_packs WHERE id = $1`, packID); got != "planned" {
 		t.Fatalf("pre-worker pack status: expected planned, got %s", got)
 	}
-	if reserved, spent := budgetAmounts(t, pool, "bud_pack_ok"); reserved != "0.0300" || spent != "0.0000" {
-		t.Fatalf("pre-worker budget: expected reserved 0.0300 / spent 0, got %s / %s", reserved, spent)
+	if reserved, spent := budgetAmounts(t, pool, "bud_pack_ok"); reserved != "0.0700" || spent != "0.0000" {
+		t.Fatalf("pre-worker budget: expected reserved 0.0700 / spent 0, got %s / %s", reserved, spent)
 	}
 
 	w := newPackTestWorker(pool, mock.New())
@@ -170,7 +170,7 @@ func TestEndToEndCharacterPackGeneration(t *testing.T) {
 		t.Fatalf("worker pack process: %v", err)
 	}
 
-	// Job surface: completed, 3 final assets, asset_pack_id visible on GET.
+	// Job surface: completed, 7 final assets, asset_pack_id visible on GET.
 	getReq := httptest.NewRequest(http.MethodGet, "/v1/jobs/"+jobID, nil)
 	getReq = getReq.WithContext(auth.ContextWithPrincipal(
 		telemetry.ContextWithRequestLog(telemetry.ContextWithRequestID(getReq.Context(), "req_test"), &telemetry.RequestLog{}),
@@ -190,40 +190,40 @@ func TestEndToEndCharacterPackGeneration(t *testing.T) {
 		t.Fatalf("expected asset_pack_id=%s on job GET, got %v", packID, jobBody["asset_pack_id"])
 	}
 	finalIDs, _ := jobBody["final_asset_ids"].([]any)
-	if len(finalIDs) != 3 {
-		t.Fatalf("expected 3 final_asset_ids, got %v", finalIDs)
+	if len(finalIDs) != 7 {
+		t.Fatalf("expected 7 final_asset_ids, got %v", finalIDs)
 	}
 
 	// Pack + items.
 	if got := scalar(t, pool, `SELECT status FROM asset_packs WHERE id = $1`, packID); got != "completed" {
 		t.Fatalf("pack status: expected completed, got %s", got)
 	}
-	if got := scalar(t, pool, `SELECT count(*) FROM asset_pack_items WHERE asset_pack_id = $1`, packID); got != "3" {
-		t.Fatalf("expected 3 asset_pack_items, got %s", got)
+	if got := scalar(t, pool, `SELECT count(*) FROM asset_pack_items WHERE asset_pack_id = $1`, packID); got != "7" {
+		t.Fatalf("expected 7 asset_pack_items, got %s", got)
 	}
 	// Every asset carries provenance + the identity link.
 	if got := scalar(t, pool,
 		`SELECT count(*) FROM visual_assets
 		 WHERE generation_job_id = $1 AND provider_id = 'mock' AND model_id = 'pm_mock_v1' AND visual_identity_id = $2 AND asset_type = 'character_portrait'`,
-		jobID, itIdentityCh); got != "3" {
-		t.Fatalf("expected 3 provenance-stamped character_portrait assets, got %s", got)
+		jobID, itIdentityCh); got != "7" {
+		t.Fatalf("expected 7 provenance-stamped character_portrait assets, got %s", got)
 	}
-	// Variant keys are the requested defaults, in order.
+	// Variant keys are the PRD 04 §4.2 starter pack roles, in order.
 	if got := scalar(t, pool,
 		`SELECT string_agg(variant_key, ',' ORDER BY sort_order) FROM asset_pack_items WHERE asset_pack_id = $1`, packID,
-	); got != "neutral_front_portrait,neutral_three_quarter_portrait,side_angle_portrait" {
+	); got != "neutral_front_portrait,neutral_three_quarter_portrait,side_angle_portrait,warm_or_smiling_expression,serious_or_tense_expression,angry_or_defensive_expression,surprised_or_shocked_expression" {
 		t.Fatalf("unexpected variant keys: %s", got)
 	}
 
-	// Cost lifecycle: reservation committed, budget reserved → spent by 0.0300.
+	// Cost lifecycle: reservation committed, budget reserved → spent by 0.0700.
 	if got := scalar(t, pool, `SELECT status FROM cost_reservations WHERE generation_job_id = $1`, jobID); got != "committed" {
 		t.Fatalf("reservation: expected committed, got %s", got)
 	}
-	if reserved, spent := budgetAmounts(t, pool, "bud_pack_ok"); reserved != "0.0000" || spent != "0.0300" {
-		t.Fatalf("post-commit budget: expected reserved 0 / spent 0.0300, got %s / %s", reserved, spent)
+	if reserved, spent := budgetAmounts(t, pool, "bud_pack_ok"); reserved != "0.0000" || spent != "0.0700" {
+		t.Fatalf("post-commit budget: expected reserved 0 / spent 0.0700, got %s / %s", reserved, spent)
 	}
-	if got := scalar(t, pool, `SELECT actual_cost_usd::text FROM generation_jobs WHERE id = $1`, jobID); got != "0.0300" {
-		t.Fatalf("job actual_cost_usd: expected 0.0300, got %s", got)
+	if got := scalar(t, pool, `SELECT actual_cost_usd::text FROM generation_jobs WHERE id = $1`, jobID); got != "0.0700" {
+		t.Fatalf("job actual_cost_usd: expected 0.0700, got %s", got)
 	}
 }
 
@@ -251,9 +251,9 @@ func TestEndToEndPlacePackGeneration(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
 	jobID, _ := resp["job_id"].(string)
 	packID, _ := resp["asset_pack_id"].(string)
-	// Default place pack = 2 variants → estimate 2 × 0.0100.
-	if resp["estimated_cost_usd"] != "0.0200" {
-		t.Fatalf("expected estimated_cost_usd=0.0200, got %v", resp["estimated_cost_usd"])
+	// PRD 04 §5.2 starter place pack = 6 variants → estimate 6 × 0.0100.
+	if resp["estimated_cost_usd"] != "0.0600" {
+		t.Fatalf("expected estimated_cost_usd=0.0600, got %v", resp["estimated_cost_usd"])
 	}
 
 	w := newPackTestWorker(pool, mock.New())
@@ -267,13 +267,195 @@ func TestEndToEndPlacePackGeneration(t *testing.T) {
 	if got := scalar(t, pool, `SELECT pack_type FROM asset_packs WHERE id = $1`, packID); got != "place_minimal_scene_pack" {
 		t.Fatalf("pack_type: expected place_minimal_scene_pack, got %s", got)
 	}
-	if got := scalar(t, pool, `SELECT count(*) FROM asset_pack_items WHERE asset_pack_id = $1`, packID); got != "2" {
-		t.Fatalf("expected 2 asset_pack_items, got %s", got)
+	if got := scalar(t, pool, `SELECT count(*) FROM asset_pack_items WHERE asset_pack_id = $1`, packID); got != "6" {
+		t.Fatalf("expected 6 asset_pack_items, got %s", got)
 	}
 	if got := scalar(t, pool,
 		`SELECT count(*) FROM visual_assets WHERE generation_job_id = $1 AND asset_type = 'place_scene' AND visual_identity_id = $2`,
-		jobID, itIdentityPl); got != "2" {
-		t.Fatalf("expected 2 place_scene assets, got %s", got)
+		jobID, itIdentityPl); got != "6" {
+		t.Fatalf("expected 6 place_scene assets, got %s", got)
+	}
+}
+
+// TestEndToEndCharacterExpressionPackClassification (Phase 5B): a pack_template
+// request fans out the template role set; every generated visual_assets row
+// carries a populated variant_family, the right compatibility_tags, structured
+// metadata tags, and the correct fallback_allowed flag (strong emotion off,
+// generic presence on).
+func TestEndToEndCharacterExpressionPackClassification(t *testing.T) {
+	pool := openTestPool(t)
+	defer pool.Close()
+	cleanup(t, pool)
+	defer cleanup(t, pool)
+	seedFixtures(t, pool)
+	seedPackIdentities(t, pool)
+	seedBudget(t, pool, "bud_pack_expr", "tenant", itTenant, "active", "1.0000")
+
+	jobsRepo := jobs.NewRepository(pool)
+	enq := newRecordingEnqueuer()
+	svc := newCostService(pool, enq)
+	r := mountPackTestRouter(svc, pool, jobsRepo)
+
+	rec := sendPackRequest(t, r, "/v1/characters/"+itCharacterID+"/generate-pack", map[string]any{
+		"world_id":         "w1",
+		"style_profile_id": itStyleID,
+		"pack_template":    "character_expression_pack",
+	}, "")
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("POST expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	jobID, _ := resp["job_id"].(string)
+	packID, _ := resp["asset_pack_id"].(string)
+	// character_expression_pack = 5 variants → estimate 5 × 0.0100.
+	if resp["estimated_cost_usd"] != "0.0500" {
+		t.Fatalf("expected estimated_cost_usd=0.0500, got %v", resp["estimated_cost_usd"])
+	}
+	// The pack carries the template name as its pack_type.
+	if got := scalar(t, pool, `SELECT pack_type FROM asset_packs WHERE id = $1`, packID); got != "character_expression_pack" {
+		t.Fatalf("pack_type: expected character_expression_pack, got %s", got)
+	}
+
+	w := newPackTestWorker(pool, mock.New())
+	if err := w.ProcessPack(context.Background(), jobID); err != nil {
+		t.Fatalf("worker pack process: %v", err)
+	}
+
+	if got := scalar(t, pool, `SELECT status FROM asset_packs WHERE id = $1`, packID); got != "completed" {
+		t.Fatalf("pack status: expected completed, got %s", got)
+	}
+	// Every generated asset has a populated (non-unknown, non-null) family.
+	if got := scalar(t, pool,
+		`SELECT count(*) FROM visual_assets WHERE generation_job_id = $1 AND variant_family IS NOT NULL AND variant_family <> 'unknown'`,
+		jobID); got != "5" {
+		t.Fatalf("expected 5 assets with a meaningful variant_family, got %s", got)
+	}
+	// Neutral portrait: family neutral, generic_presence compatibility tag,
+	// fallback allowed, metadata angle tag.
+	if got := scalar(t, pool,
+		`SELECT variant_family FROM visual_assets WHERE generation_job_id = $1 AND variant_key = 'neutral_front_portrait'`,
+		jobID); got != "neutral" {
+		t.Fatalf("neutral family: expected neutral, got %s", got)
+	}
+	if got := scalar(t, pool,
+		`SELECT ('generic_presence' = ANY(compatibility_tags))::text FROM visual_assets WHERE generation_job_id = $1 AND variant_key = 'neutral_front_portrait'`,
+		jobID); got != "true" {
+		t.Fatalf("neutral must carry generic_presence compatibility tag, got %s", got)
+	}
+	if got := scalar(t, pool,
+		`SELECT fallback_allowed::text FROM visual_assets WHERE generation_job_id = $1 AND variant_key = 'neutral_front_portrait'`,
+		jobID); got != "true" {
+		t.Fatalf("neutral fallback_allowed: expected true, got %s", got)
+	}
+	if got := scalar(t, pool,
+		`SELECT metadata->'variant_tags'->>'angle' FROM visual_assets WHERE generation_job_id = $1 AND variant_key = 'neutral_front_portrait'`,
+		jobID); got != "front" {
+		t.Fatalf("neutral metadata angle: expected front, got %s", got)
+	}
+	// Warm expression: family warm, metadata expression tag, fallback allowed.
+	if got := scalar(t, pool,
+		`SELECT variant_family FROM visual_assets WHERE generation_job_id = $1 AND variant_key = 'expression_warm'`,
+		jobID); got != "warm" {
+		t.Fatalf("warm family: expected warm, got %s", got)
+	}
+	if got := scalar(t, pool,
+		`SELECT metadata->'variant_tags'->>'expression' FROM visual_assets WHERE generation_job_id = $1 AND variant_key = 'expression_warm'`,
+		jobID); got != "warm" {
+		t.Fatalf("warm metadata expression: expected warm, got %s", got)
+	}
+	// Strong-emotion expression: family strong_emotion, fallback NOT allowed,
+	// no compatibility tags.
+	if got := scalar(t, pool,
+		`SELECT variant_family FROM visual_assets WHERE generation_job_id = $1 AND variant_key = 'expression_angry'`,
+		jobID); got != "strong_emotion" {
+		t.Fatalf("angry family: expected strong_emotion, got %s", got)
+	}
+	if got := scalar(t, pool,
+		`SELECT fallback_allowed::text FROM visual_assets WHERE generation_job_id = $1 AND variant_key = 'expression_angry'`,
+		jobID); got != "false" {
+		t.Fatalf("angry fallback_allowed: expected false, got %s", got)
+	}
+	if got := scalar(t, pool,
+		`SELECT cardinality(compatibility_tags)::text FROM visual_assets WHERE generation_job_id = $1 AND variant_key = 'expression_angry'`,
+		jobID); got != "0" {
+		t.Fatalf("angry must carry no compatibility tags, got %s", got)
+	}
+
+	// Query sanity: compatibility_tags is populated and queryable (GIN overlap).
+	// Exactly one row in this pack carries generic_presence (neutral_front).
+	if got := scalar(t, pool,
+		`SELECT count(*) FROM visual_assets WHERE generation_job_id = $1 AND compatibility_tags && ARRAY['generic_presence']`,
+		jobID); got != "1" {
+		t.Fatalf("expected 1 generic_presence asset via array overlap, got %s", got)
+	}
+}
+
+// TestEndToEndPlaceTimeOfDayPackClassification (Phase 5B): a place
+// time-of-day template stamps the time_of_day metadata and time_of_day family
+// on each generated scene.
+func TestEndToEndPlaceTimeOfDayPackClassification(t *testing.T) {
+	pool := openTestPool(t)
+	defer pool.Close()
+	cleanup(t, pool)
+	defer cleanup(t, pool)
+	seedFixtures(t, pool)
+	seedPackIdentities(t, pool)
+	seedBudget(t, pool, "bud_pack_tod", "tenant", itTenant, "active", "1.0000")
+
+	jobsRepo := jobs.NewRepository(pool)
+	enq := newRecordingEnqueuer()
+	svc := newCostService(pool, enq)
+	r := mountPackTestRouter(svc, pool, jobsRepo)
+
+	rec := sendPackRequest(t, r, "/v1/places/"+itPlaceID+"/generate-pack", map[string]any{
+		"world_id":         "w1",
+		"style_profile_id": itStyleID,
+		"pack_template":    "place_time_of_day_pack",
+	}, "")
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("POST expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	jobID, _ := resp["job_id"].(string)
+	packID, _ := resp["asset_pack_id"].(string)
+	if resp["estimated_cost_usd"] != "0.0400" {
+		t.Fatalf("expected estimated_cost_usd=0.0400 (4 variants), got %v", resp["estimated_cost_usd"])
+	}
+
+	w := newPackTestWorker(pool, mock.New())
+	if err := w.ProcessPack(context.Background(), jobID); err != nil {
+		t.Fatalf("worker pack process: %v", err)
+	}
+
+	if got := scalar(t, pool, `SELECT pack_type FROM asset_packs WHERE id = $1`, packID); got != "place_time_of_day_pack" {
+		t.Fatalf("pack_type: expected place_time_of_day_pack, got %s", got)
+	}
+	// All four rows carry the time_of_day family.
+	if got := scalar(t, pool,
+		`SELECT count(*) FROM visual_assets WHERE generation_job_id = $1 AND variant_family = 'time_of_day'`,
+		jobID); got != "4" {
+		t.Fatalf("expected 4 time_of_day assets, got %s", got)
+	}
+	// Each carries its time_of_day metadata tag.
+	for _, tc := range []struct{ key, tod string }{
+		{"day_view", "day"},
+		{"night_view", "night"},
+		{"dawn_view", "dawn"},
+		{"dusk_view", "dusk"},
+	} {
+		if got := scalar(t, pool,
+			`SELECT metadata->'variant_tags'->>'time_of_day' FROM visual_assets WHERE generation_job_id = $1 AND variant_key = $2`,
+			jobID, tc.key); got != tc.tod {
+			t.Fatalf("%s metadata time_of_day: expected %s, got %s", tc.key, tc.tod, got)
+		}
+	}
+	// day_view is the fallback-safe daylight; night/dawn/dusk are strict.
+	if got := scalar(t, pool,
+		`SELECT count(*) FROM visual_assets WHERE generation_job_id = $1 AND fallback_allowed = true`,
+		jobID); got != "1" {
+		t.Fatalf("expected exactly 1 fallback-allowed time-of-day asset (day), got %s", got)
 	}
 }
 
@@ -314,21 +496,22 @@ func TestPackPartialFailureCompletesWithWarnings(t *testing.T) {
 	if got := scalar(t, pool, `SELECT status FROM generation_jobs WHERE id = $1`, jobID); got != "completed" {
 		t.Fatalf("job status: expected completed, got %s", got)
 	}
-	if got := scalar(t, pool, `SELECT count(*) FROM asset_pack_items WHERE asset_pack_id = $1`, packID); got != "2" {
-		t.Fatalf("expected 2 delivered items, got %s", got)
+	// 7-variant starter pack, one variant (side_angle_portrait) fails → 6 delivered.
+	if got := scalar(t, pool, `SELECT count(*) FROM asset_pack_items WHERE asset_pack_id = $1`, packID); got != "6" {
+		t.Fatalf("expected 6 delivered items, got %s", got)
 	}
 	// Atomicity invariant: one visual asset per delivered item, no orphans —
 	// the asset and its pack item commit in a single transaction.
-	if got := scalar(t, pool, `SELECT count(*) FROM visual_assets WHERE generation_job_id = $1`, jobID); got != "2" {
-		t.Fatalf("expected exactly 2 visual_assets (no orphans), got %s", got)
+	if got := scalar(t, pool, `SELECT count(*) FROM visual_assets WHERE generation_job_id = $1`, jobID); got != "6" {
+		t.Fatalf("expected exactly 6 visual_assets (no orphans), got %s", got)
 	}
 	// Cost rule for 5A: partial success still commits the full N × price
 	// hold (the provider was called N times).
 	if got := scalar(t, pool, `SELECT status FROM cost_reservations WHERE generation_job_id = $1`, jobID); got != "committed" {
 		t.Fatalf("reservation: expected committed on partial success, got %s", got)
 	}
-	if reserved, spent := budgetAmounts(t, pool, "bud_pack_warn"); reserved != "0.0000" || spent != "0.0300" {
-		t.Fatalf("budget: expected reserved 0 / spent 0.0300, got %s / %s", reserved, spent)
+	if reserved, spent := budgetAmounts(t, pool, "bud_pack_warn"); reserved != "0.0000" || spent != "0.0700" {
+		t.Fatalf("budget: expected reserved 0 / spent 0.0700, got %s / %s", reserved, spent)
 	}
 	// The failed variant left a failed provider_attempt behind.
 	if got := scalar(t, pool, `SELECT count(*) FROM provider_attempts WHERE generation_job_id = $1 AND status = 'failed'`, jobID); got != "1" {
@@ -398,7 +581,7 @@ func TestPackPreflightBudgetExceededIsNeverEnqueued(t *testing.T) {
 	defer cleanup(t, pool)
 	seedFixtures(t, pool)
 	seedPackIdentities(t, pool)
-	// Budget covers one image but not the 3-variant pack (3 × 0.0100).
+	// Budget covers one image but not the 7-variant starter pack (7 × 0.0100).
 	seedBudget(t, pool, "bud_pack_tight", "tenant", itTenant, "active", "0.0200")
 
 	jobsRepo := jobs.NewRepository(pool)
@@ -428,8 +611,8 @@ func TestPackPreflightBudgetExceededIsNeverEnqueued(t *testing.T) {
 		itTenant).Scan(&rStatus, &rEst, &rReserved); err != nil {
 		t.Fatalf("read reservation: %v", err)
 	}
-	if rStatus != "failed" || rEst != "0.0300" || rReserved != "0.0000" {
-		t.Fatalf("reservation: expected failed/0.0300/0, got %s/%s/%s", rStatus, rEst, rReserved)
+	if rStatus != "failed" || rEst != "0.0700" || rReserved != "0.0000" {
+		t.Fatalf("reservation: expected failed/0.0700/0, got %s/%s/%s", rStatus, rEst, rReserved)
 	}
 	if reserved, _ := budgetAmounts(t, pool, "bud_pack_tight"); reserved != "0.0000" {
 		t.Fatalf("budget must hold nothing on denial, got reserved %s", reserved)
@@ -576,8 +759,8 @@ func TestPackIdempotencyReplayReturnsSameJobAndPack(t *testing.T) {
 		t.Fatalf("post-completion replay must echo live status, got %v", thirdBody["status"])
 	}
 	packID, _ := firstBody["asset_pack_id"].(string)
-	if got := scalar(t, pool, `SELECT count(*) FROM asset_pack_items WHERE asset_pack_id = $1`, packID); got != "3" {
-		t.Fatalf("expected 3 items after replay, got %s", got)
+	if got := scalar(t, pool, `SELECT count(*) FROM asset_pack_items WHERE asset_pack_id = $1`, packID); got != "7" {
+		t.Fatalf("expected 7 items after replay, got %s", got)
 	}
 }
 
@@ -619,11 +802,12 @@ func TestPackWorkerRetryAfterCompletionDoesNotRefanOut(t *testing.T) {
 	if got := scalar(t, pool, `SELECT count(*) FROM provider_attempts WHERE generation_job_id = $1`, jobID); got != attemptsAfterFirst {
 		t.Fatalf("retry re-fanned out: attempts %s -> %s", attemptsAfterFirst, got)
 	}
-	if got := scalar(t, pool, `SELECT count(*) FROM asset_pack_items WHERE asset_pack_id = $1`, packID); got != "2" {
-		t.Fatalf("expected 2 items after retry, got %s", got)
+	// 6-variant starter place pack.
+	if got := scalar(t, pool, `SELECT count(*) FROM asset_pack_items WHERE asset_pack_id = $1`, packID); got != "6" {
+		t.Fatalf("expected 6 items after retry, got %s", got)
 	}
 	// Budget moved exactly once.
-	if reserved, spent := budgetAmounts(t, pool, "bud_pack_retry"); reserved != "0.0000" || spent != "0.0200" {
-		t.Fatalf("budget after retry: expected reserved 0 / spent 0.0200, got %s / %s", reserved, spent)
+	if reserved, spent := budgetAmounts(t, pool, "bud_pack_retry"); reserved != "0.0000" || spent != "0.0600" {
+		t.Fatalf("budget after retry: expected reserved 0 / spent 0.0600, got %s / %s", reserved, spent)
 	}
 }
