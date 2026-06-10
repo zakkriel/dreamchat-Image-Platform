@@ -93,7 +93,7 @@ func (h *AdminCostHandler) ListPrices(w http.ResponseWriter, r *http.Request) {
 		h.writeErr(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"price_book": entries})
+	writeJSON(w, http.StatusOK, map[string]any{"entries": entries})
 }
 
 func (h *AdminCostHandler) GetPrice(w http.ResponseWriter, r *http.Request) {
@@ -192,7 +192,7 @@ func (h *AdminCostHandler) ListBudgets(w http.ResponseWriter, r *http.Request) {
 		h.writeErr(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"cost_budgets": budgets})
+	writeJSON(w, http.StatusOK, map[string]any{"budgets": budgets})
 }
 
 func (h *AdminCostHandler) UpdateBudget(w http.ResponseWriter, r *http.Request) {
@@ -269,7 +269,7 @@ func (h *AdminCostHandler) ListReservations(w http.ResponseWriter, r *http.Reque
 		h.writeErr(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"cost_reservations": rows})
+	writeJSON(w, http.StatusOK, map[string]any{"reservations": rows})
 }
 
 // ---------------------------------------------------------------------------

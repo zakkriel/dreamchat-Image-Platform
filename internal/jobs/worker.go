@@ -65,6 +65,31 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 		return err
 	}
 
+	// Retry-safety: if the job is already terminal, a previous attempt did the
+	// generation work and only the cost finalization may be outstanding (e.g.
+	// the task was retried because Finalizer.Commit failed after the job was
+	// marked completed). Re-run only the idempotent finalization — never the
+	// provider call or asset insert — so a finalization failure can't trigger
+	// duplicate generation.
+	switch job.Status {
+	case "completed":
+		if w.Finalizer != nil {
+			if err := w.Finalizer.Commit(ctx, job.ID); err != nil {
+				w.log().Error("worker: commit cost reservation (terminal job)", "job_id", jobID, "error", err)
+				return err
+			}
+		}
+		return nil
+	case "failed":
+		if w.Finalizer != nil {
+			if err := w.Finalizer.Release(ctx, job.ID); err != nil {
+				w.log().Error("worker: release cost reservation (terminal job)", "job_id", jobID, "error", err)
+				return err
+			}
+		}
+		return nil
+	}
+
 	if _, err := w.Jobs.MarkRunning(ctx, job.ID, job.TenantID); err != nil {
 		w.log().Error("worker: mark running", "job_id", jobID, "error", err)
 		return err

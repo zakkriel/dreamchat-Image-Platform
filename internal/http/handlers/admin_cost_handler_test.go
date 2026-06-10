@@ -229,3 +229,42 @@ func TestAdminListReservationsRequiresScope(t *testing.T) {
 		t.Fatalf("expected 403 without admin:costs, got %d", rec.Code)
 	}
 }
+
+// assertListKey checks the response has exactly the wanted top-level key (an
+// array) and none of the forbidden legacy keys — the OpenAPI list contract.
+func assertListKey(t *testing.T, rec *httptest.ResponseRecorder, want string, forbidden ...string) {
+	t.Helper()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	body := decode[map[string]any](t, rec)
+	if _, ok := body[want].([]any); !ok {
+		t.Fatalf("expected top-level array key %q, got body=%s", want, rec.Body.String())
+	}
+	if len(body) != 1 {
+		t.Fatalf("expected exactly one top-level key %q, got %v", want, body)
+	}
+	for _, f := range forbidden {
+		if _, present := body[f]; present {
+			t.Fatalf("forbidden legacy key %q present in response: %s", f, rec.Body.String())
+		}
+	}
+}
+
+func TestAdminListPricesResponseKey(t *testing.T) {
+	r := newAdminRouter(&stubAdminCostService{})
+	rec := sendAdmin(t, r, http.MethodGet, "/v1/admin/price-book", []string{"admin:costs"}, nil)
+	assertListKey(t, rec, "entries", "price_book")
+}
+
+func TestAdminListBudgetsResponseKey(t *testing.T) {
+	r := newAdminRouter(&stubAdminCostService{})
+	rec := sendAdmin(t, r, http.MethodGet, "/v1/admin/cost-budgets", []string{"admin:costs"}, nil)
+	assertListKey(t, rec, "budgets", "cost_budgets")
+}
+
+func TestAdminListReservationsResponseKey(t *testing.T) {
+	r := newAdminRouter(&stubAdminCostService{})
+	rec := sendAdmin(t, r, http.MethodGet, "/v1/admin/cost-reservations", []string{"admin:costs"}, nil)
+	assertListKey(t, rec, "reservations", "cost_reservations")
+}
