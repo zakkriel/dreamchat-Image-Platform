@@ -251,6 +251,12 @@ func TestWorkerProcessHappyPath(t *testing.T) {
 	if asset.LowResUrl == nil || asset.HighResUrl == nil || asset.ThumbnailUrl == nil {
 		t.Fatalf("expected three URLs populated, got %+v", asset)
 	}
+	if asset.ProviderID == nil || *asset.ProviderID != "mock" {
+		t.Fatalf("expected provider_id=mock, got %v", asset.ProviderID)
+	}
+	if asset.ModelID == nil || *asset.ModelID != "pm_mock_v1" {
+		t.Fatalf("expected model_id=pm_mock_v1, got %v", asset.ModelID)
+	}
 	if len(storage.keys) != 3 {
 		t.Fatalf("expected three S3 keys, got %d", len(storage.keys))
 	}

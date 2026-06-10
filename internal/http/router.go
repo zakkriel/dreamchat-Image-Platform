@@ -29,13 +29,17 @@ type Deps struct {
 	AssetsRepo     assets.Repository
 	JobsRepo       jobs.Repository
 	JobsService    jobs.Creator
+	AdminCost      handlers.AdminCostService
 }
 
 type HealthResponse struct {
 	Status string `json:"status"`
 }
 
-const scopeAdminRead = "admin:read"
+const (
+	scopeAdminRead  = "admin:read"
+	scopeAdminCosts = "admin:costs"
+)
 
 func NewRouter(deps Deps) *chi.Mux {
 	r := chi.NewRouter()
@@ -120,6 +124,7 @@ func mountV1(r chi.Router, deps Deps) {
 		mountAssets(v1, deps)
 		mountArtifacts(v1, deps)
 		mountJobs(v1, deps)
+		mountAdminCost(v1, deps)
 		v1.Handle("/*", http.HandlerFunc(notFound))
 	})
 }
@@ -166,4 +171,27 @@ func mountJobs(v1 chi.Router, deps Deps) {
 	}
 	h := handlers.NewJobsHandler(deps.JobsRepo)
 	v1.With(auth.RequireScopes("jobs:read")).Get("/jobs/{job_id}", h.Get)
+}
+
+// mountAdminCost wires the Phase 4B admin cost surface. Every route requires
+// the admin:costs scope (docs/architecture/admin-control-surface.md).
+func mountAdminCost(v1 chi.Router, deps Deps) {
+	if deps.AdminCost == nil {
+		return
+	}
+	h := handlers.NewAdminCostHandler(deps.AdminCost)
+	v1.Route("/admin", func(a chi.Router) {
+		a.Use(auth.RequireScopes(scopeAdminCosts))
+
+		a.Post("/price-book", h.CreatePrice)
+		a.Get("/price-book", h.ListPrices)
+		a.Get("/price-book/{price_id}", h.GetPrice)
+		a.Put("/price-book/{price_id}", h.UpdatePrice)
+
+		a.Post("/cost-budgets", h.CreateBudget)
+		a.Get("/cost-budgets", h.ListBudgets)
+		a.Put("/cost-budgets/{budget_id}", h.UpdateBudget)
+
+		a.Get("/cost-reservations", h.ListReservations)
+	})
 }

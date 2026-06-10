@@ -11,6 +11,7 @@ import (
 	"github.com/hibiken/asynq"
 
 	"github.com/zakkriel/drchat-image-platform/internal/assets"
+	"github.com/zakkriel/drchat-image-platform/internal/cost"
 	"github.com/zakkriel/drchat-image-platform/internal/ids"
 	"github.com/zakkriel/drchat-image-platform/internal/providers"
 	"github.com/zakkriel/drchat-image-platform/internal/storage"
@@ -20,6 +21,13 @@ const (
 	errorCodeProviderFailure  = "provider_failure"
 	errorCodePersistenceError = "persistence_error"
 	errorCodeStorageFailure   = "storage_failure"
+
+	// mockProviderModelID is the seeded provider_models row (provider=mock,
+	// model_name=mock-v1) that the artifact pricing path resolves against.
+	// The mock worker stamps it onto the produced asset for provenance. This
+	// is the only model the worker can produce until real provider routing
+	// lands; it is intentionally not a route resolver.
+	mockProviderModelID = "pm_mock_v1"
 )
 
 // Worker holds the dependencies the asynq handler resolves a job against.
@@ -31,6 +39,11 @@ type Worker struct {
 	Storage  storage.Storage
 	Provider providers.ImageProvider
 	Logger   *slog.Logger
+
+	// Finalizer commits the cost reservation on success and releases it on
+	// terminal failure (docs/architecture/cost-control.md §3 steps 9–10).
+	// Optional: nil in unit tests that don't exercise the cost lifecycle.
+	Finalizer cost.Finalizer
 }
 
 // NewHandlerFunc returns the asynq handler so the cmd/worker binary stays a
@@ -57,6 +70,31 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 	if err != nil {
 		w.log().Error("worker: lookup job", "job_id", jobID, "error", err)
 		return err
+	}
+
+	// Retry-safety: if the job is already terminal, a previous attempt did the
+	// generation work and only the cost finalization may be outstanding (e.g.
+	// the task was retried because Finalizer.Commit failed after the job was
+	// marked completed). Re-run only the idempotent finalization — never the
+	// provider call or asset insert — so a finalization failure can't trigger
+	// duplicate generation.
+	switch job.Status {
+	case "completed":
+		if w.Finalizer != nil {
+			if err := w.Finalizer.Commit(ctx, job.ID); err != nil {
+				w.log().Error("worker: commit cost reservation (terminal job)", "job_id", jobID, "error", err)
+				return err
+			}
+		}
+		return nil
+	case "failed":
+		if w.Finalizer != nil {
+			if err := w.Finalizer.Release(ctx, job.ID); err != nil {
+				w.log().Error("worker: release cost reservation (terminal job)", "job_id", jobID, "error", err)
+				return err
+			}
+		}
+		return nil
 	}
 
 	if _, err := w.Jobs.MarkRunning(ctx, job.ID, job.TenantID); err != nil {
@@ -106,14 +144,14 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 	}
 
 	providerID := attempt.ProviderID
+	modelID := mockProviderModelID
 	promptHash := result.PromptHash
 	seed := result.Seed
 	jobIDRef := job.ID
 
-	// model_id is intentionally NULL: visual_assets.model_id references
-	// provider_models(id), and Phase 3 does not populate the provider model
-	// catalog. Phase 4 (provider routing + price book) introduces the
-	// provider_models rows and wires this field.
+	// model_id is the seeded mock provider_models row (Phase 4 seeds it, and
+	// the pricing path already resolves against it). Stamping it on the asset
+	// records provenance; real provider routing still picks the model upstream.
 	asset, err := w.Assets.Insert(ctx, assets.InsertParams{
 		ID:              assetID,
 		TenantID:        job.TenantID,
@@ -125,7 +163,7 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 		HighResUrl:      strPtr(urls.high),
 		ThumbnailUrl:    strPtr(urls.thumb),
 		ProviderID:      &providerID,
-		ModelID:         nil,
+		ModelID:         &modelID,
 		PromptHash:      strPtr(promptHash),
 		Seed:            strPtr(seed),
 		GenerationJobID: &jobIDRef,
@@ -160,6 +198,16 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 		Status:            "completed",
 	}); err != nil {
 		w.log().Warn("worker: insert cost event", "job_id", jobID, "error", err)
+	}
+
+	// Commit the cost reservation: reserved → committed, move the held
+	// estimate from reserved to spent, stamp actual_cost on the job + event.
+	// Idempotent — safe if a later retry re-enters after a partial failure.
+	if w.Finalizer != nil {
+		if err := w.Finalizer.Commit(ctx, job.ID); err != nil {
+			w.log().Error("worker: commit cost reservation", "job_id", jobID, "error", err)
+			return err
+		}
 	}
 
 	return nil
@@ -220,6 +268,13 @@ func (w *Worker) recordFailure(ctx context.Context, job Job, attemptID, provider
 	if finalAttempt {
 		if _, err := w.Jobs.MarkFailed(ctx, job.ID, job.TenantID, errorCodeFor(callErr), errMsg, false); err != nil {
 			w.log().Error("worker: mark job failed", "job_id", job.ID, "error", err)
+		}
+		// Terminal failure: release the cost reservation (reserved → released,
+		// return the held estimate to the budget; spent untouched). Idempotent.
+		if w.Finalizer != nil {
+			if err := w.Finalizer.Release(ctx, job.ID); err != nil {
+				w.log().Error("worker: release cost reservation", "job_id", job.ID, "error", err)
+			}
 		}
 	}
 }

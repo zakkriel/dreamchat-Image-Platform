@@ -2,7 +2,9 @@ version: "2"
 sql:
   - engine: "postgresql"
     queries: "internal/db/queries"
-    schema: "migrations/0001_initial.up.sql"
+    schema:
+      - "migrations/0001_initial.up.sql"
+      - "migrations/0003_cost_lifecycle.up.sql"
     gen:
       go:
         package: "dbgen"

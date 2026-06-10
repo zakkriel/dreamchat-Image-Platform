@@ -77,6 +77,9 @@ func cleanup(t *testing.T, pool *pgxpool.Pool) {
 	exec(`DELETE FROM provider_attempts WHERE generation_job_id IN (SELECT id FROM generation_jobs WHERE tenant_id = $1)`, itTenant)
 	exec(`DELETE FROM idempotency_keys WHERE token_id = $1`, itTokenID)
 	exec(`DELETE FROM visual_assets WHERE tenant_id = $1`, itTenant)
+	// cost_reservation_budget_holds references both cost_reservations and
+	// cost_budgets; clear it before either.
+	exec(`DELETE FROM cost_reservation_budget_holds WHERE cost_reservation_id IN (SELECT id FROM cost_reservations WHERE tenant_id = $1)`, itTenant)
 	// generation_jobs <-> cost_reservations is a circular FK: break the
 	// job->reservation link before deleting the reservations.
 	exec(`UPDATE generation_jobs SET cost_reservation_id = NULL WHERE tenant_id = $1`, itTenant)
@@ -254,20 +257,25 @@ func TestEndToEndArtifactGeneration(t *testing.T) {
 		t.Fatalf("expected 1 final_asset_id, got %v", finalIDs)
 	}
 
-	// Verify visual_assets row has three URLs and no FK breakage on model_id.
+	// Verify visual_assets row has three URLs and carries the mock provider
+	// provenance (provider_id=mock, model_id=pm_mock_v1 — the seeded model the
+	// pricing path resolves against).
 	var lowURL, highURL, thumbURL *string
-	var modelID *string
+	var providerID, modelID *string
 	if err := pool.QueryRow(context.Background(),
-		`SELECT low_res_url, high_res_url, thumbnail_url, model_id FROM visual_assets WHERE id = $1`,
+		`SELECT low_res_url, high_res_url, thumbnail_url, provider_id, model_id FROM visual_assets WHERE id = $1`,
 		finalIDs[0],
-	).Scan(&lowURL, &highURL, &thumbURL, &modelID); err != nil {
+	).Scan(&lowURL, &highURL, &thumbURL, &providerID, &modelID); err != nil {
 		t.Fatalf("read asset row: %v", err)
 	}
 	if lowURL == nil || highURL == nil || thumbURL == nil {
 		t.Fatalf("expected three URLs populated, got low=%v high=%v thumb=%v", lowURL, highURL, thumbURL)
 	}
-	if modelID != nil {
-		t.Fatalf("expected model_id NULL in Phase 3, got %q", *modelID)
+	if providerID == nil || *providerID != "mock" {
+		t.Fatalf("expected provider_id=mock, got %v", providerID)
+	}
+	if modelID == nil || *modelID != "pm_mock_v1" {
+		t.Fatalf("expected model_id=pm_mock_v1, got %v", modelID)
 	}
 }
 

@@ -1,12 +1,15 @@
-// Package cost implements the pre-flight cost-estimation pipeline described
-// in docs/architecture/cost-control.md §3 (steps 4–7): load the active
-// price, estimate the cost of the request, and atomically hold that estimate
-// against every applicable budget before the job is enqueued.
+// Package cost implements the cost-control pipeline described in
+// docs/architecture/cost-control.md §3.
 //
-// Phase 4 scope: price lookup, estimation, and budget reservation. The
-// reservation lifecycle's terminal steps (commit on success / release on
-// failure — §3 steps 9–10) are intentionally deferred; see
-// frustration_log.md (Phase 4).
+//   - Pre-flight (steps 4–7): load the active price, estimate the cost, and
+//     atomically hold that estimate against every applicable budget before the
+//     job is enqueued. See Service.Reserve.
+//   - Terminal lifecycle (steps 9–10): commit the hold to spend on job
+//     success, or release it back on terminal failure. See Lifecycle.
+//
+// Every budget increment made at reserve time is recorded in
+// cost_reservation_budget_holds so the terminal transition reverses exactly
+// the rows that were credited — never a broad update by tenant/scope.
 package cost
 
 import (
@@ -17,6 +20,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/zakkriel/drchat-image-platform/internal/db/dbgen"
 	"github.com/zakkriel/drchat-image-platform/internal/ids"
@@ -33,14 +37,22 @@ const (
 	ReasonNoPriceEntry   = "no_price_entry"
 	ReasonBudgetExceeded = "budget_exceeded"
 
-	statusReserved = "reserved"
-	statusFailed   = "failed"
+	statusReserved  = "reserved"
+	statusCommitted = "committed"
+	statusReleased  = "released"
+	statusFailed    = "failed"
 
 	// supportedUnitType is the only price unit Phase 4 can turn into an
 	// estimate. Any other unit is treated as unusable → no_price_entry.
 	supportedUnitType = "image"
 
 	defaultCurrency = "USD"
+
+	// Cost-event statuses written by the terminal lifecycle.
+	costEventSucceeded = "succeeded"
+	costEventFailed    = "failed"
+
+	operationTextToImage = "text_to_image"
 )
 
 // ReserveInput is everything the pipeline needs to price and reserve a job.
@@ -94,8 +106,9 @@ func NewService(logger *slog.Logger) *Service {
 }
 
 // Reserve loads the price, computes the estimate, holds it against every
-// applicable budget, and inserts the cost_reservations row. The job row this
-// reservation references must already exist in tx (FK).
+// applicable budget, and records the cost_reservations row plus a hold row per
+// budget credited. The job row this reservation references must already exist
+// in tx (FK).
 func (s *Service) Reserve(ctx context.Context, tx pgx.Tx, in ReserveInput) (Reservation, error) {
 	q := dbgen.New(tx)
 	reservationID := ids.NewCostReservationID()
@@ -128,14 +141,9 @@ func (s *Service) Reserve(ctx context.Context, tx pgx.Tx, in ReserveInput) (Rese
 		return s.insertFailed(ctx, q, in, reservationID, ReasonNoPriceEntry, zeroNumeric(), defaultCurrency, "")
 	}
 
-	held, err := s.reserveBudgets(ctx, tx, in, est.EstimatedAmount)
-	if err != nil {
-		return Reservation{}, err
-	}
-	if !held {
-		return s.insertFailed(ctx, q, in, reservationID, ReasonBudgetExceeded, est.EstimatedAmount, est.Currency, est.EstimatedText)
-	}
-
+	// Insert the reservation as `reserved` first so the budget holds can FK to
+	// it. If the budget hold is denied we flip it to `failed` (the savepoint
+	// rolls back the holds + increments it made).
 	row, err := q.InsertCostReservation(ctx, dbgen.InsertCostReservationParams{
 		ID:              reservationID,
 		GenerationJobID: in.JobID,
@@ -148,6 +156,30 @@ func (s *Service) Reserve(ctx context.Context, tx pgx.Tx, in ReserveInput) (Rese
 	if err != nil {
 		return Reservation{}, err
 	}
+
+	held, err := s.reserveBudgets(ctx, tx, in, est.EstimatedAmount, reservationID)
+	if err != nil {
+		return Reservation{}, err
+	}
+	if !held {
+		reason := ReasonBudgetExceeded
+		if err := q.MarkReservationBudgetExceeded(ctx, dbgen.MarkReservationBudgetExceededParams{
+			ID:            reservationID,
+			FailureReason: &reason,
+		}); err != nil {
+			return Reservation{}, err
+		}
+		return Reservation{
+			ID:              reservationID,
+			Status:          statusFailed,
+			FailureReason:   reason,
+			EstimatedAmount: est.EstimatedAmount,
+			ReservedAmount:  zeroNumeric(),
+			Currency:        est.Currency,
+			EstimateUSD:     est.EstimatedText,
+		}, nil
+	}
+
 	return Reservation{
 		ID:              row.ID,
 		Status:          statusReserved,
@@ -185,14 +217,16 @@ func (s *Service) insertFailed(ctx context.Context, q *dbgen.Queries, in Reserve
 }
 
 // reserveBudgets holds `amount` against the tenant budget(s) plus the
-// narrowest applicable scope, all-or-nothing. It runs in a savepoint so a
-// denial rolls back any partial increments while the outer transaction still
-// commits the failed job + reservation for auditability.
+// narrowest applicable scope, all-or-nothing, and records a hold row per
+// budget credited (so commit/release can reverse exactly these). It runs in a
+// savepoint so a denial rolls back any partial increments and holds while the
+// outer transaction still commits the failed job + reservation for
+// auditability.
 //
 // Returns (true, nil) when every applicable budget permitted the hold,
 // (false, nil) when a budget denied it (budget_exceeded), and a non-nil
 // error only on an infrastructure failure.
-func (s *Service) reserveBudgets(ctx context.Context, tx pgx.Tx, in ReserveInput, amount pgtype.Numeric) (bool, error) {
+func (s *Service) reserveBudgets(ctx context.Context, tx pgx.Tx, in ReserveInput, amount pgtype.Numeric, reservationID string) (bool, error) {
 	q := dbgen.New(tx)
 	all, err := q.ListBudgetsForReservation(ctx, dbgen.ListBudgetsForReservationParams{
 		TenantID: in.TenantID,
@@ -240,6 +274,15 @@ func (s *Service) reserveBudgets(ctx context.Context, tx pgx.Tx, in ReserveInput
 				return false, err
 			}
 		}
+		// Record the hold so the terminal transition reverses exactly this row.
+		if err := spq.InsertBudgetHold(ctx, dbgen.InsertBudgetHoldParams{
+			ID:                ids.NewBudgetHoldID(),
+			CostReservationID: reservationID,
+			CostBudgetID:      b.ID,
+			ReservedAmount:    amount,
+		}); err != nil {
+			return false, err
+		}
 	}
 
 	if err := sp.Commit(ctx); err != nil {
@@ -280,4 +323,170 @@ func selectBudgets(all []dbgen.ListBudgetsForReservationRow) []dbgen.ListBudgets
 
 func zeroNumeric() pgtype.Numeric {
 	return pgtype.Numeric{Int: big.NewInt(0), Exp: 0, Valid: true}
+}
+
+// nullNumeric is an explicit SQL NULL for a numeric column.
+func nullNumeric() pgtype.Numeric { return pgtype.Numeric{Valid: false} }
+
+// ---------------------------------------------------------------------------
+// Terminal lifecycle (docs/architecture/cost-control.md §3 steps 9–10)
+// ---------------------------------------------------------------------------
+
+// Finalizer transitions a job's reservation to its terminal state. Both
+// methods are idempotent: the reservation status guards the budget movement so
+// a retry after a partial failure never double-moves an amount.
+type Finalizer interface {
+	// Commit moves the held estimate from reserved → spent (job succeeded).
+	Commit(ctx context.Context, jobID string) error
+	// Release returns the held estimate to reserved → available (job failed).
+	Release(ctx context.Context, jobID string) error
+}
+
+// Lifecycle is the Postgres-backed Finalizer. It owns its own pool because the
+// worker runs outside any request transaction.
+type Lifecycle struct {
+	pool   *pgxpool.Pool
+	logger *slog.Logger
+}
+
+func NewLifecycle(pool *pgxpool.Pool, logger *slog.Logger) *Lifecycle {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Lifecycle{pool: pool, logger: logger}
+}
+
+// Commit transitions reserved → committed for the job's reservation, moves
+// each held amount from reserved to spent on its budget, stamps the job's
+// actual_cost_usd, and finalizes the cost event. A no-op when the reservation
+// is not in `reserved` (already committed/released/failed-preflight).
+func (l *Lifecycle) Commit(ctx context.Context, jobID string) error {
+	return l.finalize(ctx, jobID, statusCommitted)
+}
+
+// Release transitions reserved → released for the job's reservation and
+// returns each held amount to its budget's reserved pool (spent untouched).
+// A no-op when the reservation is not in `reserved`.
+func (l *Lifecycle) Release(ctx context.Context, jobID string) error {
+	return l.finalize(ctx, jobID, statusReleased)
+}
+
+func (l *Lifecycle) finalize(ctx context.Context, jobID, target string) error {
+	tx, err := l.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+	q := dbgen.New(tx)
+
+	var (
+		reservationID string
+		estimated     pgtype.Numeric
+		tenantID      string
+	)
+	noop := false
+	switch target {
+	case statusCommitted:
+		row, err := q.CommitReservationForJob(ctx, jobID)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			noop = true // not reserved → idempotent no-op
+		case err != nil:
+			return err
+		default:
+			reservationID, estimated, tenantID = row.ID, row.EstimatedAmount, row.TenantID
+		}
+	case statusReleased:
+		row, err := q.ReleaseReservationForJob(ctx, jobID)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			noop = true
+		case err != nil:
+			return err
+		default:
+			reservationID, estimated, tenantID = row.ID, row.EstimatedAmount, row.TenantID
+		}
+	default:
+		return errors.New("cost: invalid finalize target " + target)
+	}
+
+	if noop {
+		if err := tx.Commit(ctx); err != nil {
+			return err
+		}
+		committed = true
+		return nil
+	}
+
+	holds, err := q.ListReservedBudgetHolds(ctx, reservationID)
+	if err != nil {
+		return err
+	}
+	for _, h := range holds {
+		if target == statusCommitted {
+			if err := q.CommitBudgetHold(ctx, dbgen.CommitBudgetHoldParams{Amount: h.ReservedAmount, ID: h.CostBudgetID}); err != nil {
+				return err
+			}
+		} else {
+			if err := q.ReleaseBudgetHold(ctx, dbgen.ReleaseBudgetHoldParams{Amount: h.ReservedAmount, ID: h.CostBudgetID}); err != nil {
+				return err
+			}
+		}
+		if err := q.MarkBudgetHoldStatus(ctx, dbgen.MarkBudgetHoldStatusParams{Status: target, ID: h.ID}); err != nil {
+			return err
+		}
+	}
+
+	// Cost-event + job actual: on commit, actual = estimate; on release, none.
+	if target == statusCommitted {
+		if err := q.SetGenerationJobActualCost(ctx, dbgen.SetGenerationJobActualCostParams{ActualCostUsd: estimated, ID: jobID}); err != nil {
+			return err
+		}
+		if err := l.finalizeCostEvent(ctx, q, jobID, tenantID, estimated, estimated, costEventSucceeded); err != nil {
+			return err
+		}
+	} else {
+		if err := l.finalizeCostEvent(ctx, q, jobID, tenantID, estimated, nullNumeric(), costEventFailed); err != nil {
+			return err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+// finalizeCostEvent stamps estimated/actual/status onto the job's latest cost
+// event (the one the worker wrote for the terminal attempt). If none exists it
+// writes a fallback row so the cost ledger is never silently missing.
+func (l *Lifecycle) finalizeCostEvent(ctx context.Context, q *dbgen.Queries, jobID, tenantID string, estimated, actual pgtype.Numeric, status string) error {
+	job := jobID
+	n, err := q.UpdateLatestJobCostEvent(ctx, dbgen.UpdateLatestJobCostEventParams{
+		EstimatedCostUsd: estimated,
+		ActualCostUsd:    actual,
+		Status:           status,
+		JobID:            &job,
+	})
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	return q.InsertFinalizerCostEvent(ctx, dbgen.InsertFinalizerCostEventParams{
+		ID:               ids.NewCostEventID(),
+		TenantID:         tenantID,
+		JobID:            &job,
+		Operation:        operationTextToImage,
+		EstimatedCostUsd: estimated,
+		ActualCostUsd:    actual,
+		Status:           status,
+	})
 }

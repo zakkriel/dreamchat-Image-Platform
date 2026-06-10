@@ -12,6 +12,7 @@ import (
 
 	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/config"
+	"github.com/zakkriel/drchat-image-platform/internal/cost"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
 	"github.com/zakkriel/drchat-image-platform/internal/providers"
 	"github.com/zakkriel/drchat-image-platform/internal/providers/mock"
@@ -56,11 +57,12 @@ func main() {
 	provider := buildProvider(cfg)
 
 	worker := &jobs.Worker{
-		Jobs:     jobs.NewRepository(pool),
-		Assets:   assets.NewRepository(pool),
-		Storage:  store,
-		Provider: provider,
-		Logger:   logger,
+		Jobs:      jobs.NewRepository(pool),
+		Assets:    assets.NewRepository(pool),
+		Storage:   store,
+		Provider:  provider,
+		Logger:    logger,
+		Finalizer: cost.NewLifecycle(pool, logger),
 	}
 
 	redisOpt := asynq.RedisClientOpt{
