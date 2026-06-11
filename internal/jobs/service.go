@@ -206,8 +206,26 @@ type CreatePackReuseParams struct {
 	RequestHash    string
 }
 
+// ReplayLookup is the idempotency replay pre-check input. The handler runs this
+// BEFORE route resolution and cost reservation (Phase 7A lifecycle): a replay
+// returns the existing job without re-resolving a route, re-reserving cost, or
+// re-enqueuing.
+type ReplayLookup struct {
+	TokenID     string
+	Key         string
+	Endpoint    string
+	RequestHash string
+}
+
 // Creator is the handler-facing interface. Tests stub this.
 type Creator interface {
+	// LookupReplay reports whether the (token, key) idempotency record already
+	// exists. found=false means it is a new request and the handler proceeds to
+	// route resolution; found=true returns the existing job's CreateResult (with
+	// the same 422 sentinel re-raised for a previously-denied job, or
+	// ErrIdempotencyConflict on an endpoint/body mismatch). It never resolves a
+	// route, reserves cost, or enqueues.
+	LookupReplay(ctx context.Context, in ReplayLookup) (result CreateResult, found bool, err error)
 	CreateAndEnqueue(ctx context.Context, params CreateAndEnqueueParams) (CreateResult, error)
 	// CreateCompletedCacheHitJob lands an already-completed job for an exact
 	// artifact reuse (Phase 6A2): no cost reservation, no provider attempt, no
@@ -677,6 +695,27 @@ func failureError(reason string) error {
 	}
 }
 
+// LookupReplay is the handler-facing idempotency pre-check (Phase 7A): it runs
+// before route resolution so a replay never re-resolves a route or re-reserves
+// cost. It returns found=false when no record exists for (token, key) — a new
+// request — and otherwise the existing job's result (or a sentinel: a 422 for a
+// previously-denied job, ErrIdempotencyConflict on endpoint/body mismatch).
+func (s *Service) LookupReplay(ctx context.Context, in ReplayLookup) (CreateResult, bool, error) {
+	q := dbgen.New(s.pool)
+	existing, err := q.GetIdempotencyKey(ctx, dbgen.GetIdempotencyKeyParams{
+		TokenID: in.TokenID,
+		Key:     in.Key,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return CreateResult{}, false, nil
+	}
+	if err != nil {
+		return CreateResult{}, false, fmt.Errorf("load idempotency record: %w", err)
+	}
+	result, sentinel := s.replayResult(ctx, q, existing, in.Endpoint, in.RequestHash)
+	return result, true, sentinel
+}
+
 func (s *Service) replayExisting(ctx context.Context, params CreateAndEnqueueParams) (CreateResult, error) {
 	q := dbgen.New(s.pool)
 	existing, err := q.GetIdempotencyKey(ctx, dbgen.GetIdempotencyKeyParams{
@@ -686,10 +725,18 @@ func (s *Service) replayExisting(ctx context.Context, params CreateAndEnqueuePar
 	if err != nil {
 		return CreateResult{}, fmt.Errorf("load idempotency record: %w", err)
 	}
-	if existing.Endpoint != params.Endpoint {
+	return s.replayResult(ctx, q, existing, params.Endpoint, params.RequestHash)
+}
+
+// replayResult validates an idempotency record against the request's endpoint +
+// body hash and loads the referenced job into a CreateResult. Shared by the
+// in-transaction race path (replayExisting) and the upfront pre-check
+// (LookupReplay) so both report identical replay semantics.
+func (s *Service) replayResult(ctx context.Context, q *dbgen.Queries, existing dbgen.IdempotencyKey, endpoint, requestHash string) (CreateResult, error) {
+	if existing.Endpoint != endpoint {
 		return CreateResult{}, ErrIdempotencyConflict
 	}
-	if existing.RequestHash != params.RequestHash {
+	if existing.RequestHash != requestHash {
 		return CreateResult{}, ErrIdempotencyConflict
 	}
 	if existing.GenerationJobID == nil {

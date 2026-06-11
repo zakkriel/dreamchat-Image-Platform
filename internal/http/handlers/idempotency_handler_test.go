@@ -36,8 +36,11 @@ func TestIdempotencySameKeySameBodyReturnsSameJob(t *testing.T) {
 	if first.Body.String() != second.Body.String() {
 		t.Fatalf("expected replay body to match original\nfirst=%s\nsecond=%s", first.Body.String(), second.Body.String())
 	}
-	if len(creator.calls) != 2 {
-		t.Fatalf("expected two service calls (one fresh + one replay), got %d", len(creator.calls))
+	// Phase 7A: the replay is served by the LookupReplay pre-check BEFORE route
+	// resolution, so it never reaches CreateAndEnqueue a second time. Only the
+	// fresh request creates.
+	if len(creator.calls) != 1 {
+		t.Fatalf("expected one fresh create call (replay short-circuits before create), got %d", len(creator.calls))
 	}
 }
 

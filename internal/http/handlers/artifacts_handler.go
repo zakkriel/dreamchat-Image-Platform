@@ -11,11 +11,11 @@ import (
 
 	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/auth"
-	"github.com/zakkriel/drchat-image-platform/internal/config"
 	"github.com/zakkriel/drchat-image-platform/internal/http/apigen"
 	"github.com/zakkriel/drchat-image-platform/internal/httperr"
 	"github.com/zakkriel/drchat-image-platform/internal/idempotency"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
+	"github.com/zakkriel/drchat-image-platform/internal/providers/routing"
 	"github.com/zakkriel/drchat-image-platform/internal/styles"
 )
 
@@ -36,40 +36,33 @@ type ArtifactReuseLookup interface {
 type ArtifactsHandler struct {
 	Service  jobs.Creator
 	Styles   styles.Repository
-	Provider config.Provider
+	Resolver RouteResolver
+	// ProviderPreference is the per-process IMAGE_PROVIDER preference fed to the
+	// resolver's tie-break; empty means "no preference".
+	ProviderPreference string
 	// Reuse is the Phase 6A2 exact-reuse lookup. When nil, the handler skips
 	// retrieval and always generates (the pre-6A2 behavior).
 	Reuse ArtifactReuseLookup
 }
 
-func NewArtifactsHandler(service jobs.Creator, stylesRepo styles.Repository, provider config.Provider, reuse ArtifactReuseLookup) *ArtifactsHandler {
+func NewArtifactsHandler(service jobs.Creator, stylesRepo styles.Repository, resolver RouteResolver, providerPreference string, reuse ArtifactReuseLookup) *ArtifactsHandler {
 	return &ArtifactsHandler{
-		Service:  service,
-		Styles:   stylesRepo,
-		Provider: provider,
-		Reuse:    reuse,
+		Service:            service,
+		Styles:             stylesRepo,
+		Resolver:           resolver,
+		ProviderPreference: providerPreference,
+		Reuse:              reuse,
 	}
 }
 
-// Phase 4 has no provider router yet, so artifact generation resolves to the
-// seeded mock route (migrations/0002_seed_mock_provider.up.sql) for pricing.
-// A single artifact request is one text_to_image image.
+// A single artifact request is one text_to_image image; the provider/model are
+// resolved per request by the route resolver (Phase 7A), no longer hardcoded.
 const (
-	artifactProviderID    = "mock"
-	artifactModelID       = "pm_mock_v1"
 	artifactOperationType = "text_to_image"
 	artifactUnits         = 1
 )
 
 func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
-	// Provider gate runs first. Per the Phase 3 corrections, this must
-	// reject before any idempotency row, job row, or queue task is created
-	// or attempted.
-	if h.Provider != config.ProviderMock {
-		httperr.Write(w, r, http.StatusServiceUnavailable, httperr.CodeProviderUnavailable, "configured image provider is not available in this phase")
-		return
-	}
-
 	principal := auth.PrincipalFromContext(r.Context())
 	if principal == nil {
 		httperr.Write(w, r, http.StatusInternalServerError, httperr.CodeInternalError, "missing principal")
@@ -179,6 +172,13 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 	endpoint := r.Method + " " + r.URL.Path
 	requestHash := jobs.HashRequestBody(raw)
 
+	// Idempotency replay check FIRST (Phase 7A lifecycle): a replay returns the
+	// existing job without re-running reuse, route resolution, cost reservation,
+	// or enqueue.
+	if idemKey != "" && handleReplay(w, r, h.Service, principal.TokenID, idemKey, endpoint, requestHash) {
+		return
+	}
+
 	// Phase 6A2 retrieval-before-generation: before reserving cost or enqueuing
 	// provider work, look for an existing ready artifact with this exact render
 	// hash. Exact reuse is allowed for EVERY fallback_policy (including none) —
@@ -206,6 +206,24 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Resolve the provider route ONCE, before reserving cost. The resolved
+	// model becomes the pricing key and is persisted on the job for the worker.
+	latencyTier := ""
+	if req.LatencyTier != nil {
+		latencyTier = string(*req.LatencyTier)
+	}
+	resolved, err := h.Resolver.Resolve(r.Context(), routing.ResolveRequest{
+		TenantID:           principal.TenantID,
+		OperationType:      artifactOperationType,
+		QualityTier:        qualityTier,
+		LatencyTier:        latencyTier,
+		ProviderPreference: h.ProviderPreference,
+	})
+	if err != nil {
+		writeRouteError(w, r, err)
+		return
+	}
+
 	params := jobs.CreateAndEnqueueParams{
 		TenantID:           principal.TenantID,
 		RequestedByTokenID: principal.TokenID,
@@ -214,11 +232,9 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		InputPayload:       payload,
 		FallbackPolicy:     fallback,
 		CacheResult:        "generated_required",
-		ProviderID:         artifactProviderID,
-		ModelID:            artifactModelID,
-		OperationType:      artifactOperationType,
 		Units:              artifactUnits,
 	}
+	applyResolvedRoute(&params, payload, resolved)
 	if idemKey != "" {
 		params.IdempotencyKey = idemKey
 		params.Endpoint = endpoint
@@ -231,27 +247,7 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	status := result.Status
-	if status == "" {
-		status = "queued"
-	}
-	resp := apigen.GenerationJobAccepted{
-		JobId:  result.JobID,
-		Status: apigen.GenerationJobAcceptedStatus(status),
-	}
-	if result.EstimatedCostUSD != "" {
-		est := result.EstimatedCostUSD
-		resp.EstimatedCostUsd = &est
-	}
-	if result.Currency != "" {
-		cur := result.Currency
-		resp.Currency = &cur
-	}
-	if result.CostReservationID != "" {
-		rid := result.CostReservationID
-		resp.CostReservationId = &rid
-	}
-	writeJSON(w, http.StatusAccepted, resp)
+	writeJobAccepted(w, result)
 }
 
 // respondCacheHit lands an already-completed cache-hit job (no cost

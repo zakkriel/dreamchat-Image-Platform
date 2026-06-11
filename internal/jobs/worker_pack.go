@@ -91,6 +91,21 @@ func (w *Worker) ProcessPack(ctx context.Context, jobID string) error {
 		return nil
 	}
 
+	// Phase 7A: select the provider adapter from the resolved route persisted on
+	// the job. The worker never re-resolves; a missing route/adapter fails the
+	// pack terminally (an asynq retry could not help).
+	resolved, rerr := resolvedRouteFromPayload(job.InputPayload)
+	if rerr != nil {
+		w.log().Error("worker: invalid resolved route (pack)", "job_id", jobID, "error", rerr)
+		return w.failPackTerminal(ctx, job, plan.packID, errorCodeInvalidResolvedRoute, rerr.Error())
+	}
+	provider, ok := w.Providers.Get(resolved.providerID)
+	if !ok {
+		msg := fmt.Sprintf("no adapter registered for resolved provider %q", resolved.providerID)
+		w.log().Error("worker: provider adapter missing (pack)", "job_id", jobID, "provider_id", resolved.providerID)
+		return w.failPackTerminal(ctx, job, plan.packID, errorCodeProviderUnavailable, msg)
+	}
+
 	if _, err := w.Jobs.MarkRunning(ctx, job.ID, job.TenantID); err != nil {
 		w.log().Error("worker: mark pack running", "job_id", jobID, "error", err)
 		return err
@@ -118,7 +133,7 @@ func (w *Worker) ProcessPack(ctx context.Context, jobID string) error {
 	}
 
 	start := time.Now()
-	providerID := w.Provider.Capabilities().ProviderID
+	providerID := resolved.providerID
 	var succeeded []string
 	// deliveredKeys is the ordered set of required roles backed by a ready item
 	// at the end of this run (reused + retry-skipped + freshly generated). It
@@ -132,7 +147,7 @@ func (w *Worker) ProcessPack(ctx context.Context, jobID string) error {
 			deliveredKeys = append(deliveredKeys, variantKey)
 			continue
 		}
-		assetID, itemErr := w.generatePackItem(ctx, job, plan, providerID, variantKey, i)
+		assetID, itemErr := w.generatePackItem(ctx, job, plan, provider, resolved, variantKey, i)
 		if itemErr != nil {
 			// Per-item failure (provider/storage/persistence): record it and
 			// continue with the next variant — never abort the batch.
@@ -230,11 +245,11 @@ func (w *Worker) ProcessPack(ctx context.Context, jobID string) error {
 // generatePackItem runs one variant end to end: provider attempt row,
 // provider call, image upload, visual_assets insert, asset_pack_items
 // insert. Returns the new asset id, or the per-item error.
-func (w *Worker) generatePackItem(ctx context.Context, job Job, plan packPlan, providerID, variantKey string, index int) (string, error) {
+func (w *Worker) generatePackItem(ctx context.Context, job Job, plan packPlan, provider providers.ImageProvider, resolved resolvedRoute, variantKey string, index int) (string, error) {
 	attempt, err := w.Jobs.InsertProviderAttempt(ctx, ProviderAttemptInsertParams{
 		ID:              ids.NewProviderAttemptID(),
 		GenerationJobID: job.ID,
-		ProviderID:      providerID,
+		ProviderID:      resolved.providerID,
 		AttemptNumber:   int32(index + 1),
 	})
 	if err != nil {
@@ -246,7 +261,7 @@ func (w *Worker) generatePackItem(ctx context.Context, job Job, plan packPlan, p
 	prompt := plan.displayName + " — " + variantKey
 
 	start := time.Now()
-	result, providerErr := w.Provider.Generate(ctx, providers.ProviderGenerateRequest{
+	result, providerErr := provider.Generate(ctx, providers.ProviderGenerateRequest{
 		JobID:     job.ID,
 		Operation: providers.OperationTextToImage,
 		Prompt:    prompt,
@@ -276,7 +291,9 @@ func (w *Worker) generatePackItem(ctx context.Context, job Job, plan packPlan, p
 	// item insert can't strand an orphan asset the retry path (which detects
 	// delivery via asset_pack_items) would never see — and therefore can't
 	// produce duplicate assets for the same pack variant.
-	modelID := mockProviderModelID
+	providerID := resolved.providerID
+	modelID := resolved.modelID
+	routeID := resolved.routeID
 	jobIDRef := job.ID
 	identityID := plan.visualIdentityID
 	// Phase 5B: classify the variant_key deterministically and stamp the
@@ -299,6 +316,7 @@ func (w *Worker) generatePackItem(ctx context.Context, job Job, plan packPlan, p
 		ThumbnailUrl:        strPtr(urls.thumb),
 		ProviderID:          &providerID,
 		ModelID:             &modelID,
+		ProviderRouteID:     strPtr(routeID),
 		PromptHash:          strPtr(result.PromptHash),
 		Seed:                strPtr(result.Seed),
 		GenerationJobID:     &jobIDRef,
@@ -340,6 +358,24 @@ func (w *Worker) generatePackItem(ctx context.Context, job Job, plan packPlan, p
 		w.log().Warn("worker: mark pack attempt succeeded", "attempt_id", attempt.ID, "error", err)
 	}
 	return assetID, nil
+}
+
+// failPackTerminal marks a pack job and its pack row permanently failed (not
+// retryable) and releases the cost reservation. Used for unrunnable pack jobs —
+// a missing provider adapter or a payload missing its resolved route.
+func (w *Worker) failPackTerminal(ctx context.Context, job Job, packID, code, msg string) error {
+	if err := w.Jobs.UpdateAssetPackStatus(ctx, packID, packStatusFailed); err != nil {
+		return err
+	}
+	if _, err := w.Jobs.MarkFailed(ctx, job.ID, job.TenantID, code, msg, false); err != nil {
+		return err
+	}
+	if w.Finalizer != nil {
+		if err := w.Finalizer.Release(ctx, job.ID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (w *Worker) markPackAttemptFailed(ctx context.Context, attemptID string, callErr error, latencyMs int32) {

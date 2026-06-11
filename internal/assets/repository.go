@@ -68,6 +68,7 @@ type InsertParams struct {
 	ThumbnailUrl        *string
 	ProviderID          *string
 	ModelID             *string
+	ProviderRouteID     *string
 	PromptHash          *string
 	Seed                *string
 	GenerationJobID     *string
@@ -180,6 +181,7 @@ func InsertWithQueries(ctx context.Context, q *dbgen.Queries, params InsertParam
 		ThumbnailUrl:        params.ThumbnailUrl,
 		ProviderID:          params.ProviderID,
 		ModelID:             params.ModelID,
+		ProviderRouteID:     params.ProviderRouteID,
 		PromptHash:          params.PromptHash,
 		Seed:                params.Seed,
 		GenerationJobID:     params.GenerationJobID,

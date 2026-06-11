@@ -9,12 +9,12 @@ import (
 
 	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/auth"
-	"github.com/zakkriel/drchat-image-platform/internal/config"
 	"github.com/zakkriel/drchat-image-platform/internal/http/apigen"
 	"github.com/zakkriel/drchat-image-platform/internal/httperr"
 	"github.com/zakkriel/drchat-image-platform/internal/idempotency"
 	"github.com/zakkriel/drchat-image-platform/internal/identities"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
+	"github.com/zakkriel/drchat-image-platform/internal/providers/routing"
 	"github.com/zakkriel/drchat-image-platform/internal/styles"
 )
 
@@ -24,22 +24,24 @@ import (
 // retrieval-before-generation (Phase 6A3), and response shaping; pack fan-out
 // itself is the worker's job (ADR-008).
 type PacksHandler struct {
-	Service    jobs.Creator
-	Styles     styles.Repository
-	Identities identities.Repository
-	Provider   config.Provider
+	Service            jobs.Creator
+	Styles             styles.Repository
+	Identities         identities.Repository
+	Resolver           RouteResolver
+	ProviderPreference string
 	// Retriever is the Phase 6A3 per-role reuse decision layer (implemented by
 	// *assets.Retriever). When nil the handler skips reuse and prices/generates
 	// the whole pack (the pre-6A3 behavior).
 	Retriever RetrievalService
 }
 
-func NewPacksHandler(service jobs.Creator, stylesRepo styles.Repository, identitiesRepo identities.Repository, provider config.Provider) *PacksHandler {
+func NewPacksHandler(service jobs.Creator, stylesRepo styles.Repository, identitiesRepo identities.Repository, resolver RouteResolver, providerPreference string) *PacksHandler {
 	return &PacksHandler{
-		Service:    service,
-		Styles:     stylesRepo,
-		Identities: identitiesRepo,
-		Provider:   provider,
+		Service:            service,
+		Styles:             stylesRepo,
+		Identities:         identitiesRepo,
+		Resolver:           resolver,
+		ProviderPreference: providerPreference,
 	}
 }
 
@@ -184,13 +186,6 @@ func (h *PacksHandler) GeneratePlacePack(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *PacksHandler) generate(w http.ResponseWriter, r *http.Request, kind packKind) {
-	// Provider gate first, before any row or queue task exists (same Phase 3
-	// rule the artifacts handler follows).
-	if h.Provider != config.ProviderMock {
-		httperr.Write(w, r, http.StatusServiceUnavailable, httperr.CodeProviderUnavailable, "configured image provider is not available in this phase")
-		return
-	}
-
 	principal := auth.PrincipalFromContext(r.Context())
 	if principal == nil {
 		httperr.Write(w, r, http.StatusInternalServerError, httperr.CodeInternalError, "missing principal")
@@ -314,6 +309,17 @@ func (h *PacksHandler) generate(w http.ResponseWriter, r *http.Request, kind pac
 		payload["force_regenerate"] = true
 	}
 
+	// Idempotency context is shared by the reuse and the generate paths so a
+	// same-key replay returns the same pack job regardless of which path created
+	// it. The replay check runs FIRST (Phase 7A lifecycle): a replay short-
+	// circuits before reuse planning, route resolution, and cost reservation.
+	idemKey := r.Header.Get(idempotency.HeaderKey)
+	endpoint := r.Method + " " + r.URL.Path
+	requestHash := jobs.HashRequestBody(raw)
+	if idemKey != "" && handleReplay(w, r, h.Service, principal.TokenID, idemKey, endpoint, requestHash) {
+		return
+	}
+
 	// Phase 6A3 retrieval-before-generation: resolve every required role through
 	// the retrieval layer (exact → compatible → preview → generated_required,
 	// gated by fallback_policy) before reserving cost. Roles a reusable asset
@@ -345,14 +351,9 @@ func (h *PacksHandler) generate(w http.ResponseWriter, r *http.Request, kind pac
 		}
 	}
 
-	// Idempotency context is shared by the reuse and the generate paths so a
-	// same-key replay returns the same pack job regardless of which path created it.
-	idemKey := r.Header.Get(idempotency.HeaderKey)
-	endpoint := r.Method + " " + r.URL.Path
-	requestHash := jobs.HashRequestBody(raw)
-
 	// All-hits: every required role was satisfied by reuse. Complete the pack
-	// synchronously — no reservation, no provider attempt, no enqueue.
+	// synchronously — no reservation, no provider attempt, no enqueue (and so no
+	// route to resolve).
 	if h.Retriever != nil && len(missing) == 0 {
 		h.respondPackAllHits(w, r, packAllHitsInput{
 			principal:        principal,
@@ -372,6 +373,24 @@ func (h *PacksHandler) generate(w http.ResponseWriter, r *http.Request, kind pac
 		return
 	}
 
+	// Resolve the provider route ONCE, before reserving cost. The resolved model
+	// prices the missing roles and is persisted on the job for the worker.
+	latencyTier := ""
+	if req.LatencyTier != nil {
+		latencyTier = string(*req.LatencyTier)
+	}
+	resolved, err := h.Resolver.Resolve(r.Context(), routing.ResolveRequest{
+		TenantID:           principal.TenantID,
+		OperationType:      artifactOperationType,
+		QualityTier:        effectiveQuality,
+		LatencyTier:        latencyTier,
+		ProviderPreference: h.ProviderPreference,
+	})
+	if err != nil {
+		writeRouteError(w, r, err)
+		return
+	}
+
 	params := jobs.CreateAndEnqueueParams{
 		TenantID:           principal.TenantID,
 		RequestedByTokenID: principal.TokenID,
@@ -388,13 +407,11 @@ func (h *PacksHandler) generate(w http.ResponseWriter, r *http.Request, kind pac
 			MissingRoles:     missing,
 			ReusedItems:      reuseItems,
 		},
-		ProviderID:    artifactProviderID,
-		ModelID:       artifactModelID,
-		OperationType: artifactOperationType,
 		// Misses-only pricing: only the roles with no reusable asset are
 		// generated, so only they are priced. Zero misses never reaches here.
 		Units: int32(len(missing)),
 	}
+	applyResolvedRoute(&params, payload, resolved)
 	if idemKey != "" {
 		params.IdempotencyKey = idemKey
 		params.Endpoint = endpoint

@@ -14,6 +14,7 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/config"
 	"github.com/zakkriel/drchat-image-platform/internal/identities"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
+	"github.com/zakkriel/drchat-image-platform/internal/providers/routing"
 )
 
 // ---------------------------------------------------------------------------
@@ -234,7 +235,15 @@ func seededPackIdentities() *stubIdentitiesRepo {
 }
 
 func newPacksRouter(creator jobs.Creator, identitiesRepo *stubIdentitiesRepo, provider config.Provider) chi.Router {
-	h := NewPacksHandler(creator, seededStyles(), identitiesRepo, provider)
+	h := NewPacksHandler(creator, seededStyles(), identitiesRepo, okResolver(), string(provider))
+	r := chi.NewRouter()
+	r.Post("/v1/characters/{character_id}/generate-pack", h.GenerateCharacterPack)
+	r.Post("/v1/places/{place_id}/generate-pack", h.GeneratePlacePack)
+	return r
+}
+
+func newPacksRouterWithResolver(creator jobs.Creator, identitiesRepo *stubIdentitiesRepo, resolver RouteResolver) chi.Router {
+	h := NewPacksHandler(creator, seededStyles(), identitiesRepo, resolver, "mock")
 	r := chi.NewRouter()
 	r.Post("/v1/characters/{character_id}/generate-pack", h.GenerateCharacterPack)
 	r.Post("/v1/places/{place_id}/generate-pack", h.GeneratePlacePack)
@@ -363,7 +372,7 @@ func TestPackBodyTenantIDReturns400(t *testing.T) {
 
 func TestPackUnknownStyleReturns422(t *testing.T) {
 	creator := newStubCreator()
-	h := NewPacksHandler(creator, newStubStylesRepo(), seededPackIdentities(), config.ProviderMock)
+	h := NewPacksHandler(creator, newStubStylesRepo(), seededPackIdentities(), okResolver(), "mock")
 	r := chi.NewRouter()
 	r.Post("/v1/characters/{character_id}/generate-pack", h.GenerateCharacterPack)
 	body := map[string]any{"world_id": packWorldID, "style_profile_id": "sty_ghost"}
@@ -397,15 +406,17 @@ func TestPackWrongWorldIdentityReturns422(t *testing.T) {
 	assertError(t, rec, http.StatusUnprocessableEntity, "invalid_request")
 }
 
-func TestPackBFLProviderReturns503BeforeAnyWrites(t *testing.T) {
+// Phase 7A: a pack request that resolves no provider route fails 422 no_route
+// before any cost reservation / job create.
+func TestPackNoRouteReturns422BeforeAnyWrites(t *testing.T) {
 	creator := newStubCreator()
-	router := newPacksRouter(creator, seededPackIdentities(), config.ProviderBFL)
+	router := newPacksRouterWithResolver(creator, seededPackIdentities(), &fakeResolver{err: routing.ErrNoRoute})
 	body := map[string]any{"world_id": packWorldID, "style_profile_id": "sty_ok"}
 	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/places/place_dock/generate-pack",
 		tenantA, []string{"images:write"}, body, nil)
-	assertError(t, rec, http.StatusServiceUnavailable, "provider_unavailable")
+	assertError(t, rec, http.StatusUnprocessableEntity, "no_route")
 	if len(creator.calls) != 0 {
-		t.Fatalf("expected zero service calls when provider unavailable, got %d", len(creator.calls))
+		t.Fatalf("expected zero service calls when no route resolves, got %d", len(creator.calls))
 	}
 }
 
@@ -538,7 +549,7 @@ func readyReuseAsset(id, variantKey string) assets.VisualAsset {
 }
 
 func newPacksRouterWithRetriever(creator jobs.Creator, identitiesRepo *stubIdentitiesRepo, src assets.CandidateSource) chi.Router {
-	h := NewPacksHandler(creator, seededStyles(), identitiesRepo, config.ProviderMock).
+	h := NewPacksHandler(creator, seededStyles(), identitiesRepo, okResolver(), "mock").
 		WithRetriever(assets.NewRetriever(src))
 	r := chi.NewRouter()
 	r.Post("/v1/characters/{character_id}/generate-pack", h.GenerateCharacterPack)
@@ -854,6 +865,10 @@ func TestPackFallbackPolicyGatesReuse(t *testing.T) {
 type estimatingPackCreator struct {
 	got      jobs.CreateAndEnqueueParams
 	gotReuse jobs.CreatePackReuseParams
+}
+
+func (c *estimatingPackCreator) LookupReplay(_ context.Context, _ jobs.ReplayLookup) (jobs.CreateResult, bool, error) {
+	return jobs.CreateResult{}, false, nil
 }
 
 func (c *estimatingPackCreator) CreateAndEnqueue(_ context.Context, params jobs.CreateAndEnqueueParams) (jobs.CreateResult, error) {

@@ -13,6 +13,7 @@ import (
 	"bytes"
 	"fmt"
 	"image"
+	_ "image/jpeg" // register the JPEG decoder so real-provider JPEG output decodes
 	"image/png"
 	"math"
 
@@ -37,13 +38,14 @@ type Tiers struct {
 	Thumb []byte
 }
 
-// EncodeTiers decodes a provider PNG and returns the three resolution tiers.
+// EncodeTiers decodes a provider image (PNG or JPEG — image.Decode auto-detects
+// the format) and returns the three resolution tiers, always re-encoded as PNG.
 // final ≥ preview ≥ thumbnail by construction; the dimensions are only
 // guaranteed distinct when the source short edge exceeds the tier targets.
 func EncodeTiers(src []byte) (Tiers, error) {
-	img, err := png.Decode(bytes.NewReader(src))
+	img, _, err := image.Decode(bytes.NewReader(src))
 	if err != nil {
-		return Tiers{}, fmt.Errorf("imaging: decode source png: %w", err)
+		return Tiers{}, fmt.Errorf("imaging: decode source image: %w", err)
 	}
 
 	final, err := encodePNG(img)

@@ -15,10 +15,10 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/auth"
-	"github.com/zakkriel/drchat-image-platform/internal/config"
 	"github.com/zakkriel/drchat-image-platform/internal/cost"
 	"github.com/zakkriel/drchat-image-platform/internal/http/handlers"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
@@ -30,12 +30,12 @@ import (
 // mountDeliveryRouter wires the Phase 6B read surface (asset read, job-assets
 // read, style preview) plus the artifact generate path against the real DB +
 // MinIO-backed storage.
-func mountDeliveryRouter(svc jobs.Creator, stylesRepo styles.Repository, jobsRepo jobs.Repository, assetsRepo assets.Repository, store handlers.AssetURLSigner) *chi.Mux {
-	artifacts := handlers.NewArtifactsHandler(svc, stylesRepo, config.ProviderMock, assetsRepo)
+func mountDeliveryRouter(pool *pgxpool.Pool, svc jobs.Creator, stylesRepo styles.Repository, jobsRepo jobs.Repository, assetsRepo assets.Repository, store handlers.AssetURLSigner) *chi.Mux {
+	artifacts := handlers.NewArtifactsHandler(svc, stylesRepo, itResolver(pool), "mock", assetsRepo)
 	assetsH := handlers.NewAssetsHandler(assetsRepo, assets.NewRetriever(assetsRepo)).
 		WithDelivery(store, 15*time.Minute).
 		WithJobs(jobsRepo)
-	preview := handlers.NewStylePreviewHandler(svc, stylesRepo, config.ProviderMock)
+	preview := handlers.NewStylePreviewHandler(svc, stylesRepo, itResolver(pool), "mock")
 
 	r := chi.NewRouter()
 	r.Post("/v1/artifacts/{artifact_id}/generate", artifacts.Generate)
@@ -105,7 +105,7 @@ func TestEndToEndDeliveryPresignedTiers(t *testing.T) {
 	assetsRepo := assets.NewRepository(pool)
 	stylesRepo := styles.NewRepository(pool)
 	svc := jobs.NewService(pool, newRecordingEnqueuer(), cost.NewService(nil))
-	r := mountDeliveryRouter(svc, stylesRepo, jobsRepo, assetsRepo, store)
+	r := mountDeliveryRouter(pool, svc, stylesRepo, jobsRepo, assetsRepo, store)
 
 	rec := sendArtifactRequest(t, r, map[string]any{
 		"world_id":         "w1",
@@ -119,7 +119,7 @@ func TestEndToEndDeliveryPresignedTiers(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &acc)
 	jobID := acc["job_id"].(string)
 
-	worker := &jobs.Worker{Jobs: jobsRepo, Assets: assetsRepo, Storage: store, Provider: mock.New()}
+	worker := &jobs.Worker{Jobs: jobsRepo, Assets: assetsRepo, Storage: store, Providers: registryFor(mock.New())}
 	if err := worker.Process(context.Background(), jobID, 0); err != nil {
 		t.Fatalf("worker process: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestEndToEndStylePreviewDelivery(t *testing.T) {
 	assetsRepo := assets.NewRepository(pool)
 	stylesRepo := styles.NewRepository(pool)
 	svc := jobs.NewService(pool, newRecordingEnqueuer(), cost.NewService(nil))
-	r := mountDeliveryRouter(svc, stylesRepo, jobsRepo, assetsRepo, store)
+	r := mountDeliveryRouter(pool, svc, stylesRepo, jobsRepo, assetsRepo, store)
 
 	rec := deliveryReq(t, r, http.MethodPost, "/v1/styles/"+itStyleID+"/preview", []string{"images:write"}, map[string]any{"world_id": "w1"})
 	if rec.Code != http.StatusAccepted {
@@ -199,7 +199,7 @@ func TestEndToEndStylePreviewDelivery(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &acc)
 	jobID := acc["job_id"].(string)
 
-	worker := &jobs.Worker{Jobs: jobsRepo, Assets: assetsRepo, Storage: store, Provider: mock.New()}
+	worker := &jobs.Worker{Jobs: jobsRepo, Assets: assetsRepo, Storage: store, Providers: registryFor(mock.New())}
 	if err := worker.Process(context.Background(), jobID, 0); err != nil {
 		t.Fatalf("worker process preview: %v", err)
 	}

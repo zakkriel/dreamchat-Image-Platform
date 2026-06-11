@@ -151,7 +151,7 @@ INSERT INTO visual_assets (
     style_profile_id, style_profile_version,
     quality_tier, status, version,
     low_res_url, high_res_url, thumbnail_url,
-    provider_id, model_id, prompt_hash, seed,
+    provider_id, model_id, provider_route_id, prompt_hash, seed,
     generation_job_id, metadata, generated_at
 ) VALUES (
     $1, $2, $3, $4, $5, $6,
@@ -159,8 +159,8 @@ INSERT INTO visual_assets (
     $11, $12,
     $13, 'ready', sqlc.arg('version'),
     $14, $15, $16,
-    $17, $18, $19, $20,
-    $21, $22, now()
+    $17, $18, $19, $20, $21,
+    $22, $23, now()
 )
 RETURNING id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
           variant_family, version, state_version, style_profile_id,

@@ -16,7 +16,6 @@ import (
 
 	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/auth"
-	"github.com/zakkriel/drchat-image-platform/internal/config"
 	"github.com/zakkriel/drchat-image-platform/internal/cost"
 	"github.com/zakkriel/drchat-image-platform/internal/http/handlers"
 	"github.com/zakkriel/drchat-image-platform/internal/identities"
@@ -59,7 +58,7 @@ func seedPackIdentities(t *testing.T, pool *pgxpool.Pool) {
 func mountPackTestRouter(svc jobs.Creator, pool *pgxpool.Pool, jobsRepo jobs.Repository) *chi.Mux {
 	// Phase 6A3: wire the real per-role reuse decision layer so pack creation is
 	// retrieval-first against Postgres (the same wiring router.go uses).
-	packs := handlers.NewPacksHandler(svc, styles.NewRepository(pool), identities.NewRepository(pool), config.ProviderMock).
+	packs := handlers.NewPacksHandler(svc, styles.NewRepository(pool), identities.NewRepository(pool), itResolver(pool), "mock").
 		WithRetriever(assets.NewRetriever(assets.NewRepository(pool)))
 	jobsH := handlers.NewJobsHandler(jobsRepo)
 	r := chi.NewRouter()
@@ -95,7 +94,7 @@ func newPackTestWorker(pool *pgxpool.Pool, provider providers.ImageProvider) *jo
 		Jobs:      jobs.NewRepository(pool),
 		Assets:    assets.NewRepository(pool),
 		Storage:   memStorage{},
-		Provider:  provider,
+		Providers: registryFor(provider),
 		Finalizer: cost.NewLifecycle(pool, nil),
 	}
 }

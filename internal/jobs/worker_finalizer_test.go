@@ -91,7 +91,7 @@ func TestWorkerCompletedJobOnlyFinalizesNoRegeneration(t *testing.T) {
 	assetsRepo := &fakeAssetsRepo{}
 	provider := &countingProvider{}
 	fin := &fakeFinalizer{}
-	w := &Worker{Jobs: jobsRepo, Assets: assetsRepo, Storage: &fakeStorage{}, Provider: provider, Finalizer: fin}
+	w := &Worker{Jobs: jobsRepo, Assets: assetsRepo, Storage: &fakeStorage{}, Providers: testRegistry(provider), Finalizer: fin}
 
 	if err := w.Process(context.Background(), "job_done", 0); err != nil {
 		t.Fatalf("Process: %v", err)
@@ -113,7 +113,7 @@ func TestWorkerFailedJobOnlyReleasesNoRegeneration(t *testing.T) {
 	assetsRepo := &fakeAssetsRepo{}
 	provider := &countingProvider{}
 	fin := &fakeFinalizer{}
-	w := &Worker{Jobs: jobsRepo, Assets: assetsRepo, Storage: &fakeStorage{}, Provider: provider, Finalizer: fin}
+	w := &Worker{Jobs: jobsRepo, Assets: assetsRepo, Storage: &fakeStorage{}, Providers: testRegistry(provider), Finalizer: fin}
 
 	if err := w.Process(context.Background(), "job_gone", 0); err != nil {
 		t.Fatalf("Process: %v", err)
@@ -139,7 +139,7 @@ func TestWorkerRetryAfterCommitFailureDoesNotRegenerate(t *testing.T) {
 	assetsRepo := &fakeAssetsRepo{}
 	provider := &countingProvider{}
 	fin := &fakeFinalizer{failNextCommit: true}
-	w := &Worker{Jobs: jobsRepo, Assets: assetsRepo, Storage: &fakeStorage{}, Provider: provider, Finalizer: fin}
+	w := &Worker{Jobs: jobsRepo, Assets: assetsRepo, Storage: &fakeStorage{}, Providers: testRegistry(provider), Finalizer: fin}
 
 	// First attempt: generation succeeds, job marked completed, then Commit
 	// fails → Process returns an error (asynq will retry).
@@ -176,7 +176,7 @@ func TestWorkerCommitsReservationOnSuccess(t *testing.T) {
 	fin := &fakeFinalizer{}
 	w := &Worker{
 		Jobs: jobsRepo, Assets: &fakeAssetsRepo{}, Storage: &fakeStorage{},
-		Provider: mock.New(), Finalizer: fin,
+		Providers: testRegistry(mock.New()), Finalizer: fin,
 	}
 	if err := w.Process(context.Background(), "job_fin1", 0); err != nil {
 		t.Fatalf("Process: %v", err)
@@ -199,7 +199,7 @@ func TestWorkerReleasesReservationOnTerminalFailure(t *testing.T) {
 	fin := &fakeFinalizer{}
 	w := &Worker{
 		Jobs: jobsRepo, Assets: &fakeAssetsRepo{}, Storage: &fakeStorage{},
-		Provider: errorProvider{}, Finalizer: fin,
+		Providers: testRegistry(errorProvider{}), Finalizer: fin,
 	}
 	// Final attempt → terminal failure → release.
 	if err := w.Process(context.Background(), "job_fin2", int32(MaxAttempts-1)); err == nil {
@@ -223,7 +223,7 @@ func TestWorkerDoesNotReleaseOnEarlyFailure(t *testing.T) {
 	fin := &fakeFinalizer{}
 	w := &Worker{
 		Jobs: jobsRepo, Assets: &fakeAssetsRepo{}, Storage: &fakeStorage{},
-		Provider: errorProvider{}, Finalizer: fin,
+		Providers: testRegistry(errorProvider{}), Finalizer: fin,
 	}
 	// Early attempt → not terminal → no release (job stays for retry).
 	if err := w.Process(context.Background(), "job_fin3", 0); err == nil {

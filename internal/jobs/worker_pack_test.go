@@ -83,10 +83,10 @@ func seedPackJob(repo *fakeJobsRepo, jobID, packID, jobType string, variantKeys 
 
 func newPackWorker(repo *fakeJobsRepo, assetsRepo *fakeAssetsRepo, provider providers.ImageProvider, fin *fakeFinalizer) *Worker {
 	w := &Worker{
-		Jobs:     repo,
-		Assets:   assetsRepo,
-		Storage:  &fakeStorage{},
-		Provider: provider,
+		Jobs:      repo,
+		Assets:    assetsRepo,
+		Storage:   &fakeStorage{},
+		Providers: testRegistry(provider),
 	}
 	if fin != nil {
 		w.Finalizer = fin

@@ -32,6 +32,11 @@ type Deps struct {
 	JobsService    jobs.Creator
 	AdminCost      handlers.AdminCostService
 
+	// Resolver is the Phase 7A provider route resolver. The artifact, pack, and
+	// style-preview handlers resolve a route per request before reserving cost.
+	// Required to mount those generate endpoints.
+	Resolver handlers.RouteResolver
+
 	// Storage is the object-storage read side (Phase 6B). When set, asset and
 	// job-assets reads mint presigned per-tier download URLs; when nil those
 	// responses omit the URL fields (the pre-6B behavior).
@@ -145,9 +150,9 @@ func mountStyles(v1 chi.Router, deps Deps) {
 	v1.With(auth.RequireScopes("styles:write")).Post("/styles", h.Create)
 
 	// Phase 6B style preview: reserves + enqueues one sample image for a style.
-	// Requires the job service + a mock provider; nil-safe (skipped otherwise).
-	if deps.JobsService != nil {
-		preview := handlers.NewStylePreviewHandler(deps.JobsService, deps.StylesRepo, deps.Config.ImageProvider)
+	// Requires the job service + the route resolver; nil-safe (skipped otherwise).
+	if deps.JobsService != nil && deps.Resolver != nil {
+		preview := handlers.NewStylePreviewHandler(deps.JobsService, deps.StylesRepo, deps.Resolver, string(deps.Config.ImageProvider))
 		v1.With(auth.RequireScopes("images:write")).Post("/styles/{style_id}/preview", preview.GeneratePreview)
 	}
 }
@@ -186,7 +191,7 @@ func mountAssets(v1 chi.Router, deps Deps) {
 }
 
 func mountArtifacts(v1 chi.Router, deps Deps) {
-	if deps.JobsService == nil || deps.StylesRepo == nil {
+	if deps.JobsService == nil || deps.StylesRepo == nil || deps.Resolver == nil {
 		return
 	}
 	// deps.AssetsRepo is the Phase 6A2 exact-reuse lookup; nil-safe (the
@@ -195,7 +200,7 @@ func mountArtifacts(v1 chi.Router, deps Deps) {
 	if deps.AssetsRepo != nil {
 		reuse = deps.AssetsRepo
 	}
-	h := handlers.NewArtifactsHandler(deps.JobsService, deps.StylesRepo, deps.Config.ImageProvider, reuse)
+	h := handlers.NewArtifactsHandler(deps.JobsService, deps.StylesRepo, deps.Resolver, string(deps.Config.ImageProvider), reuse)
 	v1.With(auth.RequireScopes("images:write")).Post("/artifacts/{artifact_id}/generate", h.Generate)
 }
 
@@ -203,10 +208,10 @@ func mountArtifacts(v1 chi.Router, deps Deps) {
 // artifact generate path but create an asset_packs row and fan out per
 // variant in the worker (ADR-008).
 func mountPacks(v1 chi.Router, deps Deps) {
-	if deps.JobsService == nil || deps.StylesRepo == nil || deps.IdentitiesRepo == nil {
+	if deps.JobsService == nil || deps.StylesRepo == nil || deps.IdentitiesRepo == nil || deps.Resolver == nil {
 		return
 	}
-	h := handlers.NewPacksHandler(deps.JobsService, deps.StylesRepo, deps.IdentitiesRepo, deps.Config.ImageProvider)
+	h := handlers.NewPacksHandler(deps.JobsService, deps.StylesRepo, deps.IdentitiesRepo, deps.Resolver, string(deps.Config.ImageProvider))
 	// Phase 6A3: wire the per-role reuse decision layer so pack generation is
 	// retrieval-first (prices + generates only the missing roles). Nil-safe: the
 	// handler generates the whole pack when AssetsRepo is unwired.

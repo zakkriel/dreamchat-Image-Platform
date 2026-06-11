@@ -8,11 +8,19 @@ import (
 
 	"github.com/zakkriel/drchat-image-platform/internal/config"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
+	"github.com/zakkriel/drchat-image-platform/internal/providers/routing"
 	"github.com/zakkriel/drchat-image-platform/internal/styles"
 )
 
 func newStylePreviewRouter(creator jobs.Creator, stylesRepo styles.Repository, provider config.Provider) chi.Router {
-	h := NewStylePreviewHandler(creator, stylesRepo, provider)
+	h := NewStylePreviewHandler(creator, stylesRepo, okResolver(), string(provider))
+	r := chi.NewRouter()
+	r.Post("/v1/styles/{style_id}/preview", h.GeneratePreview)
+	return r
+}
+
+func newStylePreviewRouterWithResolver(creator jobs.Creator, stylesRepo styles.Repository, resolver RouteResolver) chi.Router {
+	h := NewStylePreviewHandler(creator, stylesRepo, resolver, "mock")
 	r := chi.NewRouter()
 	r.Post("/v1/styles/{style_id}/preview", h.GeneratePreview)
 	return r
@@ -89,14 +97,16 @@ func TestStylePreviewMissingWorldIDReturns400(t *testing.T) {
 	}
 }
 
-func TestStylePreviewBFLProviderReturns503(t *testing.T) {
+// Phase 7A: a style preview that resolves no route fails 422 no_route before
+// any cost reservation / enqueue.
+func TestStylePreviewNoRouteReturns422(t *testing.T) {
 	creator := newStubCreator()
-	router := newStylePreviewRouter(creator, seededPreviewStyles(), config.ProviderBFL)
+	router := newStylePreviewRouterWithResolver(creator, seededPreviewStyles(), &fakeResolver{err: routing.ErrNoRoute})
 	body := map[string]any{"world_id": "w1"}
 	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/styles/sty_ok/preview", tenantA, []string{"images:write"}, body, nil)
-	assertError(t, rec, http.StatusServiceUnavailable, "provider_unavailable")
+	assertError(t, rec, http.StatusUnprocessableEntity, "no_route")
 	if len(creator.calls) != 0 {
-		t.Fatalf("provider gate must reject before any enqueue, got %d calls", len(creator.calls))
+		t.Fatalf("no route must reject before any enqueue, got %d calls", len(creator.calls))
 	}
 }
 

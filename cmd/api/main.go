@@ -20,6 +20,7 @@ import (
 	apphttp "github.com/zakkriel/drchat-image-platform/internal/http"
 	"github.com/zakkriel/drchat-image-platform/internal/identities"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
+	"github.com/zakkriel/drchat-image-platform/internal/providers/routing"
 	"github.com/zakkriel/drchat-image-platform/internal/storage"
 	"github.com/zakkriel/drchat-image-platform/internal/styles"
 	"github.com/zakkriel/drchat-image-platform/internal/telemetry"
@@ -67,6 +68,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Phase 7A: data-driven provider route resolver. It reads provider_routes /
+	// provider_models and only selects routes to providers configured in this
+	// process (cfg.AvailableProviders): mock always; bfl only with a key.
+	resolver := routing.NewResolver(routing.NewDBRouteSource(pool), cfg.AvailableProviders())
+
 	deps := apphttp.Deps{
 		Logger:         logger,
 		Config:         cfg,
@@ -78,6 +84,7 @@ func main() {
 		JobsService:    jobs.NewService(pool, enqueuer, cost.NewService(logger)).WithFinalizer(finalizer),
 		AdminCost:      admincost.NewService(pool, logger),
 		Storage:        store,
+		Resolver:       resolver,
 	}
 
 	router := apphttp.NewRouter(deps)

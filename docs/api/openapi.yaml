@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: DreamChat Image Platform API
-  version: 0.6.0
+  version: 0.7.0
   description: |
     Standalone API for generating, storing, retrieving, and versioning persistent visual assets for DreamChat worlds.
 
@@ -1271,6 +1271,16 @@ components:
         machine-readable identifier (e.g. `unauthorized`, `forbidden`,
         `internal_error`); `message` is human-readable; `request_id` matches
         the `X-Request-Id` response header.
+
+        Generation endpoints (`POST /v1/artifacts/{artifact_id}/generate`, the
+        two generate-pack endpoints, and `POST /v1/styles/{style_id}/preview`)
+        resolve a provider route before reserving cost (Phase 7A). When no
+        active route can serve the request they return `422` with one of:
+        `no_route` (no active route/model for the operation + tier),
+        `unsupported_capability` (no route satisfies a requested capability),
+        or `provider_unavailable_for_route` (the matching route's provider is
+        not configured). `no_price_entry` (422) is still returned when the
+        resolved model has no active price.
       properties:
         code: { type: string, example: unauthorized }
         message: { type: string }
@@ -2027,6 +2037,22 @@ components:
 # Confidence to Implement
 #
 # Score: 94/100 — Very High
+#
+# v0.7.0 — Phase 7A real provider routing + BFL adapter (additive):
+#   * Generation requests now resolve a provider route (data-driven from
+#     provider_routes / provider_models) ONCE at job creation, before cost
+#     reservation. The resolved provider/model is the pricing key, is persisted
+#     on the job, and is stamped as visual-asset provenance
+#     (`provider_id` / `model_id` / `provider_route_id`).
+#   * New 422 error codes when no route can serve a request: `no_route`,
+#     `unsupported_capability`, `provider_unavailable_for_route`. These replace
+#     the pre-7A `503 provider_unavailable` mock-only gate — selecting a
+#     non-mock provider is no longer an error when a route exists for it.
+#   * `code` stays a free-form string (no enum), so this is documentation-only:
+#     no request/response field is added, removed, or made required. BFL becomes
+#     selectable when configured (`IMAGE_PROVIDER=bfl` + `BFL_API_KEY`), seeded
+#     by migration 0006 (DML only; table count stays 18). No `true_preview`
+#     two-phase generation (Phase 7B).
 #
 # v0.6.0 — Phase 6B delivery readiness (additive):
 #   * `VisualAsset.thumbnail_download_url`, `VisualAsset.preview_download_url`,

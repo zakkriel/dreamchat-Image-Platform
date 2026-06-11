@@ -19,16 +19,11 @@ import (
 )
 
 const (
-	errorCodeProviderFailure  = "provider_failure"
-	errorCodePersistenceError = "persistence_error"
-	errorCodeStorageFailure   = "storage_failure"
-
-	// mockProviderModelID is the seeded provider_models row (provider=mock,
-	// model_name=mock-v1) that the artifact pricing path resolves against.
-	// The mock worker stamps it onto the produced asset for provenance. This
-	// is the only model the worker can produce until real provider routing
-	// lands; it is intentionally not a route resolver.
-	mockProviderModelID = "pm_mock_v1"
+	errorCodeProviderFailure      = "provider_failure"
+	errorCodePersistenceError     = "persistence_error"
+	errorCodeStorageFailure       = "storage_failure"
+	errorCodeProviderUnavailable  = "provider_unavailable"
+	errorCodeInvalidResolvedRoute = "invalid_resolved_route"
 
 	// deliveryRenderEdge is the square edge (px) the worker asks the provider
 	// to produce so the "final" tier is genuinely higher resolution than the
@@ -38,20 +33,67 @@ const (
 	deliveryRenderEdge = 1024
 )
 
+// ProviderRegistry resolves a provider_id to its adapter (Phase 7A). The worker
+// selects the adapter from the resolved provider_id persisted on the job — it
+// never re-resolves a route and never falls back to a different provider.
+// *providers.Registry satisfies this.
+type ProviderRegistry interface {
+	Get(providerID string) (providers.ImageProvider, bool)
+}
+
 // Worker holds the dependencies the asynq handler resolves a job against.
 // Each task call re-reads the generation_jobs row from Postgres; the queue
 // payload only carries the job_id.
 type Worker struct {
-	Jobs     Repository
-	Assets   assets.Repository
-	Storage  storage.Storage
-	Provider providers.ImageProvider
-	Logger   *slog.Logger
+	Jobs      Repository
+	Assets    assets.Repository
+	Storage   storage.Storage
+	Providers ProviderRegistry
+	Logger    *slog.Logger
 
 	// Finalizer commits the cost reservation on success and releases it on
 	// terminal failure (docs/architecture/cost-control.md §3 steps 9–10).
 	// Optional: nil in unit tests that don't exercise the cost lifecycle.
 	Finalizer cost.Finalizer
+}
+
+// resolvedRoute is the provider/model/route the handler resolved at job-creation
+// time and persisted on the job's input_payload (generation_jobs has no
+// first-class provider/model columns). The worker consumes it verbatim.
+type resolvedRoute struct {
+	providerID string
+	modelID    string
+	routeID    string
+}
+
+// resolvedRouteFromPayload reads the resolved route the handler persisted.
+// provider_id and model_id are required; provider_route_id is best-effort
+// provenance.
+func resolvedRouteFromPayload(payload map[string]any) (resolvedRoute, error) {
+	rr := resolvedRoute{
+		providerID: payloadString(payload, "provider_id"),
+		modelID:    payloadString(payload, "model_id"),
+		routeID:    payloadString(payload, "provider_route_id"),
+	}
+	if rr.providerID == "" || rr.modelID == "" {
+		return rr, fmt.Errorf("job payload missing resolved provider_id/model_id")
+	}
+	return rr, nil
+}
+
+// failTerminal marks a job permanently failed (not retryable) and releases its
+// cost reservation. Used for unrunnable jobs — a missing provider adapter or a
+// payload missing its resolved route — where an asynq retry could never help.
+func (w *Worker) failTerminal(ctx context.Context, job Job, code, msg string) error {
+	if _, err := w.Jobs.MarkFailed(ctx, job.ID, job.TenantID, code, msg, false); err != nil {
+		return err
+	}
+	if w.Finalizer != nil {
+		if err := w.Finalizer.Release(ctx, job.ID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // NewHandlerFunc returns the asynq handler so the cmd/worker binary stays a
@@ -105,6 +147,20 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 		return nil
 	}
 
+	// Phase 7A: select the provider adapter from the route the handler resolved
+	// at creation time and persisted on the job. The worker never re-resolves.
+	resolved, rerr := resolvedRouteFromPayload(job.InputPayload)
+	if rerr != nil {
+		w.log().Error("worker: invalid resolved route", "job_id", jobID, "error", rerr)
+		return w.failTerminal(ctx, job, errorCodeInvalidResolvedRoute, rerr.Error())
+	}
+	provider, ok := w.Providers.Get(resolved.providerID)
+	if !ok {
+		msg := fmt.Sprintf("no adapter registered for resolved provider %q", resolved.providerID)
+		w.log().Error("worker: provider adapter missing", "job_id", jobID, "provider_id", resolved.providerID)
+		return w.failTerminal(ctx, job, errorCodeProviderUnavailable, msg)
+	}
+
 	if _, err := w.Jobs.MarkRunning(ctx, job.ID, job.TenantID); err != nil {
 		w.log().Error("worker: mark running", "job_id", jobID, "error", err)
 		return err
@@ -113,7 +169,7 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 	attempt, err := w.Jobs.InsertProviderAttempt(ctx, ProviderAttemptInsertParams{
 		ID:              ids.NewProviderAttemptID(),
 		GenerationJobID: job.ID,
-		ProviderID:      w.Provider.Capabilities().ProviderID,
+		ProviderID:      resolved.providerID,
 		AttemptNumber:   attemptNumber,
 	})
 	if err != nil {
@@ -127,7 +183,7 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 		worldID = *job.WorldID
 	}
 	description, _ := job.InputPayload["description"].(string)
-	result, providerErr := w.Provider.Generate(ctx, providers.ProviderGenerateRequest{
+	result, providerErr := provider.Generate(ctx, providers.ProviderGenerateRequest{
 		JobID:     job.ID,
 		Operation: providers.OperationTextToImage,
 		Prompt:    description,
@@ -153,8 +209,9 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 		return err
 	}
 
-	providerID := attempt.ProviderID
-	modelID := mockProviderModelID
+	providerID := resolved.providerID
+	modelID := resolved.modelID
+	routeID := resolved.routeID
 	seed := result.Seed
 	jobIDRef := job.ID
 
@@ -181,9 +238,9 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 		qualityTier = "standard"
 	}
 
-	// model_id is the seeded mock provider_models row (Phase 4 seeds it, and
-	// the pricing path already resolves against it). Stamping it on the asset
-	// records provenance; real provider routing still picks the model upstream.
+	// Phase 7A provenance: stamp the resolved provider/model/route (the same the
+	// handler priced and persisted) so the stored asset records exactly which
+	// route produced it.
 	insertParams := assets.InsertParams{
 		ID:         assetID,
 		TenantID:   job.TenantID,
@@ -202,6 +259,7 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 		ThumbnailUrl:        strPtr(urls.thumb),
 		ProviderID:          &providerID,
 		ModelID:             &modelID,
+		ProviderRouteID:     strPtr(routeID),
 		PromptHash:          strPtr(promptHash),
 		Seed:                strPtr(seed),
 		GenerationJobID:     &jobIDRef,

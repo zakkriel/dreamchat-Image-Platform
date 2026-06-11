@@ -94,7 +94,7 @@ func TestLifecycleWorkerSuccessCommitsReservation(t *testing.T) {
 		Jobs:      jobs.NewRepository(pool),
 		Assets:    assets.NewRepository(pool),
 		Storage:   memStorage{},
-		Provider:  mock.New(),
+		Providers: registryFor(mock.New()),
 		Finalizer: cost.NewLifecycle(pool, nil),
 	}
 	if err := w.Process(context.Background(), jobID, 0); err != nil {
@@ -133,7 +133,7 @@ func TestWorkerStampsMockProviderModelOnAsset(t *testing.T) {
 		Jobs:      jobs.NewRepository(pool),
 		Assets:    assets.NewRepository(pool),
 		Storage:   memStorage{},
-		Provider:  mock.New(),
+		Providers: registryFor(mock.New()),
 		Finalizer: cost.NewLifecycle(pool, nil),
 	}
 	if err := w.Process(context.Background(), jobID, 0); err != nil {
@@ -170,7 +170,7 @@ func TestLifecycleWorkerFailureReleasesReservation(t *testing.T) {
 		Jobs:      jobs.NewRepository(pool),
 		Assets:    assets.NewRepository(pool),
 		Storage:   memStorage{},
-		Provider:  failingProvider{},
+		Providers: registryFor(failingProvider{}),
 		Finalizer: cost.NewLifecycle(pool, nil),
 	}
 	if err := w.Process(context.Background(), jobID, int32(jobs.MaxAttempts-1)); err == nil {
