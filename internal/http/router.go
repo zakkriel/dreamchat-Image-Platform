@@ -182,6 +182,12 @@ func mountPacks(v1 chi.Router, deps Deps) {
 		return
 	}
 	h := handlers.NewPacksHandler(deps.JobsService, deps.StylesRepo, deps.IdentitiesRepo, deps.Config.ImageProvider)
+	// Phase 6A3: wire the per-role reuse decision layer so pack generation is
+	// retrieval-first (prices + generates only the missing roles). Nil-safe: the
+	// handler generates the whole pack when AssetsRepo is unwired.
+	if deps.AssetsRepo != nil {
+		h = h.WithRetriever(assets.NewRetriever(deps.AssetsRepo))
+	}
 	v1.With(auth.RequireScopes("images:write")).Post("/characters/{character_id}/generate-pack", h.GenerateCharacterPack)
 	v1.With(auth.RequireScopes("images:write")).Post("/places/{place_id}/generate-pack", h.GeneratePlacePack)
 }

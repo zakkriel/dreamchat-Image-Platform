@@ -101,9 +101,12 @@ func (w *Worker) ProcessPack(ctx context.Context, jobID string) error {
 	}
 
 	// Existing items short-circuit: if a previous attempt already delivered
-	// some variants (e.g. asynq retried after a transient terminal-write
-	// failure), count them as succeeded instead of re-generating — the
-	// UNIQUE (asset_pack_id, variant_key) constraint would reject a re-insert.
+	// some variants — OR a Phase 6A3 reused role was persisted at creation time
+	// (an existing ready asset already satisfies it) — count them as delivered
+	// instead of re-generating. The UNIQUE (asset_pack_id, variant_key)
+	// constraint would reject a re-insert, and a reused role must never trigger a
+	// provider call. This is what makes pack generation generate only the missing
+	// roles: the reused roles are already present as asset_pack_items.
 	existing, err := w.Jobs.ListAssetPackItems(ctx, plan.packID)
 	if err != nil {
 		w.log().Error("worker: list pack items", "job_id", jobID, "pack_id", plan.packID, "error", err)
@@ -117,11 +120,16 @@ func (w *Worker) ProcessPack(ctx context.Context, jobID string) error {
 	start := time.Now()
 	providerID := w.Provider.Capabilities().ProviderID
 	var succeeded []string
+	// deliveredKeys is the ordered set of required roles backed by a ready item
+	// at the end of this run (reused + retry-skipped + freshly generated). It
+	// drives the stored pack completeness (delivered vs missing).
+	var deliveredKeys []string
 	failedItems := 0
 
 	for i, variantKey := range plan.variantKeys {
 		if assetID, ok := delivered[variantKey]; ok {
 			succeeded = append(succeeded, assetID)
+			deliveredKeys = append(deliveredKeys, variantKey)
 			continue
 		}
 		assetID, itemErr := w.generatePackItem(ctx, job, plan, providerID, variantKey, i)
@@ -136,6 +144,18 @@ func (w *Worker) ProcessPack(ctx context.Context, jobID string) error {
 			continue
 		}
 		succeeded = append(succeeded, assetID)
+		deliveredKeys = append(deliveredKeys, variantKey)
+	}
+
+	// Pack completeness (Phase 6A3): required = every template role
+	// (plan.variantKeys), delivered = the roles backed by a ready item, missing =
+	// the rest. Written once here so it is correct in every terminal branch
+	// below (a partial run leaves the failed roles in missing; a total failure
+	// leaves all roles missing). Recomputed identically on an asynq retry.
+	missingKeys := missingRoles(plan.variantKeys, deliveredKeys)
+	if err := w.Jobs.UpdateAssetPackCompleteness(ctx, plan.packID, deliveredKeys, missingKeys); err != nil {
+		w.log().Error("worker: update pack completeness", "job_id", job.ID, "pack_id", plan.packID, "error", err)
+		return err
 	}
 
 	// One cost event for the whole pack (operation text_to_image); the
@@ -318,6 +338,22 @@ type packPlan struct {
 	qualityTier         string
 	styleProfileID      *string
 	styleProfileVersion *int32
+}
+
+// missingRoles returns the required roles not present in delivered, preserving
+// the required order. Used to record final pack completeness.
+func missingRoles(required, delivered []string) []string {
+	have := make(map[string]struct{}, len(delivered))
+	for _, k := range delivered {
+		have[k] = struct{}{}
+	}
+	missing := make([]string, 0)
+	for _, role := range required {
+		if _, ok := have[role]; !ok {
+			missing = append(missing, role)
+		}
+	}
+	return missing
 }
 
 func packPlanFromJob(job Job) (packPlan, error) {

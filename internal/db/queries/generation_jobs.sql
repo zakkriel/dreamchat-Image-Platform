@@ -44,6 +44,36 @@ RETURNING id, tenant_id, world_id, job_type, status,
           queue_duration_ms, generation_duration_ms,
           created_at, updated_at, started_at, completed_at;
 
+-- name: InsertCompletedPackReuseJob :one
+-- Phase 6A3 all-hits pack reuse: the pack analogue of InsertCompletedCacheHitJob.
+-- Every required role of the pack was satisfied by an existing ready asset, so
+-- the pack job is already terminal (status = 'completed') with no provider work:
+-- no cost_reservation_id, a zero estimate, a zero actual cost. Unlike the
+-- artifact cache-hit (which is always exact_match), a pack aggregates several
+-- per-role outcomes, so cache_result is a parameter (the weakest reuse tier
+-- across the roles: exact_match | compatible_match | preview_fallback).
+-- final_asset_ids points at the reused assets, in role order. This row is never
+-- enqueued and the worker never processes it.
+INSERT INTO generation_jobs (
+    id, tenant_id, world_id, job_type, status,
+    requested_by_token_id, input_payload, requested_outputs,
+    fallback_policy, cache_result, final_asset_ids,
+    cost_estimate_usd, actual_cost_usd, completed_at
+) VALUES (
+    $1, $2, $3, $4, 'completed',
+    $5, $6, sqlc.arg('requested_outputs'),
+    $7, sqlc.arg('cache_result'), sqlc.arg('final_asset_ids'),
+    0, 0, now()
+)
+RETURNING id, tenant_id, world_id, job_type, status,
+          requested_by_token_id, visual_identity_id, asset_pack_id,
+          input_payload, requested_outputs, fallback_policy, cache_result,
+          preview_asset_ids, final_asset_ids,
+          error_code, error_message, retryable,
+          cost_reservation_id, cost_estimate_usd, actual_cost_usd,
+          queue_duration_ms, generation_duration_ms,
+          created_at, updated_at, started_at, completed_at;
+
 -- SetGenerationJobCost links a job to its cost_reservation and records the
 -- pre-flight estimate. Run inside the create transaction, after the
 -- reservation row exists.

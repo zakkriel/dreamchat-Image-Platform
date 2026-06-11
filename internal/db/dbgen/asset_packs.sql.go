@@ -7,20 +7,44 @@ package dbgen
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const getAssetPackByID = `-- name: GetAssetPackByID :one
 SELECT id, tenant_id, world_id, visual_identity_id, pack_type,
        style_profile_id, style_profile_version, visual_identity_version,
-       quality_tier, status, created_by_job_id, created_by_token_id,
+       quality_tier, status,
+       required_roles, delivered_roles, missing_roles,
+       created_by_job_id, created_by_token_id,
        created_at, updated_at
 FROM asset_packs
 WHERE id = $1
 `
 
-func (q *Queries) GetAssetPackByID(ctx context.Context, id string) (AssetPack, error) {
+type GetAssetPackByIDRow struct {
+	ID                    string             `json:"id"`
+	TenantID              string             `json:"tenant_id"`
+	WorldID               string             `json:"world_id"`
+	VisualIdentityID      *string            `json:"visual_identity_id"`
+	PackType              string             `json:"pack_type"`
+	StyleProfileID        string             `json:"style_profile_id"`
+	StyleProfileVersion   *int32             `json:"style_profile_version"`
+	VisualIdentityVersion *int32             `json:"visual_identity_version"`
+	QualityTier           string             `json:"quality_tier"`
+	Status                string             `json:"status"`
+	RequiredRoles         []string           `json:"required_roles"`
+	DeliveredRoles        []string           `json:"delivered_roles"`
+	MissingRoles          []string           `json:"missing_roles"`
+	CreatedByJobID        *string            `json:"created_by_job_id"`
+	CreatedByTokenID      *string            `json:"created_by_token_id"`
+	CreatedAt             pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt             pgtype.Timestamptz `json:"updated_at"`
+}
+
+func (q *Queries) GetAssetPackByID(ctx context.Context, id string) (GetAssetPackByIDRow, error) {
 	row := q.db.QueryRow(ctx, getAssetPackByID, id)
-	var i AssetPack
+	var i GetAssetPackByIDRow
 	err := row.Scan(
 		&i.ID,
 		&i.TenantID,
@@ -32,6 +56,9 @@ func (q *Queries) GetAssetPackByID(ctx context.Context, id string) (AssetPack, e
 		&i.VisualIdentityVersion,
 		&i.QualityTier,
 		&i.Status,
+		&i.RequiredRoles,
+		&i.DeliveredRoles,
+		&i.MissingRoles,
 		&i.CreatedByJobID,
 		&i.CreatedByTokenID,
 		&i.CreatedAt,
@@ -45,35 +72,70 @@ const insertAssetPack = `-- name: InsertAssetPack :one
 INSERT INTO asset_packs (
     id, tenant_id, world_id, visual_identity_id, pack_type,
     style_profile_id, quality_tier, status,
+    required_roles, delivered_roles, missing_roles,
     created_by_job_id, created_by_token_id
 ) VALUES (
     $1, $2, $3, $4, $5,
-    $6, $7, 'planned',
+    $6, $7, $10,
+    $11, $12, $13,
     $8, $9
 )
 RETURNING id, tenant_id, world_id, visual_identity_id, pack_type,
           style_profile_id, style_profile_version, visual_identity_version,
-          quality_tier, status, created_by_job_id, created_by_token_id,
+          quality_tier, status,
+          required_roles, delivered_roles, missing_roles,
+          created_by_job_id, created_by_token_id,
           created_at, updated_at
 `
 
 type InsertAssetPackParams struct {
-	ID               string  `json:"id"`
-	TenantID         string  `json:"tenant_id"`
-	WorldID          string  `json:"world_id"`
-	VisualIdentityID *string `json:"visual_identity_id"`
-	PackType         string  `json:"pack_type"`
-	StyleProfileID   string  `json:"style_profile_id"`
-	QualityTier      string  `json:"quality_tier"`
-	CreatedByJobID   *string `json:"created_by_job_id"`
-	CreatedByTokenID *string `json:"created_by_token_id"`
+	ID               string   `json:"id"`
+	TenantID         string   `json:"tenant_id"`
+	WorldID          string   `json:"world_id"`
+	VisualIdentityID *string  `json:"visual_identity_id"`
+	PackType         string   `json:"pack_type"`
+	StyleProfileID   string   `json:"style_profile_id"`
+	QualityTier      string   `json:"quality_tier"`
+	CreatedByJobID   *string  `json:"created_by_job_id"`
+	CreatedByTokenID *string  `json:"created_by_token_id"`
+	Status           string   `json:"status"`
+	RequiredRoles    []string `json:"required_roles"`
+	DeliveredRoles   []string `json:"delivered_roles"`
+	MissingRoles     []string `json:"missing_roles"`
+}
+
+type InsertAssetPackRow struct {
+	ID                    string             `json:"id"`
+	TenantID              string             `json:"tenant_id"`
+	WorldID               string             `json:"world_id"`
+	VisualIdentityID      *string            `json:"visual_identity_id"`
+	PackType              string             `json:"pack_type"`
+	StyleProfileID        string             `json:"style_profile_id"`
+	StyleProfileVersion   *int32             `json:"style_profile_version"`
+	VisualIdentityVersion *int32             `json:"visual_identity_version"`
+	QualityTier           string             `json:"quality_tier"`
+	Status                string             `json:"status"`
+	RequiredRoles         []string           `json:"required_roles"`
+	DeliveredRoles        []string           `json:"delivered_roles"`
+	MissingRoles          []string           `json:"missing_roles"`
+	CreatedByJobID        *string            `json:"created_by_job_id"`
+	CreatedByTokenID      *string            `json:"created_by_token_id"`
+	CreatedAt             pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt             pgtype.Timestamptz `json:"updated_at"`
 }
 
 // Pack orchestration queries (Phase 5A, ADR-008). The platform — not the
 // provider adapter — owns pack fan-out: the create transaction inserts the
 // asset_packs row alongside the generation_jobs row, and the worker writes
 // one asset_pack_items row per generated variant.
-func (q *Queries) InsertAssetPack(ctx context.Context, arg InsertAssetPackParams) (AssetPack, error) {
+// The create transaction inserts the asset_packs row alongside the
+// generation_jobs row. status is a parameter (Phase 6A3): a normal pack that
+// still has roles to generate is inserted 'planned' for the worker to advance,
+// while an all-hits reuse pack is inserted 'completed' directly (no worker run).
+// required_roles/delivered_roles/missing_roles record pack completeness at
+// creation: required = every template role, delivered = roles already satisfied
+// by a reused asset, missing = roles awaiting generation.
+func (q *Queries) InsertAssetPack(ctx context.Context, arg InsertAssetPackParams) (InsertAssetPackRow, error) {
 	row := q.db.QueryRow(ctx, insertAssetPack,
 		arg.ID,
 		arg.TenantID,
@@ -84,8 +146,12 @@ func (q *Queries) InsertAssetPack(ctx context.Context, arg InsertAssetPackParams
 		arg.QualityTier,
 		arg.CreatedByJobID,
 		arg.CreatedByTokenID,
+		arg.Status,
+		arg.RequiredRoles,
+		arg.DeliveredRoles,
+		arg.MissingRoles,
 	)
-	var i AssetPack
+	var i InsertAssetPackRow
 	err := row.Scan(
 		&i.ID,
 		&i.TenantID,
@@ -97,6 +163,9 @@ func (q *Queries) InsertAssetPack(ctx context.Context, arg InsertAssetPackParams
 		&i.VisualIdentityVersion,
 		&i.QualityTier,
 		&i.Status,
+		&i.RequiredRoles,
+		&i.DeliveredRoles,
+		&i.MissingRoles,
 		&i.CreatedByJobID,
 		&i.CreatedByTokenID,
 		&i.CreatedAt,
@@ -182,6 +251,28 @@ type SetGenerationJobAssetPackParams struct {
 // the create transaction, after both rows exist.
 func (q *Queries) SetGenerationJobAssetPack(ctx context.Context, arg SetGenerationJobAssetPackParams) error {
 	_, err := q.db.Exec(ctx, setGenerationJobAssetPack, arg.AssetPackID, arg.ID)
+	return err
+}
+
+const updateAssetPackCompleteness = `-- name: UpdateAssetPackCompleteness :exec
+UPDATE asset_packs
+SET delivered_roles = $1,
+    missing_roles = $2,
+    updated_at = now()
+WHERE id = $3
+`
+
+type UpdateAssetPackCompletenessParams struct {
+	DeliveredRoles []string `json:"delivered_roles"`
+	MissingRoles   []string `json:"missing_roles"`
+	ID             string   `json:"id"`
+}
+
+// UpdateAssetPackCompleteness records the final delivered-vs-missing required
+// roles a pack run resolved to (Phase 6A3). The worker calls it at the terminal
+// step so a consumer can read pack completeness off asset_packs directly.
+func (q *Queries) UpdateAssetPackCompleteness(ctx context.Context, arg UpdateAssetPackCompletenessParams) error {
+	_, err := q.db.Exec(ctx, updateAssetPackCompleteness, arg.DeliveredRoles, arg.MissingRoles, arg.ID)
 	return err
 }
 

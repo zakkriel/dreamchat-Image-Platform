@@ -103,6 +103,9 @@ func (noopJobsRepo) InsertCostEvent(context.Context, jobs.CostEventInsertParams)
 	return nil
 }
 func (noopJobsRepo) UpdateAssetPackStatus(context.Context, string, string) error { return nil }
+func (noopJobsRepo) UpdateAssetPackCompleteness(context.Context, string, []string, []string) error {
+	return nil
+}
 func (noopJobsRepo) InsertAssetPackItem(context.Context, jobs.AssetPackItemInsertParams) error {
 	return nil
 }
@@ -120,6 +123,10 @@ func (noopJobsService) CreateAndEnqueue(context.Context, jobs.CreateAndEnqueuePa
 }
 
 func (noopJobsService) CreateCompletedCacheHitJob(context.Context, jobs.CreateCacheHitParams) (jobs.CreateResult, error) {
+	return jobs.CreateResult{JobID: "job_routerstubaaaaaaa", Status: "completed"}, nil
+}
+
+func (noopJobsService) CreateCompletedPackReuseJob(context.Context, jobs.CreatePackReuseParams) (jobs.CreateResult, error) {
 	return jobs.CreateResult{JobID: "job_routerstubaaaaaaa", Status: "completed"}, nil
 }
 
