@@ -1,18 +1,25 @@
-// Package storage owns S3-compatible object upload, key generation, and the
-// canonical s3:// URL form persisted on visual_assets. Phase 3 only writes;
-// reads and presigned URLs land later.
+// Package storage owns S3-compatible object upload, key generation, the
+// canonical s3:// URL form persisted on visual_assets, and (Phase 6B)
+// time-limited presigned read URLs minted from the deterministic object keys.
 package storage
 
 import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 )
 
-// Storage writes object bytes to the configured bucket and returns a
-// canonical s3:// URL the caller can persist.
+// Storage writes object bytes to the configured bucket and mints time-limited
+// authenticated GET URLs for reading them back.
+//
+// Put returns a canonical s3:// URL the caller persists as durable provenance.
+// Presign computes an ephemeral https GET URL from the object key at read time
+// — it is never persisted (it embeds an expiry and a signature), per the
+// Phase 6B delivery design.
 type Storage interface {
 	Put(ctx context.Context, key string, body []byte, contentType string) (string, error)
+	Presign(ctx context.Context, key string, ttl time.Duration) (string, error)
 }
 
 // CanonicalURL formats the s3:// URL recorded on visual_assets rows.

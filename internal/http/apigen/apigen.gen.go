@@ -681,6 +681,12 @@ type HealthResponse struct {
 	Status string `json:"status"`
 }
 
+// JobAssetsResponse A generation job's delivered visual assets, in deterministic delivery
+// order, each enriched with presigned per-tier download URLs (Phase 6B).
+type JobAssetsResponse struct {
+	Assets []VisualAsset `json:"assets"`
+}
+
 // LatencyTier Latency preference for provider routing.
 type LatencyTier string
 
@@ -811,6 +817,14 @@ type QualityTier string
 // StyleMode How a style profile is sourced.
 type StyleMode string
 
+// StylePreviewRequest Body for `POST /v1/styles/{style_id}/preview`. `world_id` is required
+// because generated visual assets are world-scoped (Phase 6B).
+type StylePreviewRequest struct {
+	// QualityTier Output quality tier requested for generation.
+	QualityTier *QualityTier `json:"quality_tier,omitempty"`
+	WorldId     string       `json:"world_id"`
+}
+
 // StyleProfile defines model for StyleProfile.
 type StyleProfile struct {
 	// DefaultQualityTier Output quality tier requested for generation.
@@ -845,9 +859,14 @@ type VisualAsset struct {
 
 	// FallbackRank Lower = preferred fallback within its compatibility tier. Used
 	// to pick the best candidate when several would qualify.
-	FallbackRank *int    `json:"fallback_rank,omitempty"`
-	HighResUrl   *string `json:"high_res_url,omitempty"`
-	Id           string  `json:"id"`
+	FallbackRank *int `json:"fallback_rank,omitempty"`
+
+	// FinalDownloadUrl Time-limited presigned `https` GET URL for the final/full-resolution
+	// tier, the `high_res_url` object. Ephemeral; expires at
+	// `url_expires_at`.
+	FinalDownloadUrl *string `json:"final_download_url,omitempty"`
+	HighResUrl       *string `json:"high_res_url,omitempty"`
+	Id               string  `json:"id"`
 
 	// IsIdentityAnchor True for anchor assets used as reference inputs. Anchor assets
 	// must never be returned as a `compatible_match` for a non-anchor
@@ -856,9 +875,14 @@ type VisualAsset struct {
 	LowResUrl        *string                 `json:"low_res_url,omitempty"`
 	Metadata         *map[string]interface{} `json:"metadata,omitempty"`
 	ModelId          *string                 `json:"model_id,omitempty"`
-	PromptHash       *string                 `json:"prompt_hash,omitempty"`
-	ProviderId       *string                 `json:"provider_id,omitempty"`
-	Seed             *string                 `json:"seed,omitempty"`
+
+	// PreviewDownloadUrl Time-limited presigned `https` GET URL for the preview tier
+	// (~768px short edge), the `low_res_url` object. Ephemeral; expires
+	// at `url_expires_at`.
+	PreviewDownloadUrl *string `json:"preview_download_url,omitempty"`
+	PromptHash         *string `json:"prompt_hash,omitempty"`
+	ProviderId         *string `json:"provider_id,omitempty"`
+	Seed               *string `json:"seed,omitempty"`
 
 	// StateVersion State version for the underlying entity at generation time
 	// (independent of `visual_identity_version`, which is identity-level).
@@ -868,8 +892,21 @@ type VisualAsset struct {
 	StateVersion *int `json:"state_version,omitempty"`
 
 	// Status Lifecycle status of a stored visual asset.
-	Status       AssetStatus `json:"status"`
-	ThumbnailUrl *string     `json:"thumbnail_url,omitempty"`
+	Status AssetStatus `json:"status"`
+
+	// ThumbnailDownloadUrl Time-limited presigned `https` GET URL for the thumbnail tier
+	// (~256px short edge). Minted at read time from the asset's
+	// deterministic object key; expires at `url_expires_at`. Additive
+	// in v0.6.0 (Phase 6B delivery). Present only when the read surface
+	// is wired to object storage; the durable `s3://` provenance stays
+	// on `thumbnail_url`.
+	ThumbnailDownloadUrl *string `json:"thumbnail_download_url,omitempty"`
+	ThumbnailUrl         *string `json:"thumbnail_url,omitempty"`
+
+	// UrlExpiresAt Absolute expiry of the `*_download_url` fields. After this instant
+	// the presigned URLs stop authenticating and a fresh read must be
+	// issued. Set whenever the download URLs are present.
+	UrlExpiresAt *time.Time `json:"url_expires_at,omitempty"`
 
 	// VariantFamily Grouping used by the variant compatibility matrix
 	// (e.g. `neutral`, `warm`, `strong_emotion`, `establishing`,
@@ -1109,3 +1146,6 @@ type PostV1PlacesPlaceIdVisualIdentityJSONRequestBody = CreateVisualIdentityRequ
 
 // PostV1StylesJSONRequestBody defines body for PostV1Styles for application/json ContentType.
 type PostV1StylesJSONRequestBody = CreateStyleProfileRequest
+
+// PostV1StylesStyleIdPreviewJSONRequestBody defines body for PostV1StylesStyleIdPreview for application/json ContentType.
+type PostV1StylesStyleIdPreviewJSONRequestBody = StylePreviewRequest

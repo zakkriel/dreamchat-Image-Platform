@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: DreamChat Image Platform API
-  version: 0.5.4
+  version: 0.6.0
   description: |
     Standalone API for generating, storing, retrieving, and versioning persistent visual assets for DreamChat worlds.
 
@@ -321,6 +321,32 @@ paths:
                 $ref: '#/components/schemas/GenerationJob'
         default:
           $ref: '#/components/responses/ErrorResponse'
+  /v1/jobs/{job_id}/assets:
+    get:
+      tags: [Jobs]
+      summary: Get a job's delivered assets with fetchable URLs
+      description: |
+        Returns the job's delivered visual assets in deterministic delivery
+        order — for a pack job by `asset_pack_items.sort_order`, for an
+        artifact job by `generation_jobs.final_asset_ids` order — each carrying
+        the additive presigned per-tier download URLs (`*_download_url` +
+        `url_expires_at`) so a client can render thumbnail → preview → final in
+        one call. Tenant-scoped and `images:read`-gated. Delivery is not
+        restricted to `status='ready'`: archived assets remain displayable to
+        the owning tenant. Added in v0.6.0 (Phase 6B delivery).
+      security:
+        - BearerAuth: [images:read]
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: The job's delivered assets
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobAssetsResponse'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
   /v1/styles:
     get:
       tags: [Styles]
@@ -366,11 +392,25 @@ paths:
     post:
       tags: [Styles]
       summary: Generate style preview
+      description: |
+        Reserves and enqueues a single sample image so a creator can see a
+        style before using it to generate real assets. The sample is a normal
+        delivered `visual_asset` (`asset_type=artifact`) rendered through the
+        same storage + presigned-tier machinery; read it back via
+        `GET /v1/jobs/{job_id}/assets`. `world_id` is required because generated
+        visual assets are world-scoped. Returns the standard 202 acceptance
+        envelope. Wired in v0.6.0 (Phase 6B delivery).
       security:
         - BearerAuth: [images:write]
       parameters:
         - $ref: '#/components/parameters/StyleId'
         - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StylePreviewRequest'
       responses:
         '202':
           description: Generation job accepted
@@ -1511,6 +1551,17 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/VisualAsset'
+    JobAssetsResponse:
+      type: object
+      required: [assets]
+      description: |
+        A generation job's delivered visual assets, in deterministic delivery
+        order, each enriched with presigned per-tier download URLs (Phase 6B).
+      properties:
+        assets:
+          type: array
+          items:
+            $ref: '#/components/schemas/VisualAsset'
     VisualAsset:
       type: object
       required: [id, asset_type, variant_key, version, status]
@@ -1566,6 +1617,34 @@ components:
         low_res_url: { type: string }
         high_res_url: { type: string }
         thumbnail_url: { type: string }
+        thumbnail_download_url:
+          type: string
+          description: |
+            Time-limited presigned `https` GET URL for the thumbnail tier
+            (~256px short edge). Minted at read time from the asset's
+            deterministic object key; expires at `url_expires_at`. Additive
+            in v0.6.0 (Phase 6B delivery). Present only when the read surface
+            is wired to object storage; the durable `s3://` provenance stays
+            on `thumbnail_url`.
+        preview_download_url:
+          type: string
+          description: |
+            Time-limited presigned `https` GET URL for the preview tier
+            (~768px short edge), the `low_res_url` object. Ephemeral; expires
+            at `url_expires_at`.
+        final_download_url:
+          type: string
+          description: |
+            Time-limited presigned `https` GET URL for the final/full-resolution
+            tier, the `high_res_url` object. Ephemeral; expires at
+            `url_expires_at`.
+        url_expires_at:
+          type: string
+          format: date-time
+          description: |
+            Absolute expiry of the `*_download_url` fields. After this instant
+            the presigned URLs stop authenticating and a fresh read must be
+            issued. Set whenever the download URLs are present.
         provider_id: { type: string }
         model_id: { type: string }
         prompt_hash: { type: string }
@@ -1576,6 +1655,16 @@ components:
     # ------------------------------------------------------------------------
     # Styles
     # ------------------------------------------------------------------------
+    StylePreviewRequest:
+      type: object
+      required: [world_id]
+      description: |
+        Body for `POST /v1/styles/{style_id}/preview`. `world_id` is required
+        because generated visual assets are world-scoped (Phase 6B).
+      properties:
+        world_id: { type: string }
+        quality_tier:
+          $ref: '#/components/schemas/QualityTier'
     CreateStyleProfileRequest:
       type: object
       required: [name, style_mode, positive_prompt]
@@ -1938,6 +2027,33 @@ components:
 # Confidence to Implement
 #
 # Score: 94/100 — Very High
+#
+# v0.6.0 — Phase 6B delivery readiness (additive):
+#   * `VisualAsset.thumbnail_download_url`, `VisualAsset.preview_download_url`,
+#     `VisualAsset.final_download_url`, and `VisualAsset.url_expires_at` —
+#     optional, time-limited presigned `https` GET URLs minted at read time
+#     from the asset's deterministic object keys, plus their shared expiry.
+#     The durable `s3://` provenance fields (`low_res_url` / `high_res_url` /
+#     `thumbnail_url`) are unchanged; the presigned URLs are never persisted.
+#     Returned by `GET /v1/assets/{asset_id}` and the new job-assets read when
+#     the read surface is wired to object storage.
+#   * `GET /v1/jobs/{job_id}/assets` (new) — returns a job's delivered assets
+#     in deterministic delivery order (pack: `asset_pack_items.sort_order`;
+#     artifact: `final_asset_ids` order) with fetchable per-tier URLs in one
+#     call. Tenant-scoped, `images:read`-gated; not restricted to ready assets.
+#     New `JobAssetsResponse` schema.
+#   * `POST /v1/styles/{style_id}/preview` — the already-declared style-preview
+#     endpoint is now served and takes a `StylePreviewRequest` body with a
+#     required `world_id` (generated assets are world-scoped). It reserves +
+#     enqueues a single sample `visual_asset` delivered through the same
+#     presigned-tier machinery, returning the standard `GenerationJobAccepted`.
+#   * The three resolution tiers (thumbnail / preview / final) are now produced
+#     as genuinely distinct downscaled sizes by the worker (PRD 06 §4) —
+#     `derived_preview` is honest. No `true_preview` provider routing, no
+#     preview/final two-phase job: that rides Phase 7. No schema/table change
+#     (presigning + tiers are runtime; table count stays 18). Strictly additive:
+#     no field removed or made required, every existing read response unchanged
+#     except for the new optional URL fields.
 #
 # v0.5.4 — Phase 6A4 forced regeneration / supersede-on-regenerate (additive):
 #   * `GenerateArtifactRequest.force_regenerate`,

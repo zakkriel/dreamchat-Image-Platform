@@ -20,6 +20,7 @@ import (
 	apphttp "github.com/zakkriel/drchat-image-platform/internal/http"
 	"github.com/zakkriel/drchat-image-platform/internal/identities"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
+	"github.com/zakkriel/drchat-image-platform/internal/storage"
 	"github.com/zakkriel/drchat-image-platform/internal/styles"
 	"github.com/zakkriel/drchat-image-platform/internal/telemetry"
 )
@@ -50,6 +51,22 @@ func main() {
 
 	finalizer := cost.NewLifecycle(pool, logger)
 
+	// Phase 6B: the API needs the object-storage read side so asset/job-assets
+	// reads can mint presigned per-tier download URLs (the worker already has
+	// its own write-side client). Config already mandates the S3 env vars.
+	store, err := storage.NewS3Storage(context.Background(), storage.S3Config{
+		Bucket:          cfg.S3Bucket,
+		Region:          cfg.S3Region,
+		Endpoint:        cfg.S3Endpoint,
+		AccessKeyID:     cfg.S3AccessKeyID,
+		SecretAccessKey: cfg.S3SecretAccessKey,
+		UsePathStyle:    cfg.S3UsePathStyle,
+	})
+	if err != nil {
+		logger.Error("storage init failed", "error", err)
+		os.Exit(1)
+	}
+
 	deps := apphttp.Deps{
 		Logger:         logger,
 		Config:         cfg,
@@ -60,6 +77,7 @@ func main() {
 		JobsRepo:       jobs.NewRepository(pool),
 		JobsService:    jobs.NewService(pool, enqueuer, cost.NewService(logger)).WithFinalizer(finalizer),
 		AdminCost:      admincost.NewService(pool, logger),
+		Storage:        store,
 	}
 
 	router := apphttp.NewRouter(deps)

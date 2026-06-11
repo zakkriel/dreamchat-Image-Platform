@@ -1,10 +1,15 @@
 package jobs
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"image"
+	"image/color"
+	"image/png"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/providers"
@@ -421,6 +426,28 @@ func (s *fakeStorage) Put(_ context.Context, key string, _ []byte, _ string) (st
 	defer s.mu.Unlock()
 	s.keys = append(s.keys, key)
 	return "s3://bucket/" + key, nil
+}
+
+func (s *fakeStorage) Presign(_ context.Context, key string, _ time.Duration) (string, error) {
+	return "https://example.test/" + key + "?sig=test", nil
+}
+
+// tinyPNGBytes is a valid 8x8 PNG used by provider stubs so the worker's
+// downscale (imaging.EncodeTiers) can decode the "provider output". Tiny
+// sources are not upscaled, so the three tiers come out identical — pack/cost
+// tests assert status and pack items, not tier dimensions.
+func tinyPNGBytes() []byte {
+	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	for y := 0; y < 8; y++ {
+		for x := 0; x < 8; x++ {
+			img.SetRGBA(x, y, color.RGBA{R: uint8(x * 16), G: uint8(y * 16), B: 0x40, A: 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		panic(err)
+	}
+	return buf.Bytes()
 }
 
 type errorProvider struct{}
