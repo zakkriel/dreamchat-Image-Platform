@@ -9,6 +9,26 @@ import (
 )
 
 type Querier interface {
+	// Phase 6A4 supersede concurrency control: a transaction-scoped advisory lock
+	// keyed on the exact regeneration slot. Two concurrent forced regenerations of
+	// the same slot serialize here, so they compute prior_max_version, archive prior
+	// ready rows, and insert the new ready row one at a time — producing versions
+	// N+1 and N+2 (never duplicate versions) and leaving exactly one ready row. The
+	// lock auto-releases at commit/rollback. The slot key is built deterministically
+	// by the caller (internal/assets) from the exact slot identity.
+	AcquireSupersedeLock(ctx context.Context, slotKey string) error
+	// Phase 6A4 supersede: archive every still-ready row of the exact artifact slot
+	// except the just-inserted new asset, linking each forward to it. Slot-scoped and
+	// exact — the same predicate as the reuse lookup — so a forced regenerate never
+	// archives a compatible/preview neighbor, only the identical slot. Runs in the
+	// same transaction (under the slot lock) as the new asset's insert, so committed
+	// readers flip atomically from old-ready to new-ready.
+	ArchivePriorReadyArtifactSlot(ctx context.Context, arg ArchivePriorReadyArtifactSlotParams) error
+	// Phase 6A4 supersede: archive every still-ready row of the exact pack-role slot
+	// except the just-inserted new asset, linking each forward to it. Exact and
+	// slot-scoped (the FindExactVisualAsset predicate) so a forced pack regenerate
+	// never touches a compatible/preview neighbor.
+	ArchivePriorReadyVariantSlot(ctx context.Context, arg ArchivePriorReadyVariantSlotParams) error
 	// CommitBudgetHold moves a hold's amount from reserved → spent on the budget.
 	// GREATEST guards against a negative reserved_amount if accounting ever drifts.
 	CommitBudgetHold(ctx context.Context, arg CommitBudgetHoldParams) error
@@ -125,6 +145,10 @@ type Querier interface {
 	// InsertProviderModelPrice creates a new active price entry. effective_from is
 	// now(); effective_to is NULL (current).
 	InsertProviderModelPrice(ctx context.Context, arg InsertProviderModelPriceParams) (InsertProviderModelPriceRow, error)
+	// The new asset always lands status='ready'. version is supplied by the caller
+	// (Phase 6A4): the normal generate path passes 1 (the prior schema DEFAULT);
+	// a forced regeneration passes prior_max_version + 1 so versions stay monotonic
+	// across regenerations of a slot, archived predecessors included.
 	InsertVisualAsset(ctx context.Context, arg InsertVisualAssetParams) (VisualAsset, error)
 	InsertVisualIdentity(ctx context.Context, arg InsertVisualIdentityParams) (VisualIdentity, error)
 	InsertVisualIdentityVersion(ctx context.Context, arg InsertVisualIdentityVersionParams) error
@@ -182,6 +206,17 @@ type Querier interface {
 	// reserved_amount is zeroed because the savepoint already rolled back every
 	// budget increment and hold this reservation made.
 	MarkReservationBudgetExceeded(ctx context.Context, arg MarkReservationBudgetExceededParams) error
+	// Phase 6A4 supersede: the current max version across ALL rows (ready AND
+	// archived) of the exact artifact reuse slot, so the regenerated asset's version
+	// is COALESCE(max, 0) + 1 and stays monotonic even as predecessors are archived.
+	// The slot predicate is byte-for-byte the FindReadyArtifactByPromptHash reuse
+	// slot minus the status filter (we count archived rows too).
+	MaxVersionForArtifactSlot(ctx context.Context, arg MaxVersionForArtifactSlotParams) (int32, error)
+	// Phase 6A4 supersede: the current max version across ALL rows (ready AND
+	// archived) of the exact pack-role reuse slot. Mirrors MaxVersionForArtifactSlot
+	// for the FindExactVisualAsset slot predicate (identity + variant + state + style
+	// + quality), minus the status filter.
+	MaxVersionForVariantSlot(ctx context.Context, arg MaxVersionForVariantSlotParams) (int32, error)
 	// ReleaseBudgetHold returns a hold's amount to the budget: drop reserved,
 	// leave spent untouched.
 	ReleaseBudgetHold(ctx context.Context, arg ReleaseBudgetHoldParams) error

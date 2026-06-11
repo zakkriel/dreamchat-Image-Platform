@@ -537,6 +537,17 @@ type GenerateArtifactRequest struct {
 	// `docs/architecture/variant-compatibility-matrix.md` §5.
 	FallbackPolicy *FallbackPolicy `json:"fallback_policy,omitempty"`
 
+	// ForceRegenerate Phase 6A4 forced regeneration. When `true`, the artifact
+	// exact-reuse lookup (Phase 6A2) is bypassed and the artifact is
+	// always rendered fresh (reserve + enqueue + generate). The new
+	// asset supersedes the prior ready asset of its exact slot
+	// (tenant + world + style + quality + render hash): the predecessor
+	// is archived and linked via `superseded_by_asset_id`, and the new
+	// asset becomes the single ready row a later non-forced request
+	// reuses, with `version` incremented. Default `false` is the
+	// unchanged Phase 6A2 reuse behavior.
+	ForceRegenerate *bool `json:"force_regenerate,omitempty"`
+
 	// LatencyTier Latency preference for provider routing.
 	LatencyTier *LatencyTier `json:"latency_tier,omitempty"`
 
@@ -552,6 +563,18 @@ type GenerateCharacterPackRequest struct {
 	// generation. Default `compatible_only`. See
 	// `docs/architecture/variant-compatibility-matrix.md` §5.
 	FallbackPolicy *FallbackPolicy `json:"fallback_policy,omitempty"`
+
+	// ForceRegenerate Phase 6A4 forced regeneration. When `true`, retrieval-before-
+	// generation is bypassed for every required role: the whole pack is
+	// priced and generated fresh (no reuse, no misses-only discount, no
+	// all-hits synchronous completion). Each regenerated role's asset
+	// supersedes the prior ready asset of its exact slot — the
+	// predecessor is archived and linked via
+	// `superseded_by_asset_id`, and the new asset becomes the single
+	// ready row a later non-forced request reuses. Whole-pack only;
+	// per-role regeneration is not supported. Default `false` is the
+	// unchanged reuse-first behavior.
+	ForceRegenerate *bool `json:"force_regenerate,omitempty"`
 
 	// LatencyTier Latency preference for provider routing.
 	LatencyTier *LatencyTier `json:"latency_tier,omitempty"`
@@ -579,6 +602,9 @@ type GeneratePlacePackRequest struct {
 	// generation. Default `compatible_only`. See
 	// `docs/architecture/variant-compatibility-matrix.md` §5.
 	FallbackPolicy *FallbackPolicy `json:"fallback_policy,omitempty"`
+
+	// ForceRegenerate See GenerateCharacterPackRequest.force_regenerate.
+	ForceRegenerate *bool `json:"force_regenerate,omitempty"`
 
 	// LatencyTier Latency preference for provider routing.
 	LatencyTier *LatencyTier `json:"latency_tier,omitempty"`

@@ -69,6 +69,9 @@ func (s *stubJobsRepo) InsertAssetPackItem(context.Context, jobs.AssetPackItemIn
 func (s *stubJobsRepo) InsertPackItemWithAsset(context.Context, assets.InsertParams, jobs.AssetPackItemInsertParams) error {
 	return nil
 }
+func (s *stubJobsRepo) InsertPackItemWithAssetSuperseding(context.Context, assets.InsertParams, jobs.AssetPackItemInsertParams, assets.VariantSlot) error {
+	return nil
+}
 func (s *stubJobsRepo) ListAssetPackItems(context.Context, string) ([]jobs.AssetPackItem, error) {
 	return nil, nil
 }

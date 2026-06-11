@@ -7,7 +7,7 @@ SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
        provider_id, model_id, provider_route_id,
        prompt_hash, seed, reference_asset_ids,
        generation_job_id, metadata, generated_at,
-       created_at, updated_at
+       created_at, updated_at, superseded_by_asset_id
 FROM visual_assets
 WHERE id = $1
   AND tenant_id = $2;
@@ -31,7 +31,7 @@ SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
        provider_id, model_id, provider_route_id,
        prompt_hash, seed, reference_asset_ids,
        generation_job_id, metadata, generated_at,
-       created_at, updated_at
+       created_at, updated_at, superseded_by_asset_id
 FROM visual_assets
 WHERE tenant_id = sqlc.arg('tenant_id')
   AND world_id = sqlc.arg('world_id')
@@ -67,7 +67,7 @@ SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
        provider_id, model_id, provider_route_id,
        prompt_hash, seed, reference_asset_ids,
        generation_job_id, metadata, generated_at,
-       created_at, updated_at
+       created_at, updated_at, superseded_by_asset_id
 FROM visual_assets
 WHERE tenant_id = sqlc.arg('tenant_id')
   AND world_id = sqlc.arg('world_id')
@@ -101,7 +101,7 @@ SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
        provider_id, model_id, provider_route_id,
        prompt_hash, seed, reference_asset_ids,
        generation_job_id, metadata, generated_at,
-       created_at, updated_at
+       created_at, updated_at, superseded_by_asset_id
 FROM visual_assets
 WHERE tenant_id = sqlc.arg('tenant_id')
   AND world_id = sqlc.arg('world_id')
@@ -128,7 +128,7 @@ SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
        provider_id, model_id, provider_route_id,
        prompt_hash, seed, reference_asset_ids,
        generation_job_id, metadata, generated_at,
-       created_at, updated_at
+       created_at, updated_at, superseded_by_asset_id
 FROM visual_assets
 WHERE tenant_id = sqlc.arg('tenant_id')
   AND world_id = sqlc.arg('world_id')
@@ -141,11 +141,15 @@ WHERE tenant_id = sqlc.arg('tenant_id')
 ORDER BY fallback_rank ASC NULLS LAST, id ASC;
 
 -- name: InsertVisualAsset :one
+-- The new asset always lands status='ready'. version is supplied by the caller
+-- (Phase 6A4): the normal generate path passes 1 (the prior schema DEFAULT);
+-- a forced regeneration passes prior_max_version + 1 so versions stay monotonic
+-- across regenerations of a slot, archived predecessors included.
 INSERT INTO visual_assets (
     id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
     variant_family, compatibility_tags, fallback_allowed, fallback_rank,
     style_profile_id, style_profile_version,
-    quality_tier, status,
+    quality_tier, status, version,
     low_res_url, high_res_url, thumbnail_url,
     provider_id, model_id, prompt_hash, seed,
     generation_job_id, metadata, generated_at
@@ -153,7 +157,7 @@ INSERT INTO visual_assets (
     $1, $2, $3, $4, $5, $6,
     $7, $8, $9, $10,
     $11, $12,
-    $13, 'ready',
+    $13, 'ready', sqlc.arg('version'),
     $14, $15, $16,
     $17, $18, $19, $20,
     $21, $22, now()
@@ -166,4 +170,85 @@ RETURNING id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
           provider_id, model_id, provider_route_id,
           prompt_hash, seed, reference_asset_ids,
           generation_job_id, metadata, generated_at,
-          created_at, updated_at;
+          created_at, updated_at, superseded_by_asset_id;
+
+-- name: AcquireSupersedeLock :exec
+-- Phase 6A4 supersede concurrency control: a transaction-scoped advisory lock
+-- keyed on the exact regeneration slot. Two concurrent forced regenerations of
+-- the same slot serialize here, so they compute prior_max_version, archive prior
+-- ready rows, and insert the new ready row one at a time — producing versions
+-- N+1 and N+2 (never duplicate versions) and leaving exactly one ready row. The
+-- lock auto-releases at commit/rollback. The slot key is built deterministically
+-- by the caller (internal/assets) from the exact slot identity.
+SELECT pg_advisory_xact_lock(hashtextextended(sqlc.arg('slot_key')::text, 0));
+
+-- name: MaxVersionForArtifactSlot :one
+-- Phase 6A4 supersede: the current max version across ALL rows (ready AND
+-- archived) of the exact artifact reuse slot, so the regenerated asset's version
+-- is COALESCE(max, 0) + 1 and stays monotonic even as predecessors are archived.
+-- The slot predicate is byte-for-byte the FindReadyArtifactByPromptHash reuse
+-- slot minus the status filter (we count archived rows too).
+SELECT COALESCE(MAX(version), 0)::int AS max_version
+FROM visual_assets
+WHERE tenant_id = sqlc.arg('tenant_id')
+  AND world_id = sqlc.arg('world_id')
+  AND asset_type = 'artifact'
+  AND variant_key = 'default'
+  AND style_profile_id = sqlc.arg('style_profile_id')
+  AND quality_tier = sqlc.arg('quality_tier')
+  AND prompt_hash = sqlc.arg('prompt_hash');
+
+-- name: ArchivePriorReadyArtifactSlot :exec
+-- Phase 6A4 supersede: archive every still-ready row of the exact artifact slot
+-- except the just-inserted new asset, linking each forward to it. Slot-scoped and
+-- exact — the same predicate as the reuse lookup — so a forced regenerate never
+-- archives a compatible/preview neighbor, only the identical slot. Runs in the
+-- same transaction (under the slot lock) as the new asset's insert, so committed
+-- readers flip atomically from old-ready to new-ready.
+UPDATE visual_assets
+SET status = 'archived',
+    superseded_by_asset_id = sqlc.arg('new_asset_id'),
+    updated_at = now()
+WHERE tenant_id = sqlc.arg('tenant_id')
+  AND world_id = sqlc.arg('world_id')
+  AND asset_type = 'artifact'
+  AND variant_key = 'default'
+  AND style_profile_id = sqlc.arg('style_profile_id')
+  AND quality_tier = sqlc.arg('quality_tier')
+  AND prompt_hash = sqlc.arg('prompt_hash')
+  AND status = 'ready'
+  AND id <> sqlc.arg('new_asset_id');
+
+-- name: MaxVersionForVariantSlot :one
+-- Phase 6A4 supersede: the current max version across ALL rows (ready AND
+-- archived) of the exact pack-role reuse slot. Mirrors MaxVersionForArtifactSlot
+-- for the FindExactVisualAsset slot predicate (identity + variant + state + style
+-- + quality), minus the status filter.
+SELECT COALESCE(MAX(version), 0)::int AS max_version
+FROM visual_assets
+WHERE tenant_id = sqlc.arg('tenant_id')
+  AND world_id = sqlc.arg('world_id')
+  AND visual_identity_id = sqlc.arg('visual_identity_id')
+  AND variant_key = sqlc.arg('variant_key')
+  AND state_version = sqlc.arg('state_version')
+  AND style_profile_id = sqlc.arg('style_profile_id')
+  AND quality_tier = sqlc.arg('quality_tier');
+
+-- name: ArchivePriorReadyVariantSlot :exec
+-- Phase 6A4 supersede: archive every still-ready row of the exact pack-role slot
+-- except the just-inserted new asset, linking each forward to it. Exact and
+-- slot-scoped (the FindExactVisualAsset predicate) so a forced pack regenerate
+-- never touches a compatible/preview neighbor.
+UPDATE visual_assets
+SET status = 'archived',
+    superseded_by_asset_id = sqlc.arg('new_asset_id'),
+    updated_at = now()
+WHERE tenant_id = sqlc.arg('tenant_id')
+  AND world_id = sqlc.arg('world_id')
+  AND visual_identity_id = sqlc.arg('visual_identity_id')
+  AND variant_key = sqlc.arg('variant_key')
+  AND state_version = sqlc.arg('state_version')
+  AND style_profile_id = sqlc.arg('style_profile_id')
+  AND quality_tier = sqlc.arg('quality_tier')
+  AND status = 'ready'
+  AND id <> sqlc.arg('new_asset_id');

@@ -174,7 +174,7 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 	// model_id is the seeded mock provider_models row (Phase 4 seeds it, and
 	// the pricing path already resolves against it). Stamping it on the asset
 	// records provenance; real provider routing still picks the model upstream.
-	asset, err := w.Assets.Insert(ctx, assets.InsertParams{
+	insertParams := assets.InsertParams{
 		ID:         assetID,
 		TenantID:   job.TenantID,
 		WorldID:    worldID,
@@ -195,7 +195,27 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 		PromptHash:          strPtr(promptHash),
 		Seed:                strPtr(seed),
 		GenerationJobID:     &jobIDRef,
-	})
+	}
+
+	// Phase 6A4 forced regeneration: a forced job (force_regenerate carried on
+	// the payload) supersedes its slot — in one transaction, under a slot lock,
+	// it inserts the new asset as the single ready row (version = prior_max + 1)
+	// and archives every prior ready row of the EXACT artifact slot, linking them
+	// forward. The exact slot is the FindReadyArtifactByPromptHash predicate, so a
+	// regenerate never archives a compatible/preview neighbor. A non-forced job
+	// takes the byte-for-byte unchanged single insert (version defaults to 1).
+	var asset assets.VisualAsset
+	if payloadBool(job.InputPayload, "force_regenerate") {
+		asset, err = w.Assets.SupersedeAndInsertArtifact(ctx, insertParams, assets.ArtifactSlot{
+			TenantID:       job.TenantID,
+			WorldID:        worldID,
+			StyleProfileID: payloadString(job.InputPayload, "style_profile_id"),
+			QualityTier:    qualityTier,
+			PromptHash:     promptHash,
+		})
+	} else {
+		asset, err = w.Assets.Insert(ctx, insertParams)
+	}
 	if err != nil {
 		w.recordFailure(ctx, job, attempt.ID, attempt.ProviderID, fmt.Errorf("insert asset: %w", err), latency, finalAttempt)
 		return err
@@ -349,6 +369,14 @@ func strPtr(s string) *string {
 func payloadString(payload map[string]any, key string) string {
 	s, _ := payload[key].(string)
 	return s
+}
+
+// payloadBool reads an optional boolean out of a job input payload, returning
+// false when the key is absent or not a bool. JSON booleans decode as bool, so
+// force_regenerate carried by the handler reads back cleanly here.
+func payloadBool(payload map[string]any, key string) bool {
+	b, _ := payload[key].(bool)
+	return b
 }
 
 // payloadStrPtr reads an optional string out of a job input payload, returning

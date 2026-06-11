@@ -527,6 +527,163 @@ func TestEndToEndArtifactReuseMisses(t *testing.T) {
 	}
 }
 
+// TestEndToEndArtifactForceRegenerateSupersedes is the Phase 6A4 acceptance test
+// for the artifact path: a forced regeneration of a slot that already has a ready
+// asset is a real generation (reservation + provider attempt + new asset + full
+// budget spend), the prior asset is archived and linked forward, exactly one
+// ready row remains (the new one, version=2), and a subsequent non-forced request
+// reuses the regenerated asset, not the archived predecessor.
+func TestEndToEndArtifactForceRegenerateSupersedes(t *testing.T) {
+	pool := openTestPool(t)
+	defer pool.Close()
+	cleanup(t, pool)
+	defer cleanup(t, pool)
+	seedFixtures(t, pool)
+	seedBudget(t, pool, "bud_force_tenant", "tenant", itTenant, "active", "5.0000")
+	store := openTestStorage(t)
+
+	jobsRepo := jobs.NewRepository(pool)
+	assetsRepo := assets.NewRepository(pool)
+	stylesRepo := styles.NewRepository(pool)
+	enq := newRecordingEnqueuer()
+	fin := cost.NewLifecycle(pool, nil)
+	svc := jobs.NewService(pool, enq, cost.NewService(nil)).WithFinalizer(fin)
+	r := mountTestRouter(svc, stylesRepo, jobsRepo, assetsRepo)
+	worker := &jobs.Worker{Jobs: jobsRepo, Assets: assetsRepo, Storage: store, Provider: mock.New(), Finalizer: fin}
+
+	body := map[string]any{"world_id": "w1", "style_profile_id": itStyleID, "description": "A bronze key"}
+
+	// 1. Generate normally → v1 ready.
+	first := sendArtifactRequest(t, r, body, "")
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("first POST: expected 202, got %d body=%s", first.Code, first.Body.String())
+	}
+	var firstResp map[string]any
+	_ = json.Unmarshal(first.Body.Bytes(), &firstResp)
+	firstJobID, _ := firstResp["job_id"].(string)
+	if err := worker.Process(context.Background(), firstJobID, 0); err != nil {
+		t.Fatalf("worker process first: %v", err)
+	}
+	var firstAssetID string
+	var firstVersion int32
+	if err := pool.QueryRow(context.Background(),
+		`SELECT id, version FROM visual_assets WHERE tenant_id = $1`, itTenant).Scan(&firstAssetID, &firstVersion); err != nil {
+		t.Fatalf("read first asset: %v", err)
+	}
+	if firstVersion != 1 {
+		t.Fatalf("first asset version: expected 1, got %d", firstVersion)
+	}
+	spentAfterFirst := scalar(t, pool, `SELECT spent_amount::text FROM cost_budgets WHERE id = 'bud_force_tenant'`)
+	firstActual := scalar(t, pool, `SELECT actual_cost_usd::text FROM generation_jobs WHERE id = $1`, firstJobID)
+
+	// 2. Force regenerate the same slot.
+	forcedBody := map[string]any{"world_id": "w1", "style_profile_id": itStyleID, "description": "A bronze key", "force_regenerate": true}
+	forced := sendArtifactRequest(t, r, forcedBody, "")
+	if forced.Code != http.StatusAccepted {
+		t.Fatalf("forced POST: expected 202, got %d body=%s", forced.Code, forced.Body.String())
+	}
+	var forcedResp map[string]any
+	_ = json.Unmarshal(forced.Body.Bytes(), &forcedResp)
+	forcedJobID, _ := forcedResp["job_id"].(string)
+	if forcedJobID == "" || forcedJobID == firstJobID {
+		t.Fatalf("forced: expected a distinct job_id, got %q", forcedJobID)
+	}
+	// A forced request is a real generation: it must reserve and enqueue (no
+	// cache-hit short-circuit).
+	var forcedCacheResult string
+	var forcedReservationID *string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT cache_result, cost_reservation_id FROM generation_jobs WHERE id = $1`, forcedJobID,
+	).Scan(&forcedCacheResult, &forcedReservationID); err != nil {
+		t.Fatalf("read forced job: %v", err)
+	}
+	if forcedCacheResult != "generated_required" {
+		t.Fatalf("forced job cache_result: expected generated_required, got %q", forcedCacheResult)
+	}
+	if forcedReservationID == nil {
+		t.Fatalf("forced job must reserve cost (cost_reservation_id set)")
+	}
+	if err := worker.Process(context.Background(), forcedJobID, 0); err != nil {
+		t.Fatalf("worker process forced: %v", err)
+	}
+
+	// The forced job produced its own provider attempt.
+	if got := countScalar(t, pool, `SELECT count(*) FROM provider_attempts WHERE generation_job_id = $1`, forcedJobID); got != 1 {
+		t.Fatalf("forced job: expected exactly one provider attempt, got %d", got)
+	}
+
+	// The prior asset is archived and linked forward to the regenerated asset.
+	var priorStatus string
+	var supersededBy *string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT status, superseded_by_asset_id FROM visual_assets WHERE id = $1`, firstAssetID,
+	).Scan(&priorStatus, &supersededBy); err != nil {
+		t.Fatalf("read prior asset: %v", err)
+	}
+	if priorStatus != "archived" {
+		t.Fatalf("prior asset must be archived, got %q", priorStatus)
+	}
+	if supersededBy == nil {
+		t.Fatalf("prior asset must link forward via superseded_by_asset_id")
+	}
+
+	// Exactly one ready artifact remains for the slot: the regenerated one, v2.
+	readyCount := countScalar(t, pool,
+		`SELECT count(*) FROM visual_assets WHERE tenant_id = $1 AND asset_type = 'artifact' AND status = 'ready'`, itTenant)
+	if readyCount != 1 {
+		t.Fatalf("expected exactly one ready artifact after supersede, got %d", readyCount)
+	}
+	var newAssetID string
+	var newVersion int32
+	if err := pool.QueryRow(context.Background(),
+		`SELECT id, version FROM visual_assets WHERE tenant_id = $1 AND status = 'ready'`, itTenant,
+	).Scan(&newAssetID, &newVersion); err != nil {
+		t.Fatalf("read regenerated asset: %v", err)
+	}
+	if newVersion != 2 {
+		t.Fatalf("regenerated asset version: expected 2, got %d", newVersion)
+	}
+	if *supersededBy != newAssetID {
+		t.Fatalf("prior asset must link to the regenerated asset %q, got %q", newAssetID, *supersededBy)
+	}
+
+	// Budget spend increased by the full artifact cost (delta == one generation).
+	spentAfterForced := scalar(t, pool, `SELECT spent_amount::text FROM cost_budgets WHERE id = 'bud_force_tenant'`)
+	if spentAfterForced == spentAfterFirst {
+		t.Fatalf("forced regenerate must increase budget spend: still %s", spentAfterForced)
+	}
+	forcedActual := scalar(t, pool, `SELECT actual_cost_usd::text FROM generation_jobs WHERE id = $1`, forcedJobID)
+	if forcedActual != firstActual {
+		t.Fatalf("forced generation cost must equal a cold generation (%s), got %s", firstActual, forcedActual)
+	}
+
+	// 3. A subsequent NON-forced request reuses the REGENERATED asset (the new
+	// ready row), not the archived predecessor.
+	third := sendArtifactRequest(t, r, body, "")
+	if third.Code != http.StatusAccepted {
+		t.Fatalf("third POST: expected 202, got %d body=%s", third.Code, third.Body.String())
+	}
+	var thirdResp map[string]any
+	_ = json.Unmarshal(third.Body.Bytes(), &thirdResp)
+	thirdJobID, _ := thirdResp["job_id"].(string)
+	var thirdCacheResult string
+	var thirdFinal []string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT cache_result, final_asset_ids FROM generation_jobs WHERE id = $1`, thirdJobID,
+	).Scan(&thirdCacheResult, &thirdFinal); err != nil {
+		t.Fatalf("read third job: %v", err)
+	}
+	if thirdCacheResult != "exact_match" {
+		t.Fatalf("non-forced repeat after regenerate must reuse, got cache_result=%q", thirdCacheResult)
+	}
+	if len(thirdFinal) != 1 || thirdFinal[0] != newAssetID {
+		t.Fatalf("repeat must reuse the regenerated asset %q, got %v", newAssetID, thirdFinal)
+	}
+	if thirdFinal[0] == firstAssetID {
+		t.Fatalf("repeat must NOT reuse the archived predecessor %q", firstAssetID)
+	}
+}
+
 func TestIdempotencyConcurrentRequestsCreateExactlyOneJob(t *testing.T) {
 	pool := openTestPool(t)
 	defer pool.Close()

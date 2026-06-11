@@ -9,6 +9,110 @@ import (
 	"context"
 )
 
+const acquireSupersedeLock = `-- name: AcquireSupersedeLock :exec
+SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
+`
+
+// Phase 6A4 supersede concurrency control: a transaction-scoped advisory lock
+// keyed on the exact regeneration slot. Two concurrent forced regenerations of
+// the same slot serialize here, so they compute prior_max_version, archive prior
+// ready rows, and insert the new ready row one at a time — producing versions
+// N+1 and N+2 (never duplicate versions) and leaving exactly one ready row. The
+// lock auto-releases at commit/rollback. The slot key is built deterministically
+// by the caller (internal/assets) from the exact slot identity.
+func (q *Queries) AcquireSupersedeLock(ctx context.Context, slotKey string) error {
+	_, err := q.db.Exec(ctx, acquireSupersedeLock, slotKey)
+	return err
+}
+
+const archivePriorReadyArtifactSlot = `-- name: ArchivePriorReadyArtifactSlot :exec
+UPDATE visual_assets
+SET status = 'archived',
+    superseded_by_asset_id = $1,
+    updated_at = now()
+WHERE tenant_id = $2
+  AND world_id = $3
+  AND asset_type = 'artifact'
+  AND variant_key = 'default'
+  AND style_profile_id = $4
+  AND quality_tier = $5
+  AND prompt_hash = $6
+  AND status = 'ready'
+  AND id <> $1
+`
+
+type ArchivePriorReadyArtifactSlotParams struct {
+	NewAssetID     *string `json:"new_asset_id"`
+	TenantID       string  `json:"tenant_id"`
+	WorldID        string  `json:"world_id"`
+	StyleProfileID *string `json:"style_profile_id"`
+	QualityTier    string  `json:"quality_tier"`
+	PromptHash     *string `json:"prompt_hash"`
+}
+
+// Phase 6A4 supersede: archive every still-ready row of the exact artifact slot
+// except the just-inserted new asset, linking each forward to it. Slot-scoped and
+// exact — the same predicate as the reuse lookup — so a forced regenerate never
+// archives a compatible/preview neighbor, only the identical slot. Runs in the
+// same transaction (under the slot lock) as the new asset's insert, so committed
+// readers flip atomically from old-ready to new-ready.
+func (q *Queries) ArchivePriorReadyArtifactSlot(ctx context.Context, arg ArchivePriorReadyArtifactSlotParams) error {
+	_, err := q.db.Exec(ctx, archivePriorReadyArtifactSlot,
+		arg.NewAssetID,
+		arg.TenantID,
+		arg.WorldID,
+		arg.StyleProfileID,
+		arg.QualityTier,
+		arg.PromptHash,
+	)
+	return err
+}
+
+const archivePriorReadyVariantSlot = `-- name: ArchivePriorReadyVariantSlot :exec
+UPDATE visual_assets
+SET status = 'archived',
+    superseded_by_asset_id = $1,
+    updated_at = now()
+WHERE tenant_id = $2
+  AND world_id = $3
+  AND visual_identity_id = $4
+  AND variant_key = $5
+  AND state_version = $6
+  AND style_profile_id = $7
+  AND quality_tier = $8
+  AND status = 'ready'
+  AND id <> $1
+`
+
+type ArchivePriorReadyVariantSlotParams struct {
+	NewAssetID       *string `json:"new_asset_id"`
+	TenantID         string  `json:"tenant_id"`
+	WorldID          string  `json:"world_id"`
+	VisualIdentityID *string `json:"visual_identity_id"`
+	VariantKey       string  `json:"variant_key"`
+	StateVersion     int32   `json:"state_version"`
+	StyleProfileID   *string `json:"style_profile_id"`
+	QualityTier      string  `json:"quality_tier"`
+}
+
+// Phase 6A4 supersede: archive every still-ready row of the exact pack-role slot
+// except the just-inserted new asset, linking each forward to it. Exact and
+// slot-scoped (the FindExactVisualAsset predicate) so a forced pack regenerate
+// never touches a compatible/preview neighbor.
+func (q *Queries) ArchivePriorReadyVariantSlot(ctx context.Context, arg ArchivePriorReadyVariantSlotParams) error {
+	_, err := q.db.Exec(ctx, archivePriorReadyVariantSlot,
+		arg.NewAssetID,
+		arg.TenantID,
+		arg.WorldID,
+		arg.VisualIdentityID,
+		arg.VariantKey,
+		arg.StateVersion,
+		arg.StyleProfileID,
+		arg.QualityTier,
+	)
+	return err
+}
+
 const findExactVisualAsset = `-- name: FindExactVisualAsset :one
 SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
        variant_family, version, state_version, style_profile_id,
@@ -18,7 +122,7 @@ SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
        provider_id, model_id, provider_route_id,
        prompt_hash, seed, reference_asset_ids,
        generation_job_id, metadata, generated_at,
-       created_at, updated_at
+       created_at, updated_at, superseded_by_asset_id
 FROM visual_assets
 WHERE tenant_id = $1
   AND world_id = $2
@@ -100,6 +204,7 @@ func (q *Queries) FindExactVisualAsset(ctx context.Context, arg FindExactVisualA
 		&i.GeneratedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SupersededByAssetID,
 	)
 	return i, err
 }
@@ -113,7 +218,7 @@ SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
        provider_id, model_id, provider_route_id,
        prompt_hash, seed, reference_asset_ids,
        generation_job_id, metadata, generated_at,
-       created_at, updated_at
+       created_at, updated_at, superseded_by_asset_id
 FROM visual_assets
 WHERE tenant_id = $1
   AND world_id = $2
@@ -191,6 +296,7 @@ func (q *Queries) FindReadyArtifactByPromptHash(ctx context.Context, arg FindRea
 		&i.GeneratedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SupersededByAssetID,
 	)
 	return i, err
 }
@@ -204,7 +310,7 @@ SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
        provider_id, model_id, provider_route_id,
        prompt_hash, seed, reference_asset_ids,
        generation_job_id, metadata, generated_at,
-       created_at, updated_at
+       created_at, updated_at, superseded_by_asset_id
 FROM visual_assets
 WHERE id = $1
   AND tenant_id = $2
@@ -250,6 +356,7 @@ func (q *Queries) GetVisualAssetByID(ctx context.Context, arg GetVisualAssetByID
 		&i.GeneratedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SupersededByAssetID,
 	)
 	return i, err
 }
@@ -259,7 +366,7 @@ INSERT INTO visual_assets (
     id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
     variant_family, compatibility_tags, fallback_allowed, fallback_rank,
     style_profile_id, style_profile_version,
-    quality_tier, status,
+    quality_tier, status, version,
     low_res_url, high_res_url, thumbnail_url,
     provider_id, model_id, prompt_hash, seed,
     generation_job_id, metadata, generated_at
@@ -267,7 +374,7 @@ INSERT INTO visual_assets (
     $1, $2, $3, $4, $5, $6,
     $7, $8, $9, $10,
     $11, $12,
-    $13, 'ready',
+    $13, 'ready', $23,
     $14, $15, $16,
     $17, $18, $19, $20,
     $21, $22, now()
@@ -280,7 +387,7 @@ RETURNING id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
           provider_id, model_id, provider_route_id,
           prompt_hash, seed, reference_asset_ids,
           generation_job_id, metadata, generated_at,
-          created_at, updated_at
+          created_at, updated_at, superseded_by_asset_id
 `
 
 type InsertVisualAssetParams struct {
@@ -306,8 +413,13 @@ type InsertVisualAssetParams struct {
 	Seed                *string  `json:"seed"`
 	GenerationJobID     *string  `json:"generation_job_id"`
 	Metadata            []byte   `json:"metadata"`
+	Version             int32    `json:"version"`
 }
 
+// The new asset always lands status='ready'. version is supplied by the caller
+// (Phase 6A4): the normal generate path passes 1 (the prior schema DEFAULT);
+// a forced regeneration passes prior_max_version + 1 so versions stay monotonic
+// across regenerations of a slot, archived predecessors included.
 func (q *Queries) InsertVisualAsset(ctx context.Context, arg InsertVisualAssetParams) (VisualAsset, error) {
 	row := q.db.QueryRow(ctx, insertVisualAsset,
 		arg.ID,
@@ -332,6 +444,7 @@ func (q *Queries) InsertVisualAsset(ctx context.Context, arg InsertVisualAssetPa
 		arg.Seed,
 		arg.GenerationJobID,
 		arg.Metadata,
+		arg.Version,
 	)
 	var i VisualAsset
 	err := row.Scan(
@@ -366,6 +479,7 @@ func (q *Queries) InsertVisualAsset(ctx context.Context, arg InsertVisualAssetPa
 		&i.GeneratedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SupersededByAssetID,
 	)
 	return i, err
 }
@@ -379,7 +493,7 @@ SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
        provider_id, model_id, provider_route_id,
        prompt_hash, seed, reference_asset_ids,
        generation_job_id, metadata, generated_at,
-       created_at, updated_at
+       created_at, updated_at, superseded_by_asset_id
 FROM visual_assets
 WHERE tenant_id = $1
   AND world_id = $2
@@ -456,6 +570,7 @@ func (q *Queries) ListVisualAssetCandidates(ctx context.Context, arg ListVisualA
 			&i.GeneratedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.SupersededByAssetID,
 		); err != nil {
 			return nil, err
 		}
@@ -476,7 +591,7 @@ SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
        provider_id, model_id, provider_route_id,
        prompt_hash, seed, reference_asset_ids,
        generation_job_id, metadata, generated_at,
-       created_at, updated_at
+       created_at, updated_at, superseded_by_asset_id
 FROM visual_assets
 WHERE tenant_id = $1
   AND world_id = $2
@@ -553,6 +668,7 @@ func (q *Queries) ListVisualAssetCandidatesByCompatTag(ctx context.Context, arg 
 			&i.GeneratedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.SupersededByAssetID,
 		); err != nil {
 			return nil, err
 		}
@@ -562,4 +678,83 @@ func (q *Queries) ListVisualAssetCandidatesByCompatTag(ctx context.Context, arg 
 		return nil, err
 	}
 	return items, nil
+}
+
+const maxVersionForArtifactSlot = `-- name: MaxVersionForArtifactSlot :one
+SELECT COALESCE(MAX(version), 0)::int AS max_version
+FROM visual_assets
+WHERE tenant_id = $1
+  AND world_id = $2
+  AND asset_type = 'artifact'
+  AND variant_key = 'default'
+  AND style_profile_id = $3
+  AND quality_tier = $4
+  AND prompt_hash = $5
+`
+
+type MaxVersionForArtifactSlotParams struct {
+	TenantID       string  `json:"tenant_id"`
+	WorldID        string  `json:"world_id"`
+	StyleProfileID *string `json:"style_profile_id"`
+	QualityTier    string  `json:"quality_tier"`
+	PromptHash     *string `json:"prompt_hash"`
+}
+
+// Phase 6A4 supersede: the current max version across ALL rows (ready AND
+// archived) of the exact artifact reuse slot, so the regenerated asset's version
+// is COALESCE(max, 0) + 1 and stays monotonic even as predecessors are archived.
+// The slot predicate is byte-for-byte the FindReadyArtifactByPromptHash reuse
+// slot minus the status filter (we count archived rows too).
+func (q *Queries) MaxVersionForArtifactSlot(ctx context.Context, arg MaxVersionForArtifactSlotParams) (int32, error) {
+	row := q.db.QueryRow(ctx, maxVersionForArtifactSlot,
+		arg.TenantID,
+		arg.WorldID,
+		arg.StyleProfileID,
+		arg.QualityTier,
+		arg.PromptHash,
+	)
+	var max_version int32
+	err := row.Scan(&max_version)
+	return max_version, err
+}
+
+const maxVersionForVariantSlot = `-- name: MaxVersionForVariantSlot :one
+SELECT COALESCE(MAX(version), 0)::int AS max_version
+FROM visual_assets
+WHERE tenant_id = $1
+  AND world_id = $2
+  AND visual_identity_id = $3
+  AND variant_key = $4
+  AND state_version = $5
+  AND style_profile_id = $6
+  AND quality_tier = $7
+`
+
+type MaxVersionForVariantSlotParams struct {
+	TenantID         string  `json:"tenant_id"`
+	WorldID          string  `json:"world_id"`
+	VisualIdentityID *string `json:"visual_identity_id"`
+	VariantKey       string  `json:"variant_key"`
+	StateVersion     int32   `json:"state_version"`
+	StyleProfileID   *string `json:"style_profile_id"`
+	QualityTier      string  `json:"quality_tier"`
+}
+
+// Phase 6A4 supersede: the current max version across ALL rows (ready AND
+// archived) of the exact pack-role reuse slot. Mirrors MaxVersionForArtifactSlot
+// for the FindExactVisualAsset slot predicate (identity + variant + state + style
+// + quality), minus the status filter.
+func (q *Queries) MaxVersionForVariantSlot(ctx context.Context, arg MaxVersionForVariantSlotParams) (int32, error) {
+	row := q.db.QueryRow(ctx, maxVersionForVariantSlot,
+		arg.TenantID,
+		arg.WorldID,
+		arg.VisualIdentityID,
+		arg.VariantKey,
+		arg.StateVersion,
+		arg.StyleProfileID,
+		arg.QualityTier,
+	)
+	var max_version int32
+	err := row.Scan(&max_version)
+	return max_version, err
 }

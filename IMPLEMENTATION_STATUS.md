@@ -90,10 +90,34 @@ before this is production-ready.**
   same pack job + `asset_pack_id`, no duplicates). Artifact reuse (6A2) and
   `/v1/assets/search` (6A1) are untouched.
 
+- **Phase 6A4 — forced regeneration (supersede-on-regenerate)**: a
+  `force_regenerate` boolean (default `false`, strictly additive on
+  `GenerateArtifactRequest`/`GenerateCharacterPackRequest`/`GeneratePlacePackRequest`)
+  bypasses reuse and always generates. The artifact path skips the 6A2
+  exact-hash lookup; the pack path skips per-role retrieval (`planPackReuse`),
+  treats every required role as missing, and prices/generates the whole pack
+  (no misses-only discount, no all-hits shortcut). A forced regeneration is a
+  **real** generation (reservation + provider attempt + new asset + full budget
+  spend) — there is no free/cache-hit regenerate. The worker then **supersedes**
+  the slot: in one transaction, under a `pg_advisory_xact_lock` keyed on the
+  exact slot, it inserts the new asset `ready` with `version = prior_max + 1`
+  and archives every prior `ready` row of that exact slot
+  (`status='archived'`, `superseded_by_asset_id` → new asset). The slot
+  predicate is the exact reuse predicate (artifact prompt-hash slot;
+  pack identity+variant+state+style+quality slot) — never matrix-based, so a
+  compatible/preview neighbor is never archived. Committed readers therefore
+  never see zero or multiple ready rows, and a subsequent non-forced request
+  reuses the regenerated row (6A1 retrieval is `ready`-only and unchanged). Old
+  packs are preserved historical snapshots: a forced pack creates a new
+  `asset_packs` row with all-new assets and only flips the prior assets'
+  `status`/link — prior `asset_pack_items` keep pointing at the now-archived
+  assets. Idempotency is unchanged (`force_regenerate` is part of the request
+  hash; a replayed forced request returns the same job and supersedes once).
+  Schema: one additive nullable `visual_assets.superseded_by_asset_id`
+  (migration `0005`, no new table — count stays 18). This closes Phase 6A.
+
 ## Remaining
 
-- **Phase 6A (remainder) — Retrieval-before-generation**: regeneration
-  endpoint / `force_regenerate`.
 - **Phase 6B — Delivery readiness**: S3 reads, presigned URLs, asset
   retrieval UX, style preview.
 - **Phase 7 — Real provider + production controls**: BFL adapter,

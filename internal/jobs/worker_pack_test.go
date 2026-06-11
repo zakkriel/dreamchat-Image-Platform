@@ -567,3 +567,72 @@ func TestProcessPackItemInsertFailureRollsBackAtomically(t *testing.T) {
 		t.Fatalf("expected exactly one commit across both runs, got %v", fin.committed)
 	}
 }
+
+// TestProcessPackForceRegenerateSupersedesRoleSlots (Phase 6A4): a forced pack
+// routes every role's write through InsertPackItemWithAssetSuperseding with the
+// EXACT pack-role slot, and a prior ready asset for a role's slot is archived,
+// linked forward, and the regenerated asset is versioned prior+1.
+func TestProcessPackForceRegenerateSupersedesRoleSlots(t *testing.T) {
+	repo := newFakeJobsRepo()
+	assetsRepo := &fakeAssetsRepo{}
+	provider := &selectiveProvider{}
+	variants := []string{"neutral_front_portrait", "side_angle_portrait"}
+	seedPackJob(repo, "job_force_pack", "pack_force", JobTypeCharacterPack, variants)
+	// Mark the job forced (the handler would carry this on the payload).
+	job := repo.jobs["job_force_pack"]
+	job.InputPayload["force_regenerate"] = true
+	repo.jobs["job_force_pack"] = job
+
+	style := "sty_ok"
+	identity := "vi_test"
+	// Seed a prior ready asset (version 1) for the first role's slot.
+	priorID := "asset_prior_role0"
+	repo.packTable = append(repo.packTable, assets.VisualAsset{
+		ID:               priorID,
+		TenantID:         "tenant_a",
+		WorldID:          "w1",
+		VisualIdentityID: &identity,
+		VariantKey:       variants[0],
+		Version:          1,
+		StateVersion:     1,
+		StyleProfileID:   &style,
+		QualityTier:      "standard",
+		Status:           "ready",
+	})
+
+	w := newPackWorker(repo, assetsRepo, provider, nil)
+	if err := w.ProcessPack(context.Background(), "job_force_pack"); err != nil {
+		t.Fatalf("ProcessPack: %v", err)
+	}
+
+	// Every role took the supersede path (a forced pack has no reused items).
+	if len(repo.supersedeVariantCall) != len(variants) {
+		t.Fatalf("forced pack must supersede every role: want %d calls, got %d", len(variants), len(repo.supersedeVariantCall))
+	}
+	wantSlot0 := assets.VariantSlot{
+		TenantID: "tenant_a", WorldID: "w1", VisualIdentityID: identity,
+		VariantKey: variants[0], StateVersion: 1, StyleProfileID: style, QualityTier: "standard",
+	}
+	if repo.supersedeVariantCall[0].slot != wantSlot0 {
+		t.Fatalf("role 0 slot mismatch: want %+v, got %+v", wantSlot0, repo.supersedeVariantCall[0].slot)
+	}
+
+	// The prior asset for role 0 is archived + linked; its replacement is version 2.
+	var prior, fresh *assets.VisualAsset
+	for i := range repo.packTable {
+		if repo.packTable[i].ID == priorID {
+			prior = &repo.packTable[i]
+		} else if repo.packTable[i].VariantKey == variants[0] {
+			fresh = &repo.packTable[i]
+		}
+	}
+	if prior == nil || fresh == nil {
+		t.Fatalf("expected prior + regenerated role-0 assets, got %+v", repo.packTable)
+	}
+	if prior.Status != "archived" || prior.SupersededByAssetID == nil || *prior.SupersededByAssetID != fresh.ID {
+		t.Fatalf("prior role asset must be archived and linked to %q, got status=%q link=%v", fresh.ID, prior.Status, prior.SupersededByAssetID)
+	}
+	if fresh.Version != 2 {
+		t.Fatalf("regenerated role asset version must be prior+1 (=2), got %d", fresh.Version)
+	}
+}
