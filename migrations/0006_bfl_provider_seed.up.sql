@@ -89,4 +89,22 @@ INSERT INTO provider_routes (
 )
 ON CONFLICT (id) DO NOTHING;
 
+-- 5. Quality-tier coverage for the mock scene route. The 0002 seed only covers
+--    the 'standard' tier, but quality_tier is a HARD filter in route resolution
+--    (a request's quality must match a route's quality), and artifact / style-
+--    preview requests may ask for 'draft' or 'high'. The mock model renders any
+--    tier, so add scene_capable mock routes for 'draft' and 'high' (same model,
+--    same text_to_image price). Without these, a non-standard-quality single-image
+--    request would resolve no route.
+INSERT INTO provider_routes (
+    id, provider_id, model_id, operation_type, required_capability,
+    preview_capability, quality_tier, latency_tier,
+    is_enabled, priority, weight, allow_unpriced_provider
+) VALUES
+    ('route_mock_text_to_image_draft', 'mock', 'pm_mock_v1', 'text_to_image', 'scene_capable',
+     'true_preview', 'draft', 'balanced', true, 100, 1, false),
+    ('route_mock_text_to_image_high', 'mock', 'pm_mock_v1', 'text_to_image', 'scene_capable',
+     'true_preview', 'high', 'balanced', true, 100, 1, false)
+ON CONFLICT (id) DO NOTHING;
+
 COMMIT;

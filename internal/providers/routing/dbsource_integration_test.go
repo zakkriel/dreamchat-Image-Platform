@@ -128,6 +128,30 @@ func TestResolverPackCapableUnsupportedWhenOnlyBFL(t *testing.T) {
 	}
 }
 
+func TestResolverResolvesAllSceneQualityTiers(t *testing.T) {
+	pool := openPool(t)
+	defer pool.Close()
+
+	r := routing.NewResolver(routing.NewDBRouteSource(pool), map[string]bool{"mock": true})
+	for _, tc := range []struct{ tier, route string }{
+		{"draft", "route_mock_text_to_image_draft"},
+		{"standard", "route_mock_text_to_image_standard"},
+		{"high", "route_mock_text_to_image_high"},
+	} {
+		got, err := r.Resolve(context.Background(), routing.ResolveRequest{
+			OperationType:      "text_to_image",
+			QualityTier:        tc.tier,
+			RequiredCapability: "scene_capable",
+		})
+		if err != nil {
+			t.Fatalf("resolve %s: %v", tc.tier, err)
+		}
+		if got.ProviderRouteID != tc.route {
+			t.Fatalf("quality %s: expected %s, got %s", tc.tier, tc.route, got.ProviderRouteID)
+		}
+	}
+}
+
 func TestResolverIgnoresBFLWhenUnavailable(t *testing.T) {
 	pool := openPool(t)
 	defer pool.Close()

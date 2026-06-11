@@ -151,11 +151,15 @@ handler-level tests can observe them. The worker reads them back
 
 ## Seed migration choice (92)
 
-`0006_bfl_provider_seed.up.sql` is **seed-only DML** (BFL provider model, route,
-price rows, plus the `pack_capable` mock route for capability-aware pack routing)
-— it adds **no table and no column**, so it is intentionally **not** listed in
-`sqlc.yaml` (sqlc only needs schema-defining migrations) and the table count
-stays **18** (verified locally). BFL's route is given a higher `priority` number (200) than
+`0006_bfl_provider_seed.up.sql` is **seed-only DML**: BFL provider
+model/route/price, the `pack_capable` mock route (capability-aware pack routing),
+and `draft`/`high` `scene_capable` mock routes. The quality-tier routes matter
+because `quality_tier` is a **hard filter** in resolution — the 0002 seed only
+covers `standard`, so a `draft`/`high` single-image request would otherwise
+resolve no route; the mock model renders any tier, so all three resolve to
+`pm_mock_v1` at the same text_to_image price. The migration adds **no table and
+no column**, so it is intentionally **not** listed in `sqlc.yaml` and the table
+count stays **18** (verified locally). BFL's route is given a higher `priority` number (200) than
 mock's (100), so mock stays the default when both are available and no provider
 preference is supplied; BFL is selected when `IMAGE_PROVIDER=bfl` provides a
 preference. CI applies `0006` and asserts the BFL seed rows exist.
