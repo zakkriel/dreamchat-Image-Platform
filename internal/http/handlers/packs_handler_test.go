@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/config"
 	"github.com/zakkriel/drchat-image-platform/internal/identities"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
@@ -506,10 +508,273 @@ func TestPlacePackTemplateSelectsRoleSet(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Phase 6A3: pack reuse-first (retrieval before generation)
+// ---------------------------------------------------------------------------
+
+// fakeCandidateSource is an in-memory assets.CandidateSource so the handler
+// tests can drive the REAL retrieval decision layer (assets.NewRetriever)
+// without a database. exact maps a variant_key to an exact-match asset;
+// candidates is the (variant-key-independent) compatible/preview candidate pool
+// the matrix evaluates per requested role.
+type fakeCandidateSource struct {
+	exact      map[string]assets.VisualAsset
+	candidates []assets.VisualAsset
+}
+
+func (f *fakeCandidateSource) FindExact(_ context.Context, q assets.RetrievalQuery) (assets.VisualAsset, error) {
+	if a, ok := f.exact[q.VariantKey]; ok {
+		return a, nil
+	}
+	return assets.VisualAsset{}, assets.ErrNotFound
+}
+
+func (f *fakeCandidateSource) ListRetrievalCandidates(_ context.Context, _ assets.RetrievalQuery) ([]assets.VisualAsset, error) {
+	return f.candidates, nil
+}
+
+func readyReuseAsset(id, variantKey string) assets.VisualAsset {
+	return assets.VisualAsset{ID: id, VariantKey: variantKey, Status: "ready"}
+}
+
+func newPacksRouterWithRetriever(creator jobs.Creator, identitiesRepo *stubIdentitiesRepo, src assets.CandidateSource) chi.Router {
+	h := NewPacksHandler(creator, seededStyles(), identitiesRepo, config.ProviderMock).
+		WithRetriever(assets.NewRetriever(src))
+	r := chi.NewRouter()
+	r.Post("/v1/characters/{character_id}/generate-pack", h.GenerateCharacterPack)
+	r.Post("/v1/places/{place_id}/generate-pack", h.GeneratePlacePack)
+	return r
+}
+
+// TestPackAllHitsCompletesSynchronously: every required role exact-matches an
+// existing asset → the pack completes synchronously (CreateCompletedPackReuseJob),
+// no reservation/enqueue, completeness = all delivered / none missing.
+func TestPackAllHitsCompletesSynchronously(t *testing.T) {
+	creator := &estimatingPackCreator{}
+	roles := characterPackKind.defaultVariants
+	src := &fakeCandidateSource{exact: map[string]assets.VisualAsset{}}
+	for i, role := range roles {
+		src.exact[role] = readyReuseAsset(fmt.Sprintf("asset_%02d", i), role)
+	}
+	router := newPacksRouterWithRetriever(creator, seededPackIdentities(), src)
+
+	body := map[string]any{"world_id": packWorldID, "style_profile_id": "sty_ok"}
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/characters/char_hero/generate-pack",
+		tenantA, []string{"images:write"}, body, nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	// The all-hits path was taken: no generate/reserve/enqueue call.
+	if creator.got.JobType != "" {
+		t.Fatalf("all-hits must not call CreateAndEnqueue, got %+v", creator.got)
+	}
+	reuse := creator.gotReuse
+	if reuse.JobType != "character_pack" {
+		t.Fatalf("expected CreateCompletedPackReuseJob with job_type character_pack, got %q", reuse.JobType)
+	}
+	if len(reuse.ReusedItems) != len(roles) {
+		t.Fatalf("expected %d reused items, got %d", len(roles), len(reuse.ReusedItems))
+	}
+	if !reflect.DeepEqual(reuse.RequiredRoles, roles) {
+		t.Fatalf("required roles: expected %v, got %v", roles, reuse.RequiredRoles)
+	}
+	if reuse.CacheResult != "exact_match" {
+		t.Fatalf("all-exact pack cache_result: expected exact_match, got %q", reuse.CacheResult)
+	}
+	// Reused items reference the seeded existing asset ids, one per role in order.
+	for i, item := range reuse.ReusedItems {
+		if item.VariantKey != roles[i] {
+			t.Fatalf("item %d: expected variant %q, got %q", i, roles[i], item.VariantKey)
+		}
+		if item.AssetID != fmt.Sprintf("asset_%02d", i) {
+			t.Fatalf("item %d: expected asset asset_%02d, got %q", i, i, item.AssetID)
+		}
+		if item.MatchType != "exact_match" {
+			t.Fatalf("item %d: expected exact_match, got %q", i, item.MatchType)
+		}
+	}
+	resp := decode[map[string]any](t, rec)
+	if resp["status"] != "queued" {
+		t.Fatalf("accepted envelope status must be queued, got %v", resp["status"])
+	}
+	if resp["estimated_cost_usd"] != "0.0000" {
+		t.Fatalf("all-hits estimated_cost_usd must be 0.0000, got %v", resp["estimated_cost_usd"])
+	}
+	if resp["asset_pack_id"] != "pack_reuse" {
+		t.Fatalf("expected asset_pack_id pack_reuse, got %v", resp["asset_pack_id"])
+	}
+	if _, found := resp["cost_reservation_id"]; found {
+		t.Fatalf("all-hits response must carry no cost_reservation_id, got %v", resp)
+	}
+}
+
+// TestPackMixedHitsPricesMissesOnly: 5 of 7 roles exact-match, 2 miss → the
+// reservation prices only the 2 misses, the 5 hits are persisted as reused items
+// and carried as delivered, and the 2 misses are carried to the worker.
+func TestPackMixedHitsPricesMissesOnly(t *testing.T) {
+	creator := &estimatingPackCreator{}
+	roles := characterPackKind.defaultVariants // 7 roles
+	missWant := map[string]bool{roles[2]: true, roles[5]: true}
+	src := &fakeCandidateSource{exact: map[string]assets.VisualAsset{}}
+	for i, role := range roles {
+		if missWant[role] {
+			continue // no exact, no candidate → generated_required
+		}
+		src.exact[role] = readyReuseAsset(fmt.Sprintf("asset_%02d", i), role)
+	}
+	router := newPacksRouterWithRetriever(creator, seededPackIdentities(), src)
+
+	body := map[string]any{"world_id": packWorldID, "style_profile_id": "sty_ok"}
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/characters/char_hero/generate-pack",
+		tenantA, []string{"images:write"}, body, nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if creator.gotReuse.JobType != "" {
+		t.Fatalf("a partial pack must not complete synchronously")
+	}
+	got := creator.got
+	if got.Units != 2 {
+		t.Fatalf("misses-only pricing: expected Units=2, got %d", got.Units)
+	}
+	if got.AssetPack == nil {
+		t.Fatalf("expected an AssetPack spec")
+	}
+	if len(got.AssetPack.ReusedItems) != 5 {
+		t.Fatalf("expected 5 reused items, got %d", len(got.AssetPack.ReusedItems))
+	}
+	gotMissing := append([]string(nil), got.AssetPack.MissingRoles...)
+	sort.Strings(gotMissing)
+	wantMissing := []string{roles[2], roles[5]}
+	sort.Strings(wantMissing)
+	if !reflect.DeepEqual(gotMissing, wantMissing) {
+		t.Fatalf("missing roles: expected %v, got %v", wantMissing, gotMissing)
+	}
+	if !reflect.DeepEqual(got.AssetPack.RequiredRoles, roles) {
+		t.Fatalf("required roles: expected %v, got %v", roles, got.AssetPack.RequiredRoles)
+	}
+	// variant_keys carried to the worker stays the FULL role set (the worker skips
+	// the reused items and generates only the missing roles).
+	keys, _ := got.InputPayload["variant_keys"].([]string)
+	if !reflect.DeepEqual(keys, roles) {
+		t.Fatalf("payload variant_keys must be the full role set, got %v", keys)
+	}
+	// Reused items keep the role's position as sort order.
+	for _, item := range got.AssetPack.ReusedItems {
+		if missWant[item.VariantKey] {
+			t.Fatalf("missing role %q must not appear as a reused item", item.VariantKey)
+		}
+		if roles[item.SortOrder] != item.VariantKey {
+			t.Fatalf("reused item %q has sort_order %d (role at that index is %q)", item.VariantKey, item.SortOrder, roles[item.SortOrder])
+		}
+	}
+}
+
+// TestPackZeroHitsPricesWholePack: no role has a reusable asset → behaves like
+// the pre-6A3 full pack generate (every role missing, priced fully, no reused
+// items).
+func TestPackZeroHitsPricesWholePack(t *testing.T) {
+	creator := &estimatingPackCreator{}
+	src := &fakeCandidateSource{exact: map[string]assets.VisualAsset{}} // no exact, no candidates
+	router := newPacksRouterWithRetriever(creator, seededPackIdentities(), src)
+
+	body := map[string]any{"world_id": packWorldID, "style_profile_id": "sty_ok"}
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/characters/char_hero/generate-pack",
+		tenantA, []string{"images:write"}, body, nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	got := creator.got
+	if got.Units != 7 {
+		t.Fatalf("zero hits: expected Units=7 (whole pack), got %d", got.Units)
+	}
+	if got.AssetPack == nil || len(got.AssetPack.ReusedItems) != 0 {
+		t.Fatalf("zero hits must persist no reused items, got %+v", got.AssetPack)
+	}
+	if len(got.AssetPack.MissingRoles) != 7 {
+		t.Fatalf("zero hits: every role is missing, got %v", got.AssetPack.MissingRoles)
+	}
+}
+
+// TestPackFallbackPolicyGatesReuse pins the fallback_policy gating: with a single
+// candidate (a neutral front portrait), the three-quarter role is a COMPATIBLE
+// match and the side-angle role is only a PREVIEW. Under compatible_only the
+// compatible role is reused and the preview-only role is a miss; under
+// preview_allowed both are reused.
+func TestPackFallbackPolicyGatesReuse(t *testing.T) {
+	roles := []string{"neutral_three_quarter_portrait", "side_angle_portrait"}
+	src := &fakeCandidateSource{
+		exact:      map[string]assets.VisualAsset{},
+		candidates: []assets.VisualAsset{readyReuseAsset("asset_front", "neutral_front_portrait")},
+	}
+
+	// compatible_only: three_quarter→front is compatible (hit), side_angle→front
+	// is preview (miss).
+	t.Run("compatible_only", func(t *testing.T) {
+		creator := &estimatingPackCreator{}
+		router := newPacksRouterWithRetriever(creator, seededPackIdentities(), src)
+		body := map[string]any{
+			"world_id":         packWorldID,
+			"style_profile_id": "sty_ok",
+			"variant_keys":     roles,
+			"fallback_policy":  "compatible_only",
+		}
+		rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/characters/char_hero/generate-pack",
+			tenantA, []string{"images:write"}, body, nil)
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("expected 202, got %d body=%s", rec.Code, rec.Body.String())
+		}
+		got := creator.got
+		if got.Units != 1 {
+			t.Fatalf("compatible_only: expected Units=1 (preview role is a miss), got %d", got.Units)
+		}
+		if len(got.AssetPack.ReusedItems) != 1 || got.AssetPack.ReusedItems[0].VariantKey != "neutral_three_quarter_portrait" {
+			t.Fatalf("compatible_only: expected the three-quarter role reused, got %+v", got.AssetPack.ReusedItems)
+		}
+		if got.AssetPack.ReusedItems[0].MatchType != "compatible_match" {
+			t.Fatalf("compatible_only: expected compatible_match, got %q", got.AssetPack.ReusedItems[0].MatchType)
+		}
+		if len(got.AssetPack.MissingRoles) != 1 || got.AssetPack.MissingRoles[0] != "side_angle_portrait" {
+			t.Fatalf("compatible_only: expected side_angle missing, got %v", got.AssetPack.MissingRoles)
+		}
+	})
+
+	// preview_allowed: the preview-only role (side_angle → front) now reuses.
+	// A single-role pack isolates it from the compatible role (both would
+	// otherwise claim the one candidate asset, and an asset backs only one role).
+	t.Run("preview_allowed", func(t *testing.T) {
+		creator := &estimatingPackCreator{}
+		router := newPacksRouterWithRetriever(creator, seededPackIdentities(), src)
+		body := map[string]any{
+			"world_id":         packWorldID,
+			"style_profile_id": "sty_ok",
+			"variant_keys":     []string{"side_angle_portrait"},
+			"fallback_policy":  "preview_allowed",
+		}
+		rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/characters/char_hero/generate-pack",
+			tenantA, []string{"images:write"}, body, nil)
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("expected 202, got %d body=%s", rec.Code, rec.Body.String())
+		}
+		if creator.got.JobType != "" {
+			t.Fatalf("preview_allowed all-hits must not call CreateAndEnqueue")
+		}
+		reuse := creator.gotReuse
+		if len(reuse.ReusedItems) != 1 || reuse.ReusedItems[0].MatchType != "preview_fallback" {
+			t.Fatalf("preview_allowed: expected the side-angle role reused as preview_fallback, got %+v", reuse.ReusedItems)
+		}
+		// The weakest reuse tier (preview_fallback) is the aggregate cache result.
+		if reuse.CacheResult != "preview_fallback" {
+			t.Fatalf("preview_allowed aggregate cache_result: expected preview_fallback, got %q", reuse.CacheResult)
+		}
+	})
+}
+
 // estimatingPackCreator captures the params and returns a populated pack
 // result, mirroring estimatingCreator for the artifact path.
 type estimatingPackCreator struct {
-	got jobs.CreateAndEnqueueParams
+	got      jobs.CreateAndEnqueueParams
+	gotReuse jobs.CreatePackReuseParams
 }
 
 func (c *estimatingPackCreator) CreateAndEnqueue(_ context.Context, params jobs.CreateAndEnqueueParams) (jobs.CreateResult, error) {
@@ -524,8 +789,26 @@ func (c *estimatingPackCreator) CreateAndEnqueue(_ context.Context, params jobs.
 	}, nil
 }
 
-// CreateCompletedCacheHitJob is unused by the pack path (pack reuse-first is
-// Phase 6A3); it exists only to satisfy the jobs.Creator interface.
+// CreateCompletedCacheHitJob is unused by the pack path (it is the artifact
+// reuse primitive); it exists only to satisfy the jobs.Creator interface.
 func (c *estimatingPackCreator) CreateCompletedCacheHitJob(_ context.Context, _ jobs.CreateCacheHitParams) (jobs.CreateResult, error) {
 	return jobs.CreateResult{}, nil
+}
+
+// CreateCompletedPackReuseJob captures the all-hits pack reuse call and returns
+// a completed pack result.
+func (c *estimatingPackCreator) CreateCompletedPackReuseJob(_ context.Context, params jobs.CreatePackReuseParams) (jobs.CreateResult, error) {
+	c.gotReuse = params
+	final := make([]string, 0, len(params.ReusedItems))
+	for _, item := range params.ReusedItems {
+		final = append(final, item.AssetID)
+	}
+	return jobs.CreateResult{
+		JobID:            "job_packreuse12345aa",
+		Status:           "completed",
+		EstimatedCostUSD: "0.0000",
+		CacheResult:      params.CacheResult,
+		FinalAssetIDs:    final,
+		AssetPackID:      "pack_reuse",
+	}, nil
 }

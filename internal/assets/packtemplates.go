@@ -12,10 +12,11 @@ package assets
 // the named template — it is a custom pack (character_custom_pack /
 // place_custom_pack), because its contents are caller-defined.
 //
-// 5B defines the role *sets* in code but deliberately does NOT persist
-// pack-completeness (delivered-vs-missing required roles): asset_packs has no
-// column for it, and adding one is out of scope (deferred to 6A / a schema
-// phase). See IMPLEMENTATION_STATUS.md.
+// 5B defines the role *sets* in code; Phase 6A3 added pack-completeness storage
+// (delivered-vs-missing required roles) as the
+// asset_packs.required_roles/delivered_roles/missing_roles columns (migration
+// 0004) and made pack creation retrieval-first off these same role names. Role
+// identity is the variant_key/role name returned here. See IMPLEMENTATION_STATUS.md.
 
 // Character pack template names (PRD 04 §8.1).
 const (

@@ -40,6 +40,9 @@ type AssetPack struct {
 	CreatedByTokenID      *string            `json:"created_by_token_id"`
 	CreatedAt             pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt             pgtype.Timestamptz `json:"updated_at"`
+	RequiredRoles         []string           `json:"required_roles"`
+	DeliveredRoles        []string           `json:"delivered_roles"`
+	MissingRoles          []string           `json:"missing_roles"`
 }
 
 type AssetPackItem struct {

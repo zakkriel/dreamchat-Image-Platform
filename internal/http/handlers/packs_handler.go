@@ -20,13 +20,18 @@ import (
 
 // PacksHandler accepts the two generate-pack requests (PRD 04 §4/§5) and
 // delegates the transactional job + pack create to jobs.Creator. Like the
-// artifacts handler it owns only authorization, validation, planning, and
-// response shaping; pack fan-out itself is the worker's job (ADR-008).
+// artifacts handler it owns only authorization, validation, planning,
+// retrieval-before-generation (Phase 6A3), and response shaping; pack fan-out
+// itself is the worker's job (ADR-008).
 type PacksHandler struct {
 	Service    jobs.Creator
 	Styles     styles.Repository
 	Identities identities.Repository
 	Provider   config.Provider
+	// Retriever is the Phase 6A3 per-role reuse decision layer (implemented by
+	// *assets.Retriever). When nil the handler skips reuse and prices/generates
+	// the whole pack (the pre-6A3 behavior).
+	Retriever RetrievalService
 }
 
 func NewPacksHandler(service jobs.Creator, stylesRepo styles.Repository, identitiesRepo identities.Repository, provider config.Provider) *PacksHandler {
@@ -36,6 +41,13 @@ func NewPacksHandler(service jobs.Creator, stylesRepo styles.Repository, identit
 		Identities: identitiesRepo,
 		Provider:   provider,
 	}
+}
+
+// WithRetriever wires the per-role reuse decision layer (Phase 6A3). Optional;
+// nil-safe (the handler generates the whole pack when it is unset).
+func (h *PacksHandler) WithRetriever(retriever RetrievalService) *PacksHandler {
+	h.Retriever = retriever
+	return h
 }
 
 // packKind selects the per-entity constants of a pack request. The
@@ -264,8 +276,20 @@ func (h *PacksHandler) generate(w http.ResponseWriter, r *http.Request, kind pac
 		fallback = string(*req.FallbackPolicy)
 	}
 
+	// Resolve the effective quality tier once (default "standard"). The same
+	// value feeds the reuse lookup and the stored/generated assets so a request
+	// that omits quality_tier reuses and is reused consistently.
+	quality := ""
+	effectiveQuality := "standard"
+	if req.QualityTier != nil {
+		quality = string(*req.QualityTier)
+		effectiveQuality = quality
+	}
+
 	// Everything the worker needs lives in input_payload so the queue task
-	// carries only job_id (same contract as artifacts).
+	// carries only job_id (same contract as artifacts). variant_keys stays the
+	// FULL required role set: the worker's existing-items skip then naturally
+	// generates only the roles not already present as reused asset_pack_items.
 	payload := map[string]any{
 		kind.payloadIDKey:    ownerID,
 		"world_id":           req.WorldId,
@@ -275,13 +299,57 @@ func (h *PacksHandler) generate(w http.ResponseWriter, r *http.Request, kind pac
 		"display_name":       identity.DisplayName,
 		"fallback_policy":    fallback,
 	}
-	quality := ""
 	if req.QualityTier != nil {
-		quality = string(*req.QualityTier)
 		payload["quality_tier"] = quality
 	}
 	if req.LatencyTier != nil {
 		payload["latency_tier"] = string(*req.LatencyTier)
+	}
+
+	// Phase 6A3 retrieval-before-generation: resolve every required role through
+	// the retrieval layer (exact → compatible → preview → generated_required,
+	// gated by fallback_policy) before reserving cost. Roles a reusable asset
+	// satisfies become reused items (persisted up front, no provider work); the
+	// rest are the missing roles the worker generates and the only roles priced.
+	reuseItems, missing, ok := h.planPackReuse(w, r, packReuseInput{
+		tenantID:         principal.TenantID,
+		worldID:          req.WorldId,
+		visualIdentityID: identity.ID,
+		entityType:       kind.ownerType,
+		styleProfileID:   req.StyleProfileId,
+		qualityTier:      effectiveQuality,
+		fallbackPolicy:   fallback,
+		roles:            variantKeys,
+	})
+	if !ok {
+		return
+	}
+
+	// Idempotency context is shared by the reuse and the generate paths so a
+	// same-key replay returns the same pack job regardless of which path created it.
+	idemKey := r.Header.Get(idempotency.HeaderKey)
+	endpoint := r.Method + " " + r.URL.Path
+	requestHash := jobs.HashRequestBody(raw)
+
+	// All-hits: every required role was satisfied by reuse. Complete the pack
+	// synchronously — no reservation, no provider attempt, no enqueue.
+	if h.Retriever != nil && len(missing) == 0 {
+		h.respondPackAllHits(w, r, packAllHitsInput{
+			principal:        principal,
+			jobType:          kind.jobType,
+			worldID:          req.WorldId,
+			packType:         packType,
+			visualIdentityID: identity.ID,
+			qualityTier:      quality,
+			fallback:         fallback,
+			payload:          payload,
+			requiredRoles:    variantKeys,
+			reuseItems:       reuseItems,
+			idemKey:          idemKey,
+			endpoint:         endpoint,
+			requestHash:      requestHash,
+		})
+		return
 	}
 
 	params := jobs.CreateAndEnqueueParams{
@@ -296,37 +364,34 @@ func (h *PacksHandler) generate(w http.ResponseWriter, r *http.Request, kind pac
 			PackType:         packType,
 			VisualIdentityID: identity.ID,
 			QualityTier:      quality,
+			RequiredRoles:    variantKeys,
+			MissingRoles:     missing,
+			ReusedItems:      reuseItems,
 		},
 		ProviderID:    artifactProviderID,
 		ModelID:       artifactModelID,
 		OperationType: artifactOperationType,
-		// The variant list is the unit of fan-out and the unit of pricing:
-		// N variants = N text_to_image images.
-		Units: int32(len(variantKeys)),
+		// Misses-only pricing: only the roles with no reusable asset are
+		// generated, so only they are priced. Zero misses never reaches here.
+		Units: int32(len(missing)),
 	}
-	if key := r.Header.Get(idempotency.HeaderKey); key != "" {
-		params.IdempotencyKey = key
-		params.Endpoint = r.Method + " " + r.URL.Path
-		params.RequestHash = jobs.HashRequestBody(raw)
+	if idemKey != "" {
+		params.IdempotencyKey = idemKey
+		params.Endpoint = endpoint
+		params.RequestHash = requestHash
 	}
 
 	result, err := h.Service.CreateAndEnqueue(r.Context(), params)
 	if err != nil {
-		switch {
-		case errors.Is(err, jobs.ErrNoPriceEntry):
-			httperr.Write(w, r, http.StatusUnprocessableEntity, httperr.CodeNoPriceEntry, "no active price entry for the selected provider/model/operation")
-		case errors.Is(err, jobs.ErrBudgetExceeded):
-			httperr.Write(w, r, http.StatusUnprocessableEntity, httperr.CodeBudgetExceeded, "cost budget exceeded for this request")
-		case errors.Is(err, jobs.ErrIdempotencyConflict):
-			httperr.Write(w, r, http.StatusConflict, httperr.CodeIdempotencyConflict, "idempotency key reused with a different body or endpoint")
-		case errors.Is(err, jobs.ErrEnqueueFailed):
-			httperr.Write(w, r, http.StatusInternalServerError, httperr.CodeInternalError, "could not enqueue generation job")
-		default:
-			httperr.Write(w, r, http.StatusInternalServerError, httperr.CodeInternalError, "could not create generation job")
-		}
+		h.writeServiceError(w, r, err)
 		return
 	}
 
+	h.writePackAccepted(w, result)
+}
+
+// writePackAccepted shapes the 202 acceptance envelope for a pack create.
+func (h *PacksHandler) writePackAccepted(w http.ResponseWriter, result jobs.CreateResult) {
 	status := result.Status
 	if status == "" {
 		status = "queued"
@@ -352,4 +417,191 @@ func (h *PacksHandler) generate(w http.ResponseWriter, r *http.Request, kind pac
 		resp.AssetPackId = &pid
 	}
 	writeJSON(w, http.StatusAccepted, resp)
+}
+
+// packReuseStateVersion is the state version pack retrieval queries on. Pack
+// assets are generated at the entity's default state (state_version = 1, the
+// visual_assets default), so reuse must look for that same state to find a
+// previously-generated pack asset. There is no per-state pack request yet.
+const packReuseStateVersion = 1
+
+// packReuseInput is the per-role retrieval context derived from the pack request.
+type packReuseInput struct {
+	tenantID         string
+	worldID          string
+	visualIdentityID string
+	entityType       string // character | place
+	styleProfileID   string
+	qualityTier      string
+	fallbackPolicy   string
+	roles            []string // the full required role set, in order
+}
+
+// planPackReuse resolves every required role through the retrieval decision
+// layer and splits the roles into reused (an existing ready asset the policy
+// allows) and missing (generated_required, or a hit the policy disallows — both
+// surface from Retrieve as a non-reusable outcome). It returns ok=false after
+// writing a 500 on a retrieval error.
+//
+// When the retriever is unwired the whole pack is missing (the pre-6A3 "generate
+// everything" behavior). A reused asset is claimed at most once per pack: the
+// asset_pack_items UNIQUE(asset_pack_id, visual_asset_id) constraint forbids the
+// same asset backing two roles, so a second role that resolves to an already-
+// claimed asset is treated as missing and generated fresh.
+func (h *PacksHandler) planPackReuse(w http.ResponseWriter, r *http.Request, in packReuseInput) ([]jobs.PackReuseItem, []string, bool) {
+	if h.Retriever == nil {
+		return nil, append([]string(nil), in.roles...), true
+	}
+	var reuseItems []jobs.PackReuseItem
+	var missing []string
+	claimed := make(map[string]bool, len(in.roles))
+	for i, role := range in.roles {
+		res, err := h.Retriever.Retrieve(r.Context(), assets.RetrievalQuery{
+			TenantID:         in.tenantID,
+			WorldID:          in.worldID,
+			VisualIdentityID: in.visualIdentityID,
+			EntityType:       in.entityType,
+			VariantKey:       role,
+			StyleProfileID:   in.styleProfileID,
+			StateVersion:     packReuseStateVersion,
+			QualityTier:      in.qualityTier,
+			FallbackPolicy:   in.fallbackPolicy,
+		})
+		if err != nil {
+			httperr.Write(w, r, http.StatusInternalServerError, httperr.CodeInternalError, "could not evaluate pack reuse")
+			return nil, nil, false
+		}
+		if res.MatchType != assets.OutcomeGeneratedRequired && res.Asset != nil && !claimed[res.Asset.ID] {
+			claimed[res.Asset.ID] = true
+			reuseItems = append(reuseItems, jobs.PackReuseItem{
+				VariantKey: role,
+				AssetID:    res.Asset.ID,
+				MatchType:  res.MatchType,
+				SortOrder:  int32(i),
+			})
+			continue
+		}
+		missing = append(missing, role)
+	}
+	return reuseItems, missing, true
+}
+
+// packAllHitsInput carries what respondPackAllHits needs to land a completed
+// all-hits pack job.
+type packAllHitsInput struct {
+	principal        *auth.Principal
+	jobType          string
+	worldID          string
+	packType         string
+	visualIdentityID string
+	qualityTier      string
+	fallback         string
+	payload          map[string]any
+	requiredRoles    []string
+	reuseItems       []jobs.PackReuseItem
+	idemKey          string
+	endpoint         string
+	requestHash      string
+}
+
+// respondPackAllHits lands an already-completed pack job (no cost reservation,
+// no provider attempt, no enqueue) and shapes the 202. As with the artifact
+// cache hit the envelope status stays "queued" (the schema's only accepted
+// value); the synchronously-completed state, the aggregate cache_result, and
+// final_asset_ids are observed via GET /v1/jobs/{job_id}. estimated_cost_usd is
+// "0.0000" to signal the reuse is free.
+func (h *PacksHandler) respondPackAllHits(w http.ResponseWriter, r *http.Request, in packAllHitsInput) {
+	params := jobs.CreatePackReuseParams{
+		TenantID:           in.principal.TenantID,
+		RequestedByTokenID: in.principal.TokenID,
+		JobType:            in.jobType,
+		WorldID:            in.worldID,
+		InputPayload:       in.payload,
+		FallbackPolicy:     in.fallback,
+		CacheResult:        aggregatePackCacheResult(in.reuseItems),
+		PackType:           in.packType,
+		VisualIdentityID:   in.visualIdentityID,
+		QualityTier:        in.qualityTier,
+		RequiredRoles:      in.requiredRoles,
+		ReusedItems:        in.reuseItems,
+	}
+	if in.idemKey != "" {
+		params.IdempotencyKey = in.idemKey
+		params.Endpoint = in.endpoint
+		params.RequestHash = in.requestHash
+	}
+
+	result, err := h.Service.CreateCompletedPackReuseJob(r.Context(), params)
+	if err != nil {
+		h.writeServiceError(w, r, err)
+		return
+	}
+
+	est := "0.0000"
+	if result.EstimatedCostUSD != "" {
+		est = result.EstimatedCostUSD
+	}
+	// A fresh all-hits completion uses the accepted envelope's only schema value
+	// ("queued") — its completed state is observed via GET /v1/jobs/{job_id}. A
+	// replay echoes the existing job's live status (e.g. "completed"), preserving
+	// the idempotency contract that a replay reports the prior job's real state.
+	status := apigen.GenerationJobAcceptedStatusQueued
+	if result.Replayed && result.Status != "" {
+		status = apigen.GenerationJobAcceptedStatus(result.Status)
+	}
+	resp := apigen.GenerationJobAccepted{
+		JobId:            result.JobID,
+		Status:           status,
+		EstimatedCostUsd: &est,
+	}
+	if result.AssetPackID != "" {
+		pid := result.AssetPackID
+		resp.AssetPackId = &pid
+	}
+	writeJSON(w, http.StatusAccepted, resp)
+}
+
+// aggregatePackCacheResult summarizes an all-hits pack's per-role reuse outcomes
+// into the single job-level cache_result enum: the weakest reuse tier across the
+// roles (exact_match > compatible_match > preview_fallback). "All roles reused
+// at least at a compatible match" honestly reads as compatible_match. An empty
+// set (never the all-hits case) defaults to exact_match.
+func aggregatePackCacheResult(items []jobs.PackReuseItem) string {
+	best := assets.OutcomeExactMatch
+	rank := func(m string) int {
+		switch m {
+		case assets.OutcomeExactMatch:
+			return 3
+		case assets.OutcomeCompatibleMatch:
+			return 2
+		case assets.OutcomePreviewFallback:
+			return 1
+		default:
+			return 0
+		}
+	}
+	min := rank(best)
+	for _, item := range items {
+		if rank(item.MatchType) < min {
+			min = rank(item.MatchType)
+			best = item.MatchType
+		}
+	}
+	return best
+}
+
+// writeServiceError maps a jobs.Creator error to the matching HTTP status.
+func (h *PacksHandler) writeServiceError(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, jobs.ErrNoPriceEntry):
+		httperr.Write(w, r, http.StatusUnprocessableEntity, httperr.CodeNoPriceEntry, "no active price entry for the selected provider/model/operation")
+	case errors.Is(err, jobs.ErrBudgetExceeded):
+		httperr.Write(w, r, http.StatusUnprocessableEntity, httperr.CodeBudgetExceeded, "cost budget exceeded for this request")
+	case errors.Is(err, jobs.ErrIdempotencyConflict):
+		httperr.Write(w, r, http.StatusConflict, httperr.CodeIdempotencyConflict, "idempotency key reused with a different body or endpoint")
+	case errors.Is(err, jobs.ErrEnqueueFailed):
+		httperr.Write(w, r, http.StatusInternalServerError, httperr.CodeInternalError, "could not enqueue generation job")
+	default:
+		httperr.Write(w, r, http.StatusInternalServerError, httperr.CodeInternalError, "could not create generation job")
+	}
 }

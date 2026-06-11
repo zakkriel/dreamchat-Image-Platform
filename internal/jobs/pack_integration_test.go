@@ -57,7 +57,10 @@ func seedPackIdentities(t *testing.T, pool *pgxpool.Pool) {
 }
 
 func mountPackTestRouter(svc jobs.Creator, pool *pgxpool.Pool, jobsRepo jobs.Repository) *chi.Mux {
-	packs := handlers.NewPacksHandler(svc, styles.NewRepository(pool), identities.NewRepository(pool), config.ProviderMock)
+	// Phase 6A3: wire the real per-role reuse decision layer so pack creation is
+	// retrieval-first against Postgres (the same wiring router.go uses).
+	packs := handlers.NewPacksHandler(svc, styles.NewRepository(pool), identities.NewRepository(pool), config.ProviderMock).
+		WithRetriever(assets.NewRetriever(assets.NewRepository(pool)))
 	jobsH := handlers.NewJobsHandler(jobsRepo)
 	r := chi.NewRouter()
 	r.Post("/v1/characters/{character_id}/generate-pack", packs.GenerateCharacterPack)
@@ -516,6 +519,239 @@ func TestPackPartialFailureCompletesWithWarnings(t *testing.T) {
 	// The failed variant left a failed provider_attempt behind.
 	if got := scalar(t, pool, `SELECT count(*) FROM provider_attempts WHERE generation_job_id = $1 AND status = 'failed'`, jobID); got != "1" {
 		t.Fatalf("expected 1 failed provider attempt, got %s", got)
+	}
+	// Phase 6A3 completeness: the failed role stays in missing_roles, the other
+	// six are delivered, required is the full 7-role starter set.
+	if got := scalar(t, pool, `SELECT array_to_string(missing_roles, ',') FROM asset_packs WHERE id = $1`, packID); got != "side_angle_portrait" {
+		t.Fatalf("missing_roles: expected side_angle_portrait, got %q", got)
+	}
+	if got := scalar(t, pool, `SELECT cardinality(delivered_roles)::text FROM asset_packs WHERE id = $1`, packID); got != "6" {
+		t.Fatalf("delivered_roles: expected 6, got %s", got)
+	}
+	if got := scalar(t, pool, `SELECT cardinality(required_roles)::text FROM asset_packs WHERE id = $1`, packID); got != "7" {
+		t.Fatalf("required_roles: expected 7, got %s", got)
+	}
+}
+
+// TestPackRegenerationAllHitsReusesAndChargesNothing is the Phase 6A3 headline:
+// generate a pack, then regenerate the SAME pack. Every role exact-matches an
+// existing ready asset, so the second request completes synchronously with no
+// new visual_assets, no new provider_attempts, no new cost_reservations, no
+// enqueue, and zero spend — and the new pack records full completeness.
+func TestPackRegenerationAllHitsReusesAndChargesNothing(t *testing.T) {
+	pool := openTestPool(t)
+	defer pool.Close()
+	cleanup(t, pool)
+	defer cleanup(t, pool)
+	seedFixtures(t, pool)
+	seedPackIdentities(t, pool)
+	seedBudget(t, pool, "bud_pack_reuse", "tenant", itTenant, "active", "1.0000")
+
+	jobsRepo := jobs.NewRepository(pool)
+	enq := newRecordingEnqueuer()
+	svc := newCostService(pool, enq)
+	r := mountPackTestRouter(svc, pool, jobsRepo)
+	body := map[string]any{"world_id": "w1", "style_profile_id": itStyleID}
+
+	// First generation: zero priors → full pack, generated normally.
+	rec1 := sendPackRequest(t, r, "/v1/characters/"+itCharacterID+"/generate-pack", body, "")
+	if rec1.Code != http.StatusAccepted {
+		t.Fatalf("first POST expected 202, got %d body=%s", rec1.Code, rec1.Body.String())
+	}
+	var resp1 map[string]any
+	_ = json.Unmarshal(rec1.Body.Bytes(), &resp1)
+	job1, _ := resp1["job_id"].(string)
+	w := newPackTestWorker(pool, mock.New())
+	if err := w.ProcessPack(context.Background(), job1); err != nil {
+		t.Fatalf("worker pack process: %v", err)
+	}
+
+	// Baseline after the first generation.
+	assetsBefore := scalar(t, pool, `SELECT count(*) FROM visual_assets WHERE tenant_id = $1`, itTenant)
+	attemptsBefore := scalar(t, pool, `SELECT count(*) FROM provider_attempts`)
+	reservationsBefore := scalar(t, pool, `SELECT count(*) FROM cost_reservations`)
+	_, spentBefore := budgetAmounts(t, pool, "bud_pack_reuse")
+	if assetsBefore != "7" {
+		t.Fatalf("expected 7 generated assets after first run, got %s", assetsBefore)
+	}
+
+	// Regenerate the SAME pack (fresh request, no idempotency key).
+	rec2 := sendPackRequest(t, r, "/v1/characters/"+itCharacterID+"/generate-pack", body, "")
+	if rec2.Code != http.StatusAccepted {
+		t.Fatalf("regenerate POST expected 202, got %d body=%s", rec2.Code, rec2.Body.String())
+	}
+	var resp2 map[string]any
+	_ = json.Unmarshal(rec2.Body.Bytes(), &resp2)
+	job2, _ := resp2["job_id"].(string)
+	pack2, _ := resp2["asset_pack_id"].(string)
+	if job2 == job1 {
+		t.Fatalf("regeneration must create a distinct job, got the same %s", job1)
+	}
+	// All-hits: free, no reservation in the response.
+	if resp2["estimated_cost_usd"] != "0.0000" {
+		t.Fatalf("all-hits estimated_cost_usd: expected 0.0000, got %v", resp2["estimated_cost_usd"])
+	}
+	if _, found := resp2["cost_reservation_id"]; found {
+		t.Fatalf("all-hits response must carry no cost_reservation_id, got %v", resp2)
+	}
+	// The all-hits pack job is never enqueued (only the first job was).
+	if got := enq.packSnapshot(); len(got) != 1 || got[0] != job1 {
+		t.Fatalf("expected exactly one pack enqueue (the first job), got %v", got)
+	}
+
+	// The second job is already completed via reuse.
+	if got := scalar(t, pool, `SELECT status FROM generation_jobs WHERE id = $1`, job2); got != "completed" {
+		t.Fatalf("job2 status: expected completed, got %s", got)
+	}
+	if got := scalar(t, pool, `SELECT cache_result FROM generation_jobs WHERE id = $1`, job2); got != "exact_match" {
+		t.Fatalf("job2 cache_result: expected exact_match, got %s", got)
+	}
+	if got := scalar(t, pool, `SELECT actual_cost_usd::text FROM generation_jobs WHERE id = $1`, job2); got != "0.0000" {
+		t.Fatalf("job2 actual_cost_usd: expected 0.0000, got %s", got)
+	}
+	if got := scalar(t, pool, `SELECT coalesce(cost_reservation_id, '') FROM generation_jobs WHERE id = $1`, job2); got != "" {
+		t.Fatalf("job2 must have no cost_reservation_id, got %s", got)
+	}
+
+	// The reused pack: completed, full completeness, items pointing at the FIRST
+	// job's assets (no new assets minted).
+	if got := scalar(t, pool, `SELECT status FROM asset_packs WHERE id = $1`, pack2); got != "completed" {
+		t.Fatalf("pack2 status: expected completed, got %s", got)
+	}
+	if got := scalar(t, pool, `SELECT cardinality(delivered_roles)::text FROM asset_packs WHERE id = $1`, pack2); got != "7" {
+		t.Fatalf("pack2 delivered_roles: expected 7, got %s", got)
+	}
+	if got := scalar(t, pool, `SELECT cardinality(missing_roles)::text FROM asset_packs WHERE id = $1`, pack2); got != "0" {
+		t.Fatalf("pack2 missing_roles: expected 0, got %s", got)
+	}
+	if got := scalar(t, pool,
+		`SELECT count(*) FROM asset_pack_items api JOIN visual_assets va ON va.id = api.visual_asset_id
+		 WHERE api.asset_pack_id = $1 AND va.generation_job_id = $2`, pack2, job1); got != "7" {
+		t.Fatalf("expected all 7 reused items to point at the first job's assets, got %s", got)
+	}
+
+	// Nothing new was generated, attempted, reserved, or spent.
+	if got := scalar(t, pool, `SELECT count(*) FROM visual_assets WHERE tenant_id = $1`, itTenant); got != assetsBefore {
+		t.Fatalf("reuse minted new assets: %s -> %s", assetsBefore, got)
+	}
+	if got := scalar(t, pool, `SELECT count(*) FROM provider_attempts`); got != attemptsBefore {
+		t.Fatalf("reuse made new provider attempts: %s -> %s", attemptsBefore, got)
+	}
+	if got := scalar(t, pool, `SELECT count(*) FROM cost_reservations`); got != reservationsBefore {
+		t.Fatalf("reuse made new cost reservations: %s -> %s", reservationsBefore, got)
+	}
+	if _, spentAfter := budgetAmounts(t, pool, "bud_pack_reuse"); spentAfter != spentBefore {
+		t.Fatalf("reuse changed spend: %s -> %s", spentBefore, spentAfter)
+	}
+}
+
+// TestPackPartialReuseChargesMissesOnly: after generating the 7-role minimal
+// pack, a full-reference pack (9 roles) reuses what the matrix allows — the 3
+// portrait roles exact-match, and the warm/serious expression roles
+// compatible-match the minimal pack's warm/serious expressions (5 reused) — and
+// generates only the remaining 4 roles, priced misses-only.
+func TestPackPartialReuseChargesMissesOnly(t *testing.T) {
+	pool := openTestPool(t)
+	defer pool.Close()
+	cleanup(t, pool)
+	defer cleanup(t, pool)
+	seedFixtures(t, pool)
+	seedPackIdentities(t, pool)
+	seedBudget(t, pool, "bud_pack_partial", "tenant", itTenant, "active", "1.0000")
+
+	jobsRepo := jobs.NewRepository(pool)
+	enq := newRecordingEnqueuer()
+	svc := newCostService(pool, enq)
+	r := mountPackTestRouter(svc, pool, jobsRepo)
+
+	// First: the 7-role minimal starter pack.
+	rec1 := sendPackRequest(t, r, "/v1/characters/"+itCharacterID+"/generate-pack",
+		map[string]any{"world_id": "w1", "style_profile_id": itStyleID}, "")
+	if rec1.Code != http.StatusAccepted {
+		t.Fatalf("first POST expected 202, got %d body=%s", rec1.Code, rec1.Body.String())
+	}
+	var resp1 map[string]any
+	_ = json.Unmarshal(rec1.Body.Bytes(), &resp1)
+	job1, _ := resp1["job_id"].(string)
+	w := newPackTestWorker(pool, mock.New())
+	if err := w.ProcessPack(context.Background(), job1); err != nil {
+		t.Fatalf("first worker process: %v", err)
+	}
+	_, spentAfterFirst := budgetAmounts(t, pool, "bud_pack_partial")
+	if spentAfterFirst != "0.0700" {
+		t.Fatalf("spend after first pack: expected 0.0700, got %s", spentAfterFirst)
+	}
+
+	// Second: the full-reference pack (9 roles). The 3 portrait roles exact-match
+	// the minimal pack's portraits; expression_warm/expression_serious
+	// compatible-match its warm/serious expressions (default policy is
+	// compatible_only). That is 5 reused; the remaining 4 roles generate.
+	rec2 := sendPackRequest(t, r, "/v1/characters/"+itCharacterID+"/generate-pack",
+		map[string]any{"world_id": "w1", "style_profile_id": itStyleID, "pack_template": "character_full_reference_pack"}, "")
+	if rec2.Code != http.StatusAccepted {
+		t.Fatalf("second POST expected 202, got %d body=%s", rec2.Code, rec2.Body.String())
+	}
+	var resp2 map[string]any
+	_ = json.Unmarshal(rec2.Body.Bytes(), &resp2)
+	job2, _ := resp2["job_id"].(string)
+	pack2, _ := resp2["asset_pack_id"].(string)
+	// Misses-only pricing: 4 missing roles × 0.0100.
+	if resp2["estimated_cost_usd"] != "0.0400" {
+		t.Fatalf("partial pack estimate: expected 0.0400 (4 misses), got %v", resp2["estimated_cost_usd"])
+	}
+	if resp2["cost_reservation_id"] == nil || resp2["cost_reservation_id"] == "" {
+		t.Fatalf("partial pack must carry a cost_reservation_id, got %v", resp2)
+	}
+	// Pre-worker completeness: 9 required, 5 already delivered (reused), 4 missing.
+	if got := scalar(t, pool, `SELECT status FROM asset_packs WHERE id = $1`, pack2); got != "planned" {
+		t.Fatalf("pre-worker pack2 status: expected planned, got %s", got)
+	}
+	if got := scalar(t, pool, `SELECT cardinality(required_roles)::text FROM asset_packs WHERE id = $1`, pack2); got != "9" {
+		t.Fatalf("pack2 required_roles: expected 9, got %s", got)
+	}
+	if got := scalar(t, pool, `SELECT cardinality(delivered_roles)::text FROM asset_packs WHERE id = $1`, pack2); got != "5" {
+		t.Fatalf("pack2 delivered_roles (pre-worker, reused): expected 5, got %s", got)
+	}
+	if got := scalar(t, pool, `SELECT cardinality(missing_roles)::text FROM asset_packs WHERE id = $1`, pack2); got != "4" {
+		t.Fatalf("pack2 missing_roles: expected 4, got %s", got)
+	}
+	// The 5 reused items already point at the first job's assets.
+	if got := scalar(t, pool,
+		`SELECT count(*) FROM asset_pack_items api JOIN visual_assets va ON va.id = api.visual_asset_id
+		 WHERE api.asset_pack_id = $1 AND va.generation_job_id = $2`, pack2, job1); got != "5" {
+		t.Fatalf("expected 5 reused items pointing at the first job, got %s", got)
+	}
+	if reserved, _ := budgetAmounts(t, pool, "bud_pack_partial"); reserved != "0.0400" {
+		t.Fatalf("partial reservation: expected reserved 0.0400, got %s", reserved)
+	}
+
+	if err := w.ProcessPack(context.Background(), job2); err != nil {
+		t.Fatalf("second worker process: %v", err)
+	}
+
+	// The worker generated only the 4 missing roles (4 new assets, 4 attempts).
+	if got := scalar(t, pool, `SELECT count(*) FROM visual_assets WHERE generation_job_id = $1`, job2); got != "4" {
+		t.Fatalf("expected 4 newly generated assets for job2, got %s", got)
+	}
+	if got := scalar(t, pool, `SELECT count(*) FROM provider_attempts WHERE generation_job_id = $1`, job2); got != "4" {
+		t.Fatalf("expected 4 provider attempts for job2 (misses only), got %s", got)
+	}
+	// The pack now has all 9 items and full completeness.
+	if got := scalar(t, pool, `SELECT count(*) FROM asset_pack_items WHERE asset_pack_id = $1`, pack2); got != "9" {
+		t.Fatalf("expected 9 pack items, got %s", got)
+	}
+	if got := scalar(t, pool, `SELECT status FROM asset_packs WHERE id = $1`, pack2); got != "completed" {
+		t.Fatalf("pack2 status: expected completed, got %s", got)
+	}
+	if got := scalar(t, pool, `SELECT cardinality(delivered_roles)::text FROM asset_packs WHERE id = $1`, pack2); got != "9" {
+		t.Fatalf("pack2 delivered_roles after worker: expected 9, got %s", got)
+	}
+	if got := scalar(t, pool, `SELECT cardinality(missing_roles)::text FROM asset_packs WHERE id = $1`, pack2); got != "0" {
+		t.Fatalf("pack2 missing_roles after worker: expected 0, got %s", got)
+	}
+	// Budget spend rose by misses-only: 0.0700 + 0.0400 = 0.1100.
+	if _, spent := budgetAmounts(t, pool, "bud_pack_partial"); spent != "0.1100" {
+		t.Fatalf("total spend: expected 0.1100 (misses-only), got %s", spent)
 	}
 }
 

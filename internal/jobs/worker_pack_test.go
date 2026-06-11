@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -375,6 +376,100 @@ func TestProcessPackSkipsAlreadyDeliveredVariants(t *testing.T) {
 	if got := repo.lastPackStatus("pack_6"); got != "completed" {
 		t.Fatalf("expected completed (prior delivery is not a warning), got %q", got)
 	}
+}
+
+// TestProcessPackReusedRolesNotRegenerated pins the Phase 6A3 worker contract:
+// roles persisted as reused asset_pack_items at creation time are NOT
+// regenerated (no provider call), they appear in final_asset_ids, and the pack
+// records full completeness (all delivered, none missing).
+func TestProcessPackReusedRolesNotRegenerated(t *testing.T) {
+	repo := newFakeJobsRepo()
+	provider := &selectiveProvider{}
+	roles := []string{"neutral_front_portrait", "side_angle_portrait", "warm_or_smiling_expression"}
+	seedPackJob(repo, "job_reuse", "pack_reuse", JobTypeCharacterPack, roles)
+	// The create transaction persisted a retrieval hit for the middle role,
+	// pointing at an asset a previous job generated.
+	_ = repo.InsertAssetPackItem(context.Background(), AssetPackItemInsertParams{
+		ID: "pki_reused", AssetPackID: "pack_reuse", VisualAssetID: "reused_asset", VariantKey: "side_angle_portrait", SortOrder: 1,
+	})
+
+	w := newPackWorker(repo, &fakeAssetsRepo{}, provider, nil)
+	if err := w.ProcessPack(context.Background(), "job_reuse"); err != nil {
+		t.Fatalf("ProcessPack: %v", err)
+	}
+
+	// Only the two missing roles hit the provider; the reused role did not.
+	if provider.callCount() != 2 {
+		t.Fatalf("expected 2 provider calls (reused role skipped), got %d", provider.callCount())
+	}
+	if len(repo.packAssets) != 2 {
+		t.Fatalf("expected 2 newly generated assets, got %d", len(repo.packAssets))
+	}
+	// final_asset_ids carries the reused asset plus the two freshly generated.
+	job := repo.jobs["job_reuse"]
+	if job.Status != "completed" || len(job.FinalAssetIds) != 3 {
+		t.Fatalf("expected completed with 3 final assets, got %s/%v", job.Status, job.FinalAssetIds)
+	}
+	if !containsString(job.FinalAssetIds, "reused_asset") {
+		t.Fatalf("final_asset_ids must include the reused asset, got %v", job.FinalAssetIds)
+	}
+	// Completeness: every required role delivered, nothing missing.
+	delivered := append([]string(nil), repo.packDelivered["pack_reuse"]...)
+	sortStrings(delivered)
+	want := append([]string(nil), roles...)
+	sortStrings(want)
+	if !equalStrings(delivered, want) {
+		t.Fatalf("delivered roles: expected %v, got %v", want, delivered)
+	}
+	if len(repo.packMissing["pack_reuse"]) != 0 {
+		t.Fatalf("expected no missing roles, got %v", repo.packMissing["pack_reuse"])
+	}
+	if got := repo.lastPackStatus("pack_reuse"); got != "completed" {
+		t.Fatalf("expected pack completed, got %q", got)
+	}
+}
+
+// TestProcessPackWarningsRecordsMissingRole: a role that fails generation stays
+// in the pack's missing_roles, and the pack completes with warnings.
+func TestProcessPackWarningsRecordsMissingRole(t *testing.T) {
+	repo := newFakeJobsRepo()
+	provider := &selectiveProvider{failOn: []string{"side_angle_portrait"}}
+	roles := []string{"neutral_front_portrait", "side_angle_portrait", "warm_or_smiling_expression"}
+	seedPackJob(repo, "job_warn", "pack_warn", JobTypeCharacterPack, roles)
+
+	w := newPackWorker(repo, &fakeAssetsRepo{}, provider, nil)
+	if err := w.ProcessPack(context.Background(), "job_warn"); err != nil {
+		t.Fatalf("ProcessPack: %v", err)
+	}
+	if got := repo.lastPackStatus("pack_warn"); got != "completed_with_warnings" {
+		t.Fatalf("expected completed_with_warnings, got %q", got)
+	}
+	missing := repo.packMissing["pack_warn"]
+	if len(missing) != 1 || missing[0] != "side_angle_portrait" {
+		t.Fatalf("expected missing=[side_angle_portrait], got %v", missing)
+	}
+	delivered := append([]string(nil), repo.packDelivered["pack_warn"]...)
+	sortStrings(delivered)
+	want := []string{"neutral_front_portrait", "warm_or_smiling_expression"}
+	if !equalStrings(delivered, want) {
+		t.Fatalf("delivered roles: expected %v, got %v", want, delivered)
+	}
+}
+
+func sortStrings(s []string) {
+	sort.Strings(s)
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestProcessPackMissingPackLinkFailsTerminally(t *testing.T) {

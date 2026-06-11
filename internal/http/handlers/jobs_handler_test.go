@@ -60,6 +60,9 @@ func (s *stubJobsRepo) InsertCostEvent(context.Context, jobs.CostEventInsertPara
 	return nil
 }
 func (s *stubJobsRepo) UpdateAssetPackStatus(context.Context, string, string) error { return nil }
+func (s *stubJobsRepo) UpdateAssetPackCompleteness(context.Context, string, []string, []string) error {
+	return nil
+}
 func (s *stubJobsRepo) InsertAssetPackItem(context.Context, jobs.AssetPackItemInsertParams) error {
 	return nil
 }

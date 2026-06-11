@@ -24,6 +24,10 @@ type fakeJobsRepo struct {
 	packStatuses map[string][]string // packID -> status transitions
 	packItems    map[string][]AssetPackItem
 	packAssets   []assets.InsertParams
+	// Pack completeness tracking (Phase 6A3): the last delivered/missing role
+	// sets written for a pack.
+	packDelivered map[string][]string
+	packMissing   map[string][]string
 	// failPackInsertFor makes InsertPackItemWithAsset fail N times for a
 	// variant key, atomically (nothing recorded) — modelling a rolled-back
 	// asset + item transaction.
@@ -38,6 +42,8 @@ func newFakeJobsRepo() *fakeJobsRepo {
 		jobs:              map[string]Job{},
 		packStatuses:      map[string][]string{},
 		packItems:         map[string][]AssetPackItem{},
+		packDelivered:     map[string][]string{},
+		packMissing:       map[string][]string{},
 		failPackInsertFor: map[string]int{},
 	}
 }
@@ -174,6 +180,14 @@ func (r *fakeJobsRepo) UpdateAssetPackStatus(_ context.Context, packID, status s
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.packStatuses[packID] = append(r.packStatuses[packID], status)
+	return nil
+}
+
+func (r *fakeJobsRepo) UpdateAssetPackCompleteness(_ context.Context, packID string, delivered, missing []string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.packDelivered[packID] = append([]string(nil), delivered...)
+	r.packMissing[packID] = append([]string(nil), missing...)
 	return nil
 }
 

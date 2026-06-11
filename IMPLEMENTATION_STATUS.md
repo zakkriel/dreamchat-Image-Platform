@@ -67,12 +67,31 @@ before this is production-ready.**
   an acceptance envelope, the completed state is observed via GET
   `/v1/jobs/{id}`). Pack reuse is untouched.
 
+- **Phase 6A3 — pack reuse-first + completeness storage**: pack fan-out
+  (`POST /v1/characters/{id}/generate-pack`, `POST /v1/places/{id}/generate-pack`)
+  is now retrieval-first. At creation, before reserving cost or enqueuing, the
+  handler resolves every required template role through the 6A1 identity/matrix
+  retrieval layer (exact → compatible → preview → generated_required, gated by
+  `fallback_policy`) and splits roles into **reused** (a ready asset satisfies
+  them, persisted as `asset_pack_items` pointing at the existing assets in the
+  create transaction) and **missing**. Pricing is **misses-only**
+  (`Units = len(missing)`; zero misses → zero reservation). All-hits packs
+  complete synchronously via `Service.CreateCompletedPackReuseJob` (pack +
+  job `status=completed`, aggregate `cache_result`, `actual_cost_usd=0`, **no**
+  reservation/provider attempt/enqueue) — the pack analogue of the 6A2 cache-hit
+  job. Partial packs reserve for the misses, enqueue, and the worker generates
+  only the missing roles (the reused items are already present, so the existing
+  items-skip never regenerates them). Pack completeness
+  (`required_roles`/`delivered_roles`/`missing_roles`) is stored on `asset_packs`
+  (migration `0004`, additive columns — table count stays 18) and finalized by
+  the worker; the worker derives final pack status from completeness
+  (all delivered → `completed`, some missing/failed → `completed_with_warnings`,
+  none → `failed`). No OpenAPI change. Idempotency unchanged (same body+key →
+  same pack job + `asset_pack_id`, no duplicates). Artifact reuse (6A2) and
+  `/v1/assets/search` (6A1) are untouched.
+
 ## Remaining
 
-- **Phase 6A3 — pack reuse-first + completeness storage**: retrieval-first
-  pack fan-out (reused vs. missing items), misses-only pricing, all-hits
-  completion, and pack-completeness storage (delivered-vs-missing required
-  roles) — likely a small schema phase.
 - **Phase 6A (remainder) — Retrieval-before-generation**: regeneration
   endpoint / `force_regenerate`.
 - **Phase 6B — Delivery readiness**: S3 reads, presigned URLs, asset

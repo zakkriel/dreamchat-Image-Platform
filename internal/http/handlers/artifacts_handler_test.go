@@ -30,12 +30,13 @@ var jobIDRe = regexp.MustCompile(`^job_[0-9a-f]{16}$`)
 // lets tests force a particular live status on replay so they can assert
 // the handler reports it instead of hard-coding "queued".
 type stubCreator struct {
-	mu            sync.Mutex
-	calls         []jobs.CreateAndEnqueueParams
-	cacheHitCalls []jobs.CreateCacheHitParams
-	byKey         map[string]storedKey
-	statusByJobID map[string]string
-	failErr       error
+	mu             sync.Mutex
+	calls          []jobs.CreateAndEnqueueParams
+	cacheHitCalls  []jobs.CreateCacheHitParams
+	packReuseCalls []jobs.CreatePackReuseParams
+	byKey          map[string]storedKey
+	statusByJobID  map[string]string
+	failErr        error
 	// cacheHitErr, when set, is returned by CreateCompletedCacheHitJob.
 	cacheHitErr error
 }
@@ -125,6 +126,46 @@ func (s *stubCreator) CreateCompletedCacheHitJob(_ context.Context, params jobs.
 	jobID := ids.NewGenerationJobID()
 	s.byKey[k] = storedKey{jobID: jobID, endpoint: params.Endpoint, requestHash: params.RequestHash}
 	return result(jobID), nil
+}
+
+// CreateCompletedPackReuseJob mirrors the all-hits pack reuse idempotency
+// contract: same (token, key, endpoint, body) returns the same job_id, a
+// different endpoint/body returns ErrIdempotencyConflict. Pack reuse is exercised
+// by the pack handler tests; stubCreator implements it to satisfy jobs.Creator.
+func (s *stubCreator) CreateCompletedPackReuseJob(_ context.Context, params jobs.CreatePackReuseParams) (jobs.CreateResult, error) {
+	if s.failErr != nil {
+		return jobs.CreateResult{}, s.failErr
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.packReuseCalls = append(s.packReuseCalls, params)
+	final := make([]string, 0, len(params.ReusedItems))
+	for _, item := range params.ReusedItems {
+		final = append(final, item.AssetID)
+	}
+	result := func(jobID, packID string) jobs.CreateResult {
+		return jobs.CreateResult{
+			JobID:         jobID,
+			Status:        "completed",
+			CacheResult:   params.CacheResult,
+			FinalAssetIDs: final,
+			AssetPackID:   packID,
+		}
+	}
+	if params.IdempotencyKey == "" {
+		return result(ids.NewGenerationJobID(), ids.NewAssetPackID()), nil
+	}
+	k := params.RequestedByTokenID + "|" + params.IdempotencyKey
+	if existing, ok := s.byKey[k]; ok {
+		if existing.endpoint != params.Endpoint || existing.requestHash != params.RequestHash {
+			return jobs.CreateResult{}, jobs.ErrIdempotencyConflict
+		}
+		return result(existing.jobID, existing.packID), nil
+	}
+	jobID := ids.NewGenerationJobID()
+	packID := ids.NewAssetPackID()
+	s.byKey[k] = storedKey{jobID: jobID, packID: packID, endpoint: params.Endpoint, requestHash: params.RequestHash}
+	return result(jobID, packID), nil
 }
 
 func newArtifactsRouter(creator jobs.Creator, stylesRepo styles.Repository, provider config.Provider) chi.Router {
@@ -259,6 +300,10 @@ func (c *estimatingCreator) CreateAndEnqueue(_ context.Context, params jobs.Crea
 		Currency:          "USD",
 		CostReservationID: "resv_test",
 	}, nil
+}
+
+func (c *estimatingCreator) CreateCompletedPackReuseJob(_ context.Context, _ jobs.CreatePackReuseParams) (jobs.CreateResult, error) {
+	return jobs.CreateResult{}, nil
 }
 
 func (c *estimatingCreator) CreateCompletedCacheHitJob(_ context.Context, params jobs.CreateCacheHitParams) (jobs.CreateResult, error) {

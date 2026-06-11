@@ -127,6 +127,10 @@ type Repository interface {
 	// is observable atomically — a failed item insert rolls the asset back
 	// instead of leaving an orphan the retry path can't see.
 	UpdateAssetPackStatus(ctx context.Context, packID, status string) error
+	// UpdateAssetPackCompleteness records the pack's final delivered-vs-missing
+	// required roles (Phase 6A3) so a consumer can read completeness directly off
+	// asset_packs. The worker calls it at the terminal step.
+	UpdateAssetPackCompleteness(ctx context.Context, packID string, delivered, missing []string) error
 	InsertPackItemWithAsset(ctx context.Context, asset assets.InsertParams, item AssetPackItemInsertParams) error
 	InsertAssetPackItem(ctx context.Context, params AssetPackItemInsertParams) error
 	ListAssetPackItems(ctx context.Context, packID string) ([]AssetPackItem, error)
@@ -283,6 +287,20 @@ func (r *pgRepository) UpdateAssetPackStatus(ctx context.Context, packID, status
 	return r.q.UpdateAssetPackStatus(ctx, dbgen.UpdateAssetPackStatusParams{
 		ID:     packID,
 		Status: status,
+	})
+}
+
+func (r *pgRepository) UpdateAssetPackCompleteness(ctx context.Context, packID string, delivered, missing []string) error {
+	if delivered == nil {
+		delivered = []string{}
+	}
+	if missing == nil {
+		missing = []string{}
+	}
+	return r.q.UpdateAssetPackCompleteness(ctx, dbgen.UpdateAssetPackCompletenessParams{
+		ID:             packID,
+		DeliveredRoles: delivered,
+		MissingRoles:   missing,
 	})
 }
 

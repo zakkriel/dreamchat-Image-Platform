@@ -5,6 +5,7 @@ sql:
     schema:
       - "migrations/0001_initial.up.sql"
       - "migrations/0003_cost_lifecycle.up.sql"
+      - "migrations/0004_pack_completeness.up.sql"
     gen:
       go:
         package: "dbgen"

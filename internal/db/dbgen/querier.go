@@ -51,7 +51,7 @@ type Querier interface {
 	// same hash (e.g. a re-run that raced before this reuse path existed).
 	FindReadyArtifactByPromptHash(ctx context.Context, arg FindReadyArtifactByPromptHashParams) (VisualAsset, error)
 	GetActiveAPITokenByPrefix(ctx context.Context, tokenPrefix string) (GetActiveAPITokenByPrefixRow, error)
-	GetAssetPackByID(ctx context.Context, id string) (AssetPack, error)
+	GetAssetPackByID(ctx context.Context, id string) (GetAssetPackByIDRow, error)
 	GetCostBudget(ctx context.Context, id string) (GetCostBudgetRow, error)
 	GetGenerationJobByID(ctx context.Context, arg GetGenerationJobByIDParams) (GenerationJob, error)
 	GetGenerationJobByIDUnchecked(ctx context.Context, id string) (GenerationJob, error)
@@ -66,7 +66,14 @@ type Querier interface {
 	// provider adapter — owns pack fan-out: the create transaction inserts the
 	// asset_packs row alongside the generation_jobs row, and the worker writes
 	// one asset_pack_items row per generated variant.
-	InsertAssetPack(ctx context.Context, arg InsertAssetPackParams) (AssetPack, error)
+	// The create transaction inserts the asset_packs row alongside the
+	// generation_jobs row. status is a parameter (Phase 6A3): a normal pack that
+	// still has roles to generate is inserted 'planned' for the worker to advance,
+	// while an all-hits reuse pack is inserted 'completed' directly (no worker run).
+	// required_roles/delivered_roles/missing_roles record pack completeness at
+	// creation: required = every template role, delivered = roles already satisfied
+	// by a reused asset, missing = roles awaiting generation.
+	InsertAssetPack(ctx context.Context, arg InsertAssetPackParams) (InsertAssetPackRow, error)
 	InsertAssetPackItem(ctx context.Context, arg InsertAssetPackItemParams) error
 	// ---------------------------------------------------------------------------
 	// Audit events
@@ -88,6 +95,16 @@ type Querier interface {
 	// never enqueued and the worker never processes it, so the terminal-job
 	// finalizer (which would otherwise commit a reservation) is never invoked on it.
 	InsertCompletedCacheHitJob(ctx context.Context, arg InsertCompletedCacheHitJobParams) (GenerationJob, error)
+	// Phase 6A3 all-hits pack reuse: the pack analogue of InsertCompletedCacheHitJob.
+	// Every required role of the pack was satisfied by an existing ready asset, so
+	// the pack job is already terminal (status = 'completed') with no provider work:
+	// no cost_reservation_id, a zero estimate, a zero actual cost. Unlike the
+	// artifact cache-hit (which is always exact_match), a pack aggregates several
+	// per-role outcomes, so cache_result is a parameter (the weakest reuse tier
+	// across the roles: exact_match | compatible_match | preview_fallback).
+	// final_asset_ids points at the reused assets, in role order. This row is never
+	// enqueued and the worker never processes it.
+	InsertCompletedPackReuseJob(ctx context.Context, arg InsertCompletedPackReuseJobParams) (GenerationJob, error)
 	// ---------------------------------------------------------------------------
 	// Cost budgets
 	// ---------------------------------------------------------------------------
@@ -203,6 +220,10 @@ type Querier interface {
 	// entry was actually superseded.
 	SupersedePreviousActivePrice(ctx context.Context, arg SupersedePreviousActivePriceParams) (int64, error)
 	TouchAPITokenLastUsed(ctx context.Context, id string) error
+	// UpdateAssetPackCompleteness records the final delivered-vs-missing required
+	// roles a pack run resolved to (Phase 6A3). The worker calls it at the terminal
+	// step so a consumer can read pack completeness off asset_packs directly.
+	UpdateAssetPackCompleteness(ctx context.Context, arg UpdateAssetPackCompletenessParams) error
 	UpdateAssetPackStatus(ctx context.Context, arg UpdateAssetPackStatusParams) error
 	// UpdateCostBudget mutates only limit_amount and status. reserved_amount,
 	// spent_amount, and the scope/period identity stay platform-owned and fixed.

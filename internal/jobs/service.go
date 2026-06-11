@@ -46,10 +46,44 @@ var (
 // jobs. When set, the service inserts the pack (status=planned), links
 // generation_jobs.asset_pack_id, and enqueues a pack task instead of an
 // artifact task.
+//
+// Phase 6A3 makes pack creation retrieval-first: the handler resolves each
+// required role through the retrieval layer before reserving cost, splits roles
+// into reused (an existing ready asset satisfies them) and missing (must be
+// generated), and prices only the misses. RequiredRoles/MissingRoles/ReusedItems
+// carry that decision so the create transaction can persist the reused items +
+// pack completeness up front. ReusedItems is empty (and MissingRoles == every
+// role) when retrieval is disabled or found no reusable asset — the pre-6A3
+// "generate the whole pack" behavior.
 type AssetPackSpec struct {
 	PackType         string
 	VisualIdentityID string
 	QualityTier      string // defaults to "standard" when empty
+
+	// RequiredRoles is every role the pack template requires, in order. Stored
+	// on asset_packs.required_roles for completeness.
+	RequiredRoles []string
+	// MissingRoles is the subset of RequiredRoles with no reusable asset; these
+	// are the roles the worker generates, and the count the request is priced
+	// for. Stored on asset_packs.missing_roles.
+	MissingRoles []string
+	// ReusedItems are the retrieval hits to persist as asset_pack_items pointing
+	// at existing assets, in the create transaction. Their variant keys become
+	// asset_packs.delivered_roles.
+	ReusedItems []PackReuseItem
+}
+
+// PackReuseItem is one role a pack reuses: an existing ready asset that the
+// retrieval layer returned as a usable hit for the request's fallback_policy.
+// MatchType is the 6A1 outcome (exact_match | compatible_match |
+// preview_fallback). SortOrder is the role's position in the resolved template
+// so a reused item and a worker-generated item for the same pack share one
+// ordering.
+type PackReuseItem struct {
+	VariantKey string
+	AssetID    string
+	MatchType  string
+	SortOrder  int32
 }
 
 // CreateAndEnqueueParams carries everything a handler needs to provide to
@@ -139,6 +173,39 @@ type CreateCacheHitParams struct {
 	RequestHash    string
 }
 
+// CreatePackReuseParams carries what the service needs to land an already-
+// completed pack job for a Phase 6A3 all-hits pack reuse: every required role
+// was satisfied by an existing ready asset, so the pack completes synchronously
+// with no cost reservation, no provider attempt, and no enqueue. It is the pack
+// analogue of CreateCacheHitParams.
+type CreatePackReuseParams struct {
+	TenantID           string
+	RequestedByTokenID string
+	JobType            string
+	WorldID            string
+	InputPayload       map[string]any
+	FallbackPolicy     string
+	// CacheResult is the aggregate pack reuse tier stored on the job
+	// (exact_match | compatible_match | preview_fallback) — the weakest reuse
+	// outcome across the roles.
+	CacheResult string
+
+	PackType         string
+	VisualIdentityID string
+	QualityTier      string
+	// RequiredRoles is every template role (all delivered for an all-hits pack).
+	RequiredRoles []string
+	// ReusedItems are the per-role hits to persist as asset_pack_items pointing
+	// at existing assets. For an all-hits pack this covers every required role.
+	ReusedItems []PackReuseItem
+
+	// Idempotency context. When IdempotencyKey is empty the service skips the
+	// idempotency table and creates a fresh completed pack job.
+	IdempotencyKey string
+	Endpoint       string
+	RequestHash    string
+}
+
 // Creator is the handler-facing interface. Tests stub this.
 type Creator interface {
 	CreateAndEnqueue(ctx context.Context, params CreateAndEnqueueParams) (CreateResult, error)
@@ -146,6 +213,11 @@ type Creator interface {
 	// artifact reuse (Phase 6A2): no cost reservation, no provider attempt, no
 	// enqueue. Idempotency is honored exactly like CreateAndEnqueue.
 	CreateCompletedCacheHitJob(ctx context.Context, params CreateCacheHitParams) (CreateResult, error)
+	// CreateCompletedPackReuseJob lands an already-completed pack job for an
+	// all-hits pack reuse (Phase 6A3): every required role was satisfied by an
+	// existing ready asset, so no reservation, provider attempt, or enqueue
+	// happens. Idempotency is honored exactly like CreateAndEnqueue.
+	CreateCompletedPackReuseJob(ctx context.Context, params CreatePackReuseParams) (CreateResult, error)
 }
 
 // Service implements Creator against Postgres + the asynq Enqueuer, running
@@ -435,6 +507,150 @@ func (s *Service) CreateCompletedCacheHitJob(ctx context.Context, params CreateC
 	}, nil
 }
 
+// CreateCompletedPackReuseJob lands an already-completed pack job for a Phase
+// 6A3 all-hits pack reuse. Like CreateCompletedCacheHitJob it is deliberately
+// NOT a thin wrapper over CreateAndEnqueue: an all-hits pack must never reserve
+// cost, insert a provider attempt, or enqueue a task. It commits, in one
+// transaction: the generation job at status=completed (cache_result = the
+// aggregate reuse tier, final_asset_ids = the reused assets, zero cost), the
+// asset_packs row at status=completed with full completeness (every required
+// role delivered, none missing), the link from job to pack, and one
+// asset_pack_items row per reused role pointing at the existing asset. It shares
+// only the idempotency machinery with CreateAndEnqueue.
+func (s *Service) CreateCompletedPackReuseJob(ctx context.Context, params CreatePackReuseParams) (CreateResult, error) {
+	payload, err := marshalPayload(params.InputPayload)
+	if err != nil {
+		return CreateResult{}, err
+	}
+
+	requiredRoles := nonNilStrings(params.RequiredRoles)
+	finalAssetIDs := make([]string, 0, len(params.ReusedItems))
+	for _, item := range params.ReusedItems {
+		finalAssetIDs = append(finalAssetIDs, item.AssetID)
+	}
+	cacheResult := params.CacheResult
+	if cacheResult == "" {
+		// An all-hits pack always has at least one reused role; default to the
+		// strongest tier if the caller did not compute an aggregate.
+		cacheResult = "exact_match"
+	}
+
+	jobID := ids.NewGenerationJobID()
+	packID := ids.NewAssetPackID()
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return CreateResult{}, err
+	}
+	rolled := false
+	defer func() {
+		if !rolled {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+	q := dbgen.New(tx)
+
+	worldID := params.WorldID
+	tokenID := params.RequestedByTokenID
+	fp := params.FallbackPolicy
+	if _, err := q.InsertCompletedPackReuseJob(ctx, dbgen.InsertCompletedPackReuseJobParams{
+		ID:                 jobID,
+		TenantID:           params.TenantID,
+		WorldID:            &worldID,
+		JobType:            params.JobType,
+		RequestedByTokenID: &tokenID,
+		InputPayload:       payload,
+		FallbackPolicy:     &fp,
+		RequestedOutputs:   requiredRoles,
+		CacheResult:        &cacheResult,
+		FinalAssetIds:      finalAssetIDs,
+	}); err != nil {
+		return CreateResult{}, fmt.Errorf("insert completed pack reuse job: %w", err)
+	}
+
+	identityID := params.VisualIdentityID
+	jobIDRef := jobID
+	quality := params.QualityTier
+	if quality == "" {
+		quality = "standard"
+	}
+	if _, err := q.InsertAssetPack(ctx, dbgen.InsertAssetPackParams{
+		ID:               packID,
+		TenantID:         params.TenantID,
+		WorldID:          params.WorldID,
+		VisualIdentityID: &identityID,
+		PackType:         params.PackType,
+		StyleProfileID:   stylePayloadString(params.InputPayload),
+		QualityTier:      quality,
+		// All-hits: the pack is terminal at creation — every required role is
+		// delivered by a reused asset, nothing is missing, the worker never runs.
+		Status:           packStatusCompleted,
+		RequiredRoles:    requiredRoles,
+		DeliveredRoles:   reuseVariantKeys(params.ReusedItems),
+		MissingRoles:     []string{},
+		CreatedByJobID:   &jobIDRef,
+		CreatedByTokenID: &tokenID,
+	}); err != nil {
+		return CreateResult{}, fmt.Errorf("insert completed asset pack: %w", err)
+	}
+	if err := q.SetGenerationJobAssetPack(ctx, dbgen.SetGenerationJobAssetPackParams{
+		ID:          jobID,
+		AssetPackID: &packID,
+	}); err != nil {
+		return CreateResult{}, fmt.Errorf("link asset pack: %w", err)
+	}
+	if err := insertReusedPackItems(ctx, q, packID, params.ReusedItems); err != nil {
+		return CreateResult{}, err
+	}
+
+	// Idempotency: same machinery as CreateAndEnqueue. On a lost race the whole
+	// transaction (job + pack + items) rolls back and we replay the winner's row,
+	// so a same-key replay returns the same pack job + asset_pack_id without
+	// creating duplicate jobs/packs/items.
+	if params.IdempotencyKey != "" {
+		jobIDRef := jobID
+		_, err = q.InsertIdempotencyKey(ctx, dbgen.InsertIdempotencyKeyParams{
+			ID:              ids.NewIdempotencyKeyID(),
+			TokenID:         params.RequestedByTokenID,
+			Key:             params.IdempotencyKey,
+			Endpoint:        params.Endpoint,
+			RequestHash:     params.RequestHash,
+			GenerationJobID: &jobIDRef,
+			ExpiresAt:       pgtype.Timestamptz{Time: s.now().Add(s.ttl), Valid: true},
+		})
+		switch {
+		case err == nil:
+			// won the race; fall through to commit
+		case errors.Is(err, pgx.ErrNoRows):
+			if err := tx.Rollback(ctx); err != nil {
+				return CreateResult{}, err
+			}
+			rolled = true
+			return s.replayExisting(ctx, CreateAndEnqueueParams{
+				RequestedByTokenID: params.RequestedByTokenID,
+				IdempotencyKey:     params.IdempotencyKey,
+				Endpoint:           params.Endpoint,
+				RequestHash:        params.RequestHash,
+			})
+		default:
+			return CreateResult{}, err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return CreateResult{}, err
+	}
+	rolled = true
+
+	return CreateResult{
+		JobID:            jobID,
+		Status:           "completed",
+		EstimatedCostUSD: "0.0000",
+		CacheResult:      cacheResult,
+		FinalAssetIDs:    finalAssetIDs,
+		AssetPackID:      packID,
+	}, nil
+}
+
 // preflightMessage is the human-readable error_message stored on a job that a
 // pre-flight denied.
 func preflightMessage(reason string) string {
@@ -521,7 +737,11 @@ func (s *Service) insertJob(ctx context.Context, q *dbgen.Queries, jobID string,
 	return err
 }
 
-// insertPack writes the asset_packs row a pack job creates (status=planned).
+// insertPack writes the asset_packs row a pack job creates (status=planned for
+// the worker to advance), records pack completeness (required/delivered/missing
+// roles), and inserts any reused asset_pack_items pointing at existing assets —
+// all in the create transaction (Phase 5A + 6A3). delivered_roles is the set of
+// reused roles; the worker fills in the rest as it generates the missing roles.
 func (s *Service) insertPack(ctx context.Context, q *dbgen.Queries, packID, jobID string, params CreateAndEnqueueParams) error {
 	spec := params.AssetPack
 	identityID := spec.VisualIdentityID
@@ -531,7 +751,8 @@ func (s *Service) insertPack(ctx context.Context, q *dbgen.Queries, packID, jobI
 	if quality == "" {
 		quality = "standard"
 	}
-	_, err := q.InsertAssetPack(ctx, dbgen.InsertAssetPackParams{
+	delivered := reuseVariantKeys(spec.ReusedItems)
+	if _, err := q.InsertAssetPack(ctx, dbgen.InsertAssetPackParams{
 		ID:               packID,
 		TenantID:         params.TenantID,
 		WorldID:          params.WorldID,
@@ -539,10 +760,55 @@ func (s *Service) insertPack(ctx context.Context, q *dbgen.Queries, packID, jobI
 		PackType:         spec.PackType,
 		StyleProfileID:   stylePayloadString(params.InputPayload),
 		QualityTier:      quality,
+		Status:           "planned",
+		RequiredRoles:    nonNilStrings(spec.RequiredRoles),
+		DeliveredRoles:   delivered,
+		MissingRoles:     nonNilStrings(spec.MissingRoles),
 		CreatedByJobID:   &jobIDRef,
 		CreatedByTokenID: &tokenID,
-	})
-	return err
+	}); err != nil {
+		return err
+	}
+	return insertReusedPackItems(ctx, q, packID, spec.ReusedItems)
+}
+
+// insertReusedPackItems persists the retrieval hits as asset_pack_items pointing
+// at the existing assets, in the create transaction. The worker's existing-items
+// skip then treats them as already delivered, so it never regenerates or
+// duplicates a reused role.
+func insertReusedPackItems(ctx context.Context, q *dbgen.Queries, packID string, items []PackReuseItem) error {
+	for _, item := range items {
+		if err := q.InsertAssetPackItem(ctx, dbgen.InsertAssetPackItemParams{
+			ID:            ids.NewAssetPackItemID(),
+			AssetPackID:   packID,
+			VisualAssetID: item.AssetID,
+			VariantKey:    item.VariantKey,
+			SortOrder:     item.SortOrder,
+		}); err != nil {
+			return fmt.Errorf("insert reused pack item %q: %w", item.VariantKey, err)
+		}
+	}
+	return nil
+}
+
+// reuseVariantKeys returns the variant keys of the reused items (the pack's
+// delivered roles at creation), always non-nil so the NOT NULL array column is
+// satisfied.
+func reuseVariantKeys(items []PackReuseItem) []string {
+	keys := make([]string, 0, len(items))
+	for _, item := range items {
+		keys = append(keys, item.VariantKey)
+	}
+	return keys
+}
+
+// nonNilStrings maps a nil slice to an empty (non-nil) one so a NOT NULL TEXT[]
+// column is never sent a NULL.
+func nonNilStrings(in []string) []string {
+	if in == nil {
+		return []string{}
+	}
+	return in
 }
 
 // stylePayloadString pulls style_profile_id out of the job's input payload —
