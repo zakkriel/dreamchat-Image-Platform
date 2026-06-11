@@ -250,6 +250,8 @@ func (w *Worker) generatePackItem(ctx context.Context, job Job, plan packPlan, p
 		JobID:     job.ID,
 		Operation: providers.OperationTextToImage,
 		Prompt:    prompt,
+		Width:     deliveryRenderEdge,
+		Height:    deliveryRenderEdge,
 		Metadata: map[string]any{
 			"world_id":    plan.worldID,
 			"job_type":    job.JobType,

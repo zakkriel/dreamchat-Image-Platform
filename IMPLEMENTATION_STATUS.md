@@ -116,10 +116,38 @@ before this is production-ready.**
   Schema: one additive nullable `visual_assets.superseded_by_asset_id`
   (migration `0005`, no new table — count stays 18). This closes Phase 6A.
 
+- **Phase 6B — Delivery readiness** (Done): finished assets are now
+  deliverable to a client. (1) **Presigned reads** — `storage.Storage` grew a
+  `Presign(ctx, key, ttl)` minted from the deterministic object key via the
+  AWS SDK v2 presign client, honoring `S3_ENDPOINT`/`S3_USE_PATH_STYLE` so
+  MinIO (path-style) and R2 both work. URLs are computed **at read time and
+  never persisted**: the `s3://` canonical URLs stay the durable provenance on
+  `visual_assets`. (2) **Real resolution tiers** — the worker downscales the
+  provider output (a fixed Catmull-Rom kernel in `internal/imaging`) into three
+  genuinely distinct PNG tiers: `high`=final (provider output), `low`=preview
+  (~768px short edge), `thumb`=thumbnail (~256px), never upscaled — so
+  `derived_preview` is honest. (3) **Asset read UX** —
+  `GET /v1/assets/{asset_id}` now additionally returns presigned per-tier
+  `https` URLs (`thumbnail/preview/final_download_url` + `url_expires_at`,
+  TTL=`S3_PRESIGN_TTL`, default 15m), and a new `GET /v1/jobs/{job_id}/assets`
+  returns a job's delivered assets in deterministic delivery order (pack:
+  `asset_pack_items.sort_order`; artifact: `final_asset_ids` order) — not
+  restricted to `status='ready'` (archived assets stay displayable). Both are
+  tenant-scoped + `images:read`-gated; a URL is only minted after the
+  tenant-scoped row lookup succeeds, and keys are **derived**
+  (`storage.ObjectKey`), never client-supplied. (4) **Style preview** —
+  `POST /v1/styles/{style_id}/preview` (requires `world_id`, since assets are
+  world-scoped) reserves + enqueues one sample artifact through the normal
+  generate path; the sample is a normal delivered `visual_asset` read back
+  through the same presigned machinery. Strictly additive OpenAPI
+  (`0.5.4 → 0.6.0`, mirrored); **no migration** — presigning + tiers are
+  runtime and the preview asset is found via job → asset, so the table count
+  stays **18**. `true_preview` provider routing (a real latency-saving
+  preview/final two-phase path) is explicitly **deferred to Phase 7** along
+  with the BFL adapter and provider routing.
+
 ## Remaining
 
-- **Phase 6B — Delivery readiness**: S3 reads, presigned URLs, asset
-  retrieval UX, style preview.
 - **Phase 7 — Real provider + production controls**: BFL adapter,
   provider routing, capability checks, admin retry/cancel, rate limits,
   period reset, webhooks, RLS.

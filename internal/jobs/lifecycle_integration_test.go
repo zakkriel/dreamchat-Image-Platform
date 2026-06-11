@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -38,6 +39,10 @@ type memStorage struct{}
 
 func (memStorage) Put(_ context.Context, key string, _ []byte, _ string) (string, error) {
 	return "s3://test/" + key, nil
+}
+
+func (memStorage) Presign(_ context.Context, key string, _ time.Duration) (string, error) {
+	return "https://test.local/" + key + "?sig=x", nil
 }
 
 // To run (requires Postgres + MinIO with migrations 0001–0003 applied):

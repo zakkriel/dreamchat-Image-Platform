@@ -31,7 +31,7 @@ func (p *selectiveProvider) Generate(_ context.Context, req providers.ProviderGe
 		}
 	}
 	return providers.ProviderGenerateResult{
-		Images:     []providers.ProviderImage{{Bytes: []byte{0x1}, ContentType: "image/png"}},
+		Images:     []providers.ProviderImage{{Bytes: tinyPNGBytes(), ContentType: "image/png"}},
 		PromptHash: "hash",
 		Seed:       "seed",
 	}, nil

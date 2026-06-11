@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Provider string
@@ -39,6 +40,9 @@ type Config struct {
 	S3AccessKeyID     string
 	S3SecretAccessKey string
 	S3UsePathStyle    bool
+	// S3PresignTTL bounds how long a minted presigned read URL stays valid
+	// (Phase 6B delivery). Default 15m.
+	S3PresignTTL time.Duration
 
 	ImageProvider Provider
 	BFLAPIKey     string
@@ -65,6 +69,7 @@ func Load() (*Config, error) {
 		S3AccessKeyID:     getEnv("S3_ACCESS_KEY_ID", ""),
 		S3SecretAccessKey: getEnv("S3_SECRET_ACCESS_KEY", ""),
 		S3UsePathStyle:    getEnvBool("S3_USE_PATH_STYLE", false),
+		S3PresignTTL:      getEnvDuration("S3_PRESIGN_TTL", 15*time.Minute),
 
 		ImageProvider: Provider(getEnv("IMAGE_PROVIDER", string(ProviderMock))),
 		BFLAPIKey:     getEnv("BFL_API_KEY", ""),
@@ -153,6 +158,23 @@ func getEnvInt(key string, def int) int {
 		return def
 	}
 	return n
+}
+
+// getEnvDuration parses a Go duration string (e.g. "15m", "1h"). A bare
+// integer is treated as seconds for convenience. Falls back to def when unset
+// or unparseable.
+func getEnvDuration(key string, def time.Duration) time.Duration {
+	v, ok := os.LookupEnv(key)
+	if !ok || v == "" {
+		return def
+	}
+	if d, err := time.ParseDuration(v); err == nil {
+		return d
+	}
+	if n, err := strconv.Atoi(v); err == nil {
+		return time.Duration(n) * time.Second
+	}
+	return def
 }
 
 func getEnvBool(key string, def bool) bool {

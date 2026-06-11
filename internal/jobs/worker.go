@@ -13,6 +13,7 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/cost"
 	"github.com/zakkriel/drchat-image-platform/internal/ids"
+	"github.com/zakkriel/drchat-image-platform/internal/imaging"
 	"github.com/zakkriel/drchat-image-platform/internal/providers"
 	"github.com/zakkriel/drchat-image-platform/internal/storage"
 )
@@ -28,6 +29,13 @@ const (
 	// is the only model the worker can produce until real provider routing
 	// lands; it is intentionally not a route resolver.
 	mockProviderModelID = "pm_mock_v1"
+
+	// deliveryRenderEdge is the square edge (px) the worker asks the provider
+	// to produce so the "final" tier is genuinely higher resolution than the
+	// downscaled preview/thumbnail tiers (PRD 06 §4). It exceeds both
+	// imaging.PreviewShortEdge and imaging.ThumbnailShortEdge so the three
+	// delivery tiers come out at distinct sizes.
+	deliveryRenderEdge = 1024
 )
 
 // Worker holds the dependencies the asynq handler resolves a job against.
@@ -123,6 +131,8 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 		JobID:     job.ID,
 		Operation: providers.OperationTextToImage,
 		Prompt:    description,
+		Width:     deliveryRenderEdge,
+		Height:    deliveryRenderEdge,
 		Metadata: map[string]any{
 			"world_id": worldID,
 			"job_type": job.JobType,
@@ -265,20 +275,29 @@ type uploadedURLs struct {
 	high, low, thumb string
 }
 
+// uploadImages writes the three genuine resolution tiers (PRD 06 §4) for an
+// asset: high = final (provider output), low = preview, thumb = thumbnail.
+// The tiers are produced deterministically by imaging.EncodeTiers from the
+// provider's first image, so a regenerate/reupload of the same bytes yields
+// the same objects. A downscale failure is treated as a storage failure so the
+// asset is never persisted referencing objects that were never written.
 func (w *Worker) uploadImages(ctx context.Context, assetID string, images []providers.ProviderImage) (uploadedURLs, error) {
 	if len(images) == 0 {
 		return uploadedURLs{}, errors.New("worker: provider returned no images")
 	}
-	img := images[0]
-	high, err := w.Storage.Put(ctx, storage.ObjectKey(assetID, storage.VariantHigh, "png"), img.Bytes, contentTypeOr(img.ContentType))
+	tiers, err := imaging.EncodeTiers(images[0].Bytes)
+	if err != nil {
+		return uploadedURLs{}, fmt.Errorf("%w: encode tiers: %v", errStorageFailure, err)
+	}
+	high, err := w.Storage.Put(ctx, storage.ObjectKey(assetID, storage.VariantHigh, "png"), tiers.Final, "image/png")
 	if err != nil {
 		return uploadedURLs{}, err
 	}
-	low, err := w.Storage.Put(ctx, storage.ObjectKey(assetID, storage.VariantLow, "png"), img.Bytes, contentTypeOr(img.ContentType))
+	low, err := w.Storage.Put(ctx, storage.ObjectKey(assetID, storage.VariantLow, "png"), tiers.Preview, "image/png")
 	if err != nil {
 		return uploadedURLs{}, err
 	}
-	thumb, err := w.Storage.Put(ctx, storage.ObjectKey(assetID, storage.VariantThumb, "png"), img.Bytes, contentTypeOr(img.ContentType))
+	thumb, err := w.Storage.Put(ctx, storage.ObjectKey(assetID, storage.VariantThumb, "png"), tiers.Thumb, "image/png")
 	if err != nil {
 		return uploadedURLs{}, err
 	}
@@ -347,13 +366,6 @@ func (w *Worker) log() *slog.Logger {
 		return slog.Default()
 	}
 	return w.Logger
-}
-
-func contentTypeOr(ct string) string {
-	if ct == "" {
-		return "image/png"
-	}
-	return ct
 }
 
 func strPtr(s string) *string {

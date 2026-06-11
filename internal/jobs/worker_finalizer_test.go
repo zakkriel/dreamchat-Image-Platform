@@ -50,7 +50,7 @@ func (p *countingProvider) Generate(context.Context, providers.ProviderGenerateR
 	defer p.mu.Unlock()
 	p.calls++
 	return providers.ProviderGenerateResult{
-		Images:     []providers.ProviderImage{{Bytes: []byte{0x1}, ContentType: "image/png"}},
+		Images:     []providers.ProviderImage{{Bytes: tinyPNGBytes(), ContentType: "image/png"}},
 		PromptHash: "hash",
 		Seed:       "seed",
 	}, nil

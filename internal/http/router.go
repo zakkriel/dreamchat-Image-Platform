@@ -14,6 +14,7 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/httperr"
 	"github.com/zakkriel/drchat-image-platform/internal/identities"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
+	"github.com/zakkriel/drchat-image-platform/internal/storage"
 	"github.com/zakkriel/drchat-image-platform/internal/styles"
 )
 
@@ -30,6 +31,11 @@ type Deps struct {
 	JobsRepo       jobs.Repository
 	JobsService    jobs.Creator
 	AdminCost      handlers.AdminCostService
+
+	// Storage is the object-storage read side (Phase 6B). When set, asset and
+	// job-assets reads mint presigned per-tier download URLs; when nil those
+	// responses omit the URL fields (the pre-6B behavior).
+	Storage storage.Storage
 }
 
 type HealthResponse struct {
@@ -137,6 +143,13 @@ func mountStyles(v1 chi.Router, deps Deps) {
 	h := handlers.NewStylesHandler(deps.StylesRepo)
 	v1.With(auth.RequireScopes("styles:read")).Get("/styles", h.List)
 	v1.With(auth.RequireScopes("styles:write")).Post("/styles", h.Create)
+
+	// Phase 6B style preview: reserves + enqueues one sample image for a style.
+	// Requires the job service + a mock provider; nil-safe (skipped otherwise).
+	if deps.JobsService != nil {
+		preview := handlers.NewStylePreviewHandler(deps.JobsService, deps.StylesRepo, deps.Config.ImageProvider)
+		v1.With(auth.RequireScopes("images:write")).Post("/styles/{style_id}/preview", preview.GeneratePreview)
+	}
 }
 
 func mountIdentities(v1 chi.Router, deps Deps) {
@@ -156,8 +169,20 @@ func mountAssets(v1 chi.Router, deps Deps) {
 	}
 	retriever := assets.NewRetriever(deps.AssetsRepo)
 	h := handlers.NewAssetsHandler(deps.AssetsRepo, retriever)
+	// Phase 6B: wire the presigned read side + job lookup so asset/job-assets
+	// reads carry fetchable per-tier URLs. Nil-safe: without storage the URL
+	// fields are simply omitted.
+	if deps.Storage != nil {
+		h = h.WithDelivery(deps.Storage, deps.Config.S3PresignTTL)
+	}
+	if deps.JobsRepo != nil {
+		h = h.WithJobs(deps.JobsRepo)
+	}
 	v1.With(auth.RequireScopes("images:read")).Post("/assets/search", h.Search)
 	v1.With(auth.RequireScopes("images:read")).Get("/assets/{asset_id}", h.Get)
+	// The job-assets delivery read lives under /jobs but is served by the
+	// assets handler (it presigns asset tiers). images:read-gated, tenant-scoped.
+	v1.With(auth.RequireScopes("images:read")).Get("/jobs/{job_id}/assets", h.JobAssets)
 }
 
 func mountArtifacts(v1 chi.Router, deps Deps) {

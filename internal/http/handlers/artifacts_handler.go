@@ -297,6 +297,12 @@ func (h *ArtifactsHandler) respondCacheHit(w http.ResponseWriter, r *http.Reques
 
 // writeServiceError maps a jobs.Creator error to the matching HTTP status.
 func (h *ArtifactsHandler) writeServiceError(w http.ResponseWriter, r *http.Request, err error) {
+	writeJobServiceError(w, r, err)
+}
+
+// writeJobServiceError maps a jobs.Creator error to the matching HTTP status.
+// Shared by the artifact generate and style-preview paths.
+func writeJobServiceError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, jobs.ErrNoPriceEntry):
 		httperr.Write(w, r, http.StatusUnprocessableEntity, httperr.CodeNoPriceEntry, "no active price entry for the selected provider/model/operation")
