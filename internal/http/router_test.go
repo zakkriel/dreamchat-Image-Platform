@@ -55,6 +55,10 @@ func (noopAssetsRepo) Insert(context.Context, assets.InsertParams) (assets.Visua
 	return assets.VisualAsset{}, nil
 }
 
+func (noopAssetsRepo) SupersedeAndInsertArtifact(context.Context, assets.InsertParams, assets.ArtifactSlot) (assets.VisualAsset, error) {
+	return assets.VisualAsset{}, nil
+}
+
 func (noopAssetsRepo) FindExact(context.Context, assets.RetrievalQuery) (assets.VisualAsset, error) {
 	return assets.VisualAsset{}, assets.ErrNotFound
 }
@@ -110,6 +114,9 @@ func (noopJobsRepo) InsertAssetPackItem(context.Context, jobs.AssetPackItemInser
 	return nil
 }
 func (noopJobsRepo) InsertPackItemWithAsset(context.Context, assets.InsertParams, jobs.AssetPackItemInsertParams) error {
+	return nil
+}
+func (noopJobsRepo) InsertPackItemWithAssetSuperseding(context.Context, assets.InsertParams, jobs.AssetPackItemInsertParams, assets.VariantSlot) error {
 	return nil
 }
 func (noopJobsRepo) ListAssetPackItems(context.Context, string) ([]jobs.AssetPackItem, error) {

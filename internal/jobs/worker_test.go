@@ -35,6 +35,18 @@ type fakeJobsRepo struct {
 	// failNextMarkCompleted makes the next MarkCompleted fail once, to force
 	// the asynq-retry path after a successful fan-out.
 	failNextMarkCompleted bool
+
+	// Phase 6A4 pack supersede modeling. packTable is an in-memory visual_assets
+	// for pack-role slots; supersedeVariantCalls records each
+	// InsertPackItemWithAssetSuperseding call for routing/slot assertions.
+	packTable            []assets.VisualAsset
+	supersedeVariantCall []supersedeVariantCall
+}
+
+type supersedeVariantCall struct {
+	asset assets.InsertParams
+	item  AssetPackItemInsertParams
+	slot  assets.VariantSlot
 }
 
 func newFakeJobsRepo() *fakeJobsRepo {
@@ -223,6 +235,49 @@ func (r *fakeJobsRepo) InsertPackItemWithAsset(_ context.Context, asset assets.I
 	return nil
 }
 
+// InsertPackItemWithAssetSuperseding models the forced pack-role write: archive
+// the prior ready asset of the exact variant slot, version the new one, and
+// record the asset + item together (atomic).
+func (r *fakeJobsRepo) InsertPackItemWithAssetSuperseding(_ context.Context, asset assets.InsertParams, item AssetPackItemInsertParams, slot assets.VariantSlot) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if n := r.failPackInsertFor[item.VariantKey]; n > 0 {
+		r.failPackInsertFor[item.VariantKey] = n - 1
+		return errors.New("forced pack insert failure (atomic rollback)")
+	}
+	r.supersedeVariantCall = append(r.supersedeVariantCall, supersedeVariantCall{asset: asset, item: item, slot: slot})
+	maxVersion := int32(0)
+	for i := range r.packTable {
+		if variantSlotMatch(r.packTable[i], slot) && r.packTable[i].Version > maxVersion {
+			maxVersion = r.packTable[i].Version
+		}
+	}
+	newID := asset.ID
+	for i := range r.packTable {
+		if variantSlotMatch(r.packTable[i], slot) && r.packTable[i].Status == "ready" {
+			r.packTable[i].Status = "archived"
+			r.packTable[i].SupersededByAssetID = &newID
+		}
+	}
+	if err := r.insertPackItemLocked(item); err != nil {
+		return err
+	}
+	stored := assetFromParams(asset, maxVersion+1)
+	r.packTable = append(r.packTable, stored)
+	r.packAssets = append(r.packAssets, asset)
+	return nil
+}
+
+func variantSlotMatch(a assets.VisualAsset, slot assets.VariantSlot) bool {
+	return a.TenantID == slot.TenantID &&
+		a.WorldID == slot.WorldID &&
+		ptrEq(a.VisualIdentityID, slot.VisualIdentityID) &&
+		a.VariantKey == slot.VariantKey &&
+		a.StateVersion == slot.StateVersion &&
+		ptrEq(a.StyleProfileID, slot.StyleProfileID) &&
+		a.QualityTier == slot.QualityTier
+}
+
 func (r *fakeJobsRepo) ListAssetPackItems(_ context.Context, packID string) ([]AssetPackItem, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -242,6 +297,18 @@ func (r *fakeJobsRepo) lastPackStatus(packID string) string {
 type fakeAssetsRepo struct {
 	mu     sync.Mutex
 	stored []assets.InsertParams
+
+	// Phase 6A4 supersede modeling. table is an in-memory visual_assets so the
+	// supersede path can faithfully archive prior ready rows and version the new
+	// one; supersedeArtifactCalls records each SupersedeAndInsertArtifact call for
+	// routing/slot assertions.
+	table                 []assets.VisualAsset
+	supersedeArtifactCall []supersedeArtifactCall
+}
+
+type supersedeArtifactCall struct {
+	params assets.InsertParams
+	slot   assets.ArtifactSlot
 }
 
 func (r *fakeAssetsRepo) GetByIDForTenant(context.Context, string, string) (assets.VisualAsset, error) {
@@ -268,17 +335,76 @@ func (r *fakeAssetsRepo) Insert(_ context.Context, params assets.InsertParams) (
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.stored = append(r.stored, params)
+	asset := assetFromParams(params, 1)
+	r.table = append(r.table, asset)
+	return asset, nil
+}
+
+// SupersedeAndInsertArtifact models the production semantics in memory: under
+// the (notional) slot lock, archive every prior ready row of the exact artifact
+// slot, link it forward to the new asset, and insert the new asset ready with
+// version = prior_max + 1.
+func (r *fakeAssetsRepo) SupersedeAndInsertArtifact(_ context.Context, params assets.InsertParams, slot assets.ArtifactSlot) (assets.VisualAsset, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.supersedeArtifactCall = append(r.supersedeArtifactCall, supersedeArtifactCall{params: params, slot: slot})
+	maxVersion := int32(0)
+	for i := range r.table {
+		if !artifactSlotMatch(r.table[i], slot) {
+			continue
+		}
+		if r.table[i].Version > maxVersion {
+			maxVersion = r.table[i].Version
+		}
+	}
+	newID := params.ID
+	for i := range r.table {
+		if artifactSlotMatch(r.table[i], slot) && r.table[i].Status == "ready" {
+			r.table[i].Status = "archived"
+			r.table[i].SupersededByAssetID = &newID
+		}
+	}
+	asset := assetFromParams(params, maxVersion+1)
+	r.stored = append(r.stored, params)
+	r.table = append(r.table, asset)
+	return asset, nil
+}
+
+func assetFromParams(params assets.InsertParams, version int32) assets.VisualAsset {
+	if params.Version != 0 {
+		version = params.Version
+	}
 	return assets.VisualAsset{
-		ID:           params.ID,
-		TenantID:     params.TenantID,
-		WorldID:      params.WorldID,
-		AssetType:    params.AssetType,
-		VariantKey:   params.VariantKey,
-		Status:       "ready",
-		LowResUrl:    params.LowResUrl,
-		HighResUrl:   params.HighResUrl,
-		ThumbnailUrl: params.ThumbnailUrl,
-	}, nil
+		ID:               params.ID,
+		TenantID:         params.TenantID,
+		WorldID:          params.WorldID,
+		VisualIdentityID: params.VisualIdentityID,
+		AssetType:        params.AssetType,
+		VariantKey:       params.VariantKey,
+		Version:          version,
+		StateVersion:     1, // visual_assets.state_version DEFAULT 1
+		StyleProfileID:   params.StyleProfileID,
+		QualityTier:      params.QualityTier,
+		Status:           "ready",
+		PromptHash:       params.PromptHash,
+		LowResUrl:        params.LowResUrl,
+		HighResUrl:       params.HighResUrl,
+		ThumbnailUrl:     params.ThumbnailUrl,
+	}
+}
+
+func ptrEq(a *string, b string) bool {
+	return a != nil && *a == b
+}
+
+func artifactSlotMatch(a assets.VisualAsset, slot assets.ArtifactSlot) bool {
+	return a.TenantID == slot.TenantID &&
+		a.WorldID == slot.WorldID &&
+		a.AssetType == "artifact" &&
+		a.VariantKey == "default" &&
+		ptrEq(a.StyleProfileID, slot.StyleProfileID) &&
+		a.QualityTier == slot.QualityTier &&
+		ptrEq(a.PromptHash, slot.PromptHash)
 }
 
 type fakeStorage struct {
@@ -507,5 +633,92 @@ func TestWorkerProcessAttemptNumberMatchesRetryCount(t *testing.T) {
 	}
 	if len(jobsRepo.attempts) != 1 || jobsRepo.attempts[0].AttemptNumber != 2 {
 		t.Fatalf("expected attempt_number=2 for retryCount=1, got %+v", jobsRepo.attempts)
+	}
+}
+
+// TestWorkerProcessForceRegenerateSupersedesArtifactSlot (Phase 6A4): a forced
+// artifact job routes the write through SupersedeAndInsertArtifact (not Insert),
+// with the EXACT artifact slot; the prior ready asset of that slot is archived
+// and linked forward, and the new asset's version is prior + 1.
+func TestWorkerProcessForceRegenerateSupersedesArtifactSlot(t *testing.T) {
+	jobsRepo := newFakeJobsRepo()
+	assetsRepo := &fakeAssetsRepo{}
+	storage := &fakeStorage{}
+
+	world := "w1"
+	style := "sty_ok"
+	quality := "standard"
+	hash := "render_hash_force"
+
+	// Seed the prior ready artifact (version 1) for the slot.
+	priorID := "asset_prior"
+	_, _ = assetsRepo.Insert(context.Background(), assets.InsertParams{
+		ID:             priorID,
+		TenantID:       "tenant_a",
+		WorldID:        world,
+		AssetType:      "artifact",
+		VariantKey:     "default",
+		StyleProfileID: &style,
+		QualityTier:    quality,
+		PromptHash:     &hash,
+	})
+
+	tokenID := "tok_test"
+	_, _ = jobsRepo.Insert(context.Background(), InsertParams{
+		ID:                 "job_force",
+		TenantID:           "tenant_a",
+		WorldID:            &world,
+		JobType:            "artifact",
+		RequestedByTokenID: &tokenID,
+		InputPayload: map[string]any{
+			"world_id":         world,
+			"description":      "bronze key",
+			"style_profile_id": style,
+			"quality_tier":     quality,
+			"prompt_hash":      hash,
+			"force_regenerate": true,
+		},
+	})
+
+	w := &Worker{Jobs: jobsRepo, Assets: assetsRepo, Storage: storage, Provider: mock.New()}
+	if err := w.Process(context.Background(), "job_force", 0); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+
+	// Routed through supersede, not a plain insert.
+	if len(assetsRepo.supersedeArtifactCall) != 1 {
+		t.Fatalf("forced artifact must call SupersedeAndInsertArtifact exactly once, got %d", len(assetsRepo.supersedeArtifactCall))
+	}
+	call := assetsRepo.supersedeArtifactCall[0]
+	wantSlot := assets.ArtifactSlot{TenantID: "tenant_a", WorldID: world, StyleProfileID: style, QualityTier: quality, PromptHash: hash}
+	if call.slot != wantSlot {
+		t.Fatalf("supersede slot mismatch: want %+v, got %+v", wantSlot, call.slot)
+	}
+
+	// Prior asset archived and linked forward; new asset is the single ready row,
+	// version prior+1.
+	var prior, fresh *assets.VisualAsset
+	for i := range assetsRepo.table {
+		switch assetsRepo.table[i].ID {
+		case priorID:
+			prior = &assetsRepo.table[i]
+		default:
+			fresh = &assetsRepo.table[i]
+		}
+	}
+	if prior == nil || fresh == nil {
+		t.Fatalf("expected both the prior and the regenerated asset in the table, got %+v", assetsRepo.table)
+	}
+	if prior.Status != "archived" {
+		t.Fatalf("prior asset must be archived, got %q", prior.Status)
+	}
+	if prior.SupersededByAssetID == nil || *prior.SupersededByAssetID != fresh.ID {
+		t.Fatalf("prior asset must link forward to the regenerated asset %q, got %v", fresh.ID, prior.SupersededByAssetID)
+	}
+	if fresh.Status != "ready" {
+		t.Fatalf("regenerated asset must be ready, got %q", fresh.Status)
+	}
+	if fresh.Version != prior.Version+1 || fresh.Version != 2 {
+		t.Fatalf("regenerated version must be prior+1 (=2), got prior=%d fresh=%d", prior.Version, fresh.Version)
 	}
 }

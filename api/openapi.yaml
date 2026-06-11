@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: DreamChat Image Platform API
-  version: 0.5.3
+  version: 0.5.4
   description: |
     Standalone API for generating, storing, retrieving, and versioning persistent visual assets for DreamChat worlds.
 
@@ -1307,6 +1307,20 @@ components:
             default `compatible_only` skips generation when an exact or
             compatible asset already exists per the variant compatibility
             matrix.
+        force_regenerate:
+          type: boolean
+          default: false
+          description: |
+            Phase 6A4 forced regeneration. When `true`, retrieval-before-
+            generation is bypassed for every required role: the whole pack is
+            priced and generated fresh (no reuse, no misses-only discount, no
+            all-hits synchronous completion). Each regenerated role's asset
+            supersedes the prior ready asset of its exact slot — the
+            predecessor is archived and linked via
+            `superseded_by_asset_id`, and the new asset becomes the single
+            ready row a later non-forced request reuses. Whole-pack only;
+            per-role regeneration is not supported. Default `false` is the
+            unchanged reuse-first behavior.
     GeneratePlacePackRequest:
       type: object
       required: [world_id, style_profile_id]
@@ -1332,6 +1346,11 @@ components:
           $ref: '#/components/schemas/FallbackPolicy'
           description: |
             See GenerateCharacterPackRequest.fallback_policy.
+        force_regenerate:
+          type: boolean
+          default: false
+          description: |
+            See GenerateCharacterPackRequest.force_regenerate.
     GenerateArtifactRequest:
       type: object
       required: [world_id, style_profile_id, description]
@@ -1347,6 +1366,19 @@ components:
           $ref: '#/components/schemas/FallbackPolicy'
           description: |
             See GenerateCharacterPackRequest.fallback_policy.
+        force_regenerate:
+          type: boolean
+          default: false
+          description: |
+            Phase 6A4 forced regeneration. When `true`, the artifact
+            exact-reuse lookup (Phase 6A2) is bypassed and the artifact is
+            always rendered fresh (reserve + enqueue + generate). The new
+            asset supersedes the prior ready asset of its exact slot
+            (tenant + world + style + quality + render hash): the predecessor
+            is archived and linked via `superseded_by_asset_id`, and the new
+            asset becomes the single ready row a later non-forced request
+            reuses, with `version` incremented. Default `false` is the
+            unchanged Phase 6A2 reuse behavior.
     # ------------------------------------------------------------------------
     # Jobs
     # ------------------------------------------------------------------------
@@ -1906,6 +1938,21 @@ components:
 # Confidence to Implement
 #
 # Score: 94/100 — Very High
+#
+# v0.5.4 — Phase 6A4 forced regeneration / supersede-on-regenerate (additive):
+#   * `GenerateArtifactRequest.force_regenerate`,
+#     `GenerateCharacterPackRequest.force_regenerate`, and
+#     `GeneratePlacePackRequest.force_regenerate` — optional boolean
+#     (default `false`). When `true` the request bypasses reuse and always
+#     generates a fresh asset (artifact: the Phase 6A2 exact-hash lookup is
+#     skipped; pack: per-role retrieval is skipped, the whole pack is priced
+#     and generated). The regenerated asset supersedes the prior ready asset
+#     of its exact slot — the predecessor is archived and linked forward —
+#     so a later non-forced request reuses the regenerated row. Strictly
+#     additive: no field is removed or made required, and `false`/omitted is
+#     byte-for-byte the 6A2/6A3 reuse behavior. No response schema changes —
+#     the supersede chain is recorded on `visual_assets.superseded_by_asset_id`
+#     and observed via the existing asset/job reads.
 #
 # v0.5.3 — Phase 6A1 retrieval substrate (additive):
 #   * `AssetSearchRequest.style_profile_version` (integer) and

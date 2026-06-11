@@ -343,6 +343,10 @@ func (s *stubAssetsRepo) Insert(_ context.Context, params assets.InsertParams) (
 	return asset, nil
 }
 
+func (s *stubAssetsRepo) SupersedeAndInsertArtifact(ctx context.Context, params assets.InsertParams, _ assets.ArtifactSlot) (assets.VisualAsset, error) {
+	return s.Insert(ctx, params)
+}
+
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------

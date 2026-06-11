@@ -1134,3 +1134,121 @@ func TestEndToEndGeneratedPackAssetIsRetrievable(t *testing.T) {
 		t.Fatalf("returned asset %s is not one of the generated rows for job %s", res.Asset.ID, jobID)
 	}
 }
+
+// TestPackForceRegenerateSupersedesAndChargesFullPack is the Phase 6A4 pack
+// acceptance test: a forced regeneration of a pack whose every role has a
+// reusable asset still prices and generates the WHOLE pack (no misses-only
+// discount, no all-hits shortcut), the prior per-role assets are archived and
+// linked forward, the new pack is all-delivered with all-new ready assets, and
+// budget spend increases by the full pack cost.
+func TestPackForceRegenerateSupersedesAndChargesFullPack(t *testing.T) {
+	pool := openTestPool(t)
+	defer pool.Close()
+	cleanup(t, pool)
+	defer cleanup(t, pool)
+	seedFixtures(t, pool)
+	seedPackIdentities(t, pool)
+	seedBudget(t, pool, "bud_pack_force", "tenant", itTenant, "active", "5.0000")
+
+	jobsRepo := jobs.NewRepository(pool)
+	enq := newRecordingEnqueuer()
+	svc := newCostService(pool, enq)
+	r := mountPackTestRouter(svc, pool, jobsRepo)
+	body := map[string]any{"world_id": "w1", "style_profile_id": itStyleID}
+
+	// First generation: zero priors → full 7-role pack, generated normally.
+	rec1 := sendPackRequest(t, r, "/v1/characters/"+itCharacterID+"/generate-pack", body, "")
+	if rec1.Code != http.StatusAccepted {
+		t.Fatalf("first POST expected 202, got %d body=%s", rec1.Code, rec1.Body.String())
+	}
+	var resp1 map[string]any
+	_ = json.Unmarshal(rec1.Body.Bytes(), &resp1)
+	job1, _ := resp1["job_id"].(string)
+	w := newPackTestWorker(pool, mock.New())
+	if err := w.ProcessPack(context.Background(), job1); err != nil {
+		t.Fatalf("worker pack process: %v", err)
+	}
+	if got := scalar(t, pool, `SELECT count(*) FROM visual_assets WHERE tenant_id = $1`, itTenant); got != "7" {
+		t.Fatalf("expected 7 generated assets after first run, got %s", got)
+	}
+	_, spentAfterFirst := budgetAmounts(t, pool, "bud_pack_force")
+
+	// Force regenerate the SAME pack — every role is reusable, but force bypasses.
+	forcedBody := map[string]any{"world_id": "w1", "style_profile_id": itStyleID, "force_regenerate": true}
+	rec2 := sendPackRequest(t, r, "/v1/characters/"+itCharacterID+"/generate-pack", forcedBody, "")
+	if rec2.Code != http.StatusAccepted {
+		t.Fatalf("forced POST expected 202, got %d body=%s", rec2.Code, rec2.Body.String())
+	}
+	var resp2 map[string]any
+	_ = json.Unmarshal(rec2.Body.Bytes(), &resp2)
+	job2, _ := resp2["job_id"].(string)
+	pack2, _ := resp2["asset_pack_id"].(string)
+	if job2 == job1 {
+		t.Fatalf("forced regeneration must create a distinct job")
+	}
+	// A forced pack is priced (whole pack) and enqueued — not an all-hits shortcut.
+	if _, found := resp2["cost_reservation_id"]; !found {
+		t.Fatalf("forced pack must reserve cost (cost_reservation_id in response), got %v", resp2)
+	}
+	if resp2["estimated_cost_usd"] == "0.0000" {
+		t.Fatalf("forced pack must be priced for the whole pack, got estimated_cost_usd=0.0000")
+	}
+	if got := enq.packSnapshot(); len(got) != 2 {
+		t.Fatalf("forced pack must be enqueued (expected 2 pack enqueues total), got %v", got)
+	}
+	// Pricing covers all 7 roles (no misses-only discount): the reservation's
+	// estimate equals the first full-pack generation's estimate.
+	estForced := scalar(t, pool, `SELECT cost_estimate_usd::text FROM generation_jobs WHERE id = $1`, job2)
+	estFirst := scalar(t, pool, `SELECT cost_estimate_usd::text FROM generation_jobs WHERE id = $1`, job1)
+	if estForced != estFirst {
+		t.Fatalf("forced pack estimate must equal a full cold pack (%s), got %s", estFirst, estForced)
+	}
+
+	if err := w.ProcessPack(context.Background(), job2); err != nil {
+		t.Fatalf("worker forced pack process: %v", err)
+	}
+
+	// 7 prior assets archived + linked; 7 new ready assets (version 2) for job2.
+	if got := scalar(t, pool, `SELECT count(*) FROM visual_assets WHERE tenant_id = $1`, itTenant); got != "14" {
+		t.Fatalf("expected 14 total assets (7 archived + 7 regenerated), got %s", got)
+	}
+	if got := scalar(t, pool,
+		`SELECT count(*) FROM visual_assets WHERE generation_job_id = $1 AND status = 'archived' AND superseded_by_asset_id IS NOT NULL`, job1); got != "7" {
+		t.Fatalf("expected 7 prior assets archived + linked forward, got %s", got)
+	}
+	if got := scalar(t, pool,
+		`SELECT count(*) FROM visual_assets WHERE generation_job_id = $1 AND status = 'ready' AND version = 2`, job2); got != "7" {
+		t.Fatalf("expected 7 regenerated ready assets at version 2, got %s", got)
+	}
+	// Exactly 7 ready pack assets remain for the identity (one per role).
+	if got := scalar(t, pool,
+		`SELECT count(*) FROM visual_assets WHERE visual_identity_id = $1 AND status = 'ready'`, itIdentityCh); got != "7" {
+		t.Fatalf("expected exactly 7 ready assets for the identity after supersede, got %s", got)
+	}
+
+	// The forced pack is complete with all-new assets (none reused from job1).
+	if got := scalar(t, pool, `SELECT status FROM asset_packs WHERE id = $1`, pack2); got != "completed" {
+		t.Fatalf("pack2 status: expected completed, got %s", got)
+	}
+	if got := scalar(t, pool, `SELECT cardinality(delivered_roles)::text FROM asset_packs WHERE id = $1`, pack2); got != "7" {
+		t.Fatalf("pack2 delivered_roles: expected 7, got %s", got)
+	}
+	if got := scalar(t, pool, `SELECT cardinality(missing_roles)::text FROM asset_packs WHERE id = $1`, pack2); got != "0" {
+		t.Fatalf("pack2 missing_roles: expected 0, got %s", got)
+	}
+	if got := scalar(t, pool,
+		`SELECT count(*) FROM asset_pack_items api JOIN visual_assets va ON va.id = api.visual_asset_id
+		 WHERE api.asset_pack_id = $1 AND va.generation_job_id = $2`, pack2, job2); got != "7" {
+		t.Fatalf("forced pack must point at all-new job2 assets, got %s", got)
+	}
+	if got := scalar(t, pool,
+		`SELECT count(*) FROM asset_pack_items WHERE asset_pack_id = $1`, pack2); got != "7" {
+		t.Fatalf("forced pack must have exactly 7 items (none reused), got %s", got)
+	}
+
+	// Budget spend increased by the full pack cost (no misses-only discount).
+	_, spentAfterForced := budgetAmounts(t, pool, "bud_pack_force")
+	if spentAfterForced == spentAfterFirst {
+		t.Fatalf("forced pack must increase spend by the full pack cost: still %s", spentAfterForced)
+	}
+}

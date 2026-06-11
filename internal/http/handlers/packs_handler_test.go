@@ -696,6 +696,85 @@ func TestPackZeroHitsPricesWholePack(t *testing.T) {
 	}
 }
 
+// TestPackForceRegenerateBypassesReuse (Phase 6A4): even when EVERY required
+// role has an exact ready asset (the all-hits case), force_regenerate:true skips
+// per-role retrieval entirely → the whole pack is priced (Units == all roles),
+// no reused items are persisted, there is no all-hits synchronous completion, and
+// the job payload carries force_regenerate so the worker supersedes each slot.
+func TestPackForceRegenerateBypassesReuse(t *testing.T) {
+	creator := &estimatingPackCreator{}
+	roles := characterPackKind.defaultVariants
+	src := &fakeCandidateSource{exact: map[string]assets.VisualAsset{}}
+	for i, role := range roles {
+		src.exact[role] = readyReuseAsset(fmt.Sprintf("asset_%02d", i), role)
+	}
+	router := newPacksRouterWithRetriever(creator, seededPackIdentities(), src)
+
+	body := map[string]any{
+		"world_id":         packWorldID,
+		"style_profile_id": "sty_ok",
+		"force_regenerate": true,
+	}
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/characters/char_hero/generate-pack",
+		tenantA, []string{"images:write"}, body, nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	// No all-hits synchronous completion despite every role having a ready asset.
+	if creator.gotReuse.JobType != "" {
+		t.Fatalf("force_regenerate must not complete synchronously (no all-hits), got %+v", creator.gotReuse)
+	}
+	got := creator.got
+	if got.JobType != "character_pack" {
+		t.Fatalf("force_regenerate must go through CreateAndEnqueue, got job_type %q", got.JobType)
+	}
+	if int(got.Units) != len(roles) {
+		t.Fatalf("force_regenerate prices the whole pack: expected Units=%d, got %d", len(roles), got.Units)
+	}
+	if got.AssetPack == nil || len(got.AssetPack.ReusedItems) != 0 {
+		t.Fatalf("force_regenerate must persist no reused items, got %+v", got.AssetPack)
+	}
+	if len(got.AssetPack.MissingRoles) != len(roles) {
+		t.Fatalf("force_regenerate: every role is missing, got %v", got.AssetPack.MissingRoles)
+	}
+	if !reflect.DeepEqual(got.AssetPack.RequiredRoles, roles) {
+		t.Fatalf("required roles: expected %v, got %v", roles, got.AssetPack.RequiredRoles)
+	}
+	if fr, _ := got.InputPayload["force_regenerate"].(bool); !fr {
+		t.Fatalf("forced pack payload must carry force_regenerate=true, got %v", got.InputPayload["force_regenerate"])
+	}
+}
+
+// TestPackForceRegenerateFalseStillAllHits (Phase 6A4): force_regenerate:false
+// with every role hitting is unchanged 6A3 — still all-hits synchronous
+// completion.
+func TestPackForceRegenerateFalseStillAllHits(t *testing.T) {
+	creator := &estimatingPackCreator{}
+	roles := characterPackKind.defaultVariants
+	src := &fakeCandidateSource{exact: map[string]assets.VisualAsset{}}
+	for i, role := range roles {
+		src.exact[role] = readyReuseAsset(fmt.Sprintf("asset_%02d", i), role)
+	}
+	router := newPacksRouterWithRetriever(creator, seededPackIdentities(), src)
+
+	body := map[string]any{
+		"world_id":         packWorldID,
+		"style_profile_id": "sty_ok",
+		"force_regenerate": false,
+	}
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/characters/char_hero/generate-pack",
+		tenantA, []string{"images:write"}, body, nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if creator.got.JobType != "" {
+		t.Fatalf("force_regenerate:false all-hits must not call CreateAndEnqueue, got %+v", creator.got)
+	}
+	if creator.gotReuse.JobType != "character_pack" || len(creator.gotReuse.ReusedItems) != len(roles) {
+		t.Fatalf("force_regenerate:false must still complete synchronously with all roles reused, got %+v", creator.gotReuse)
+	}
+}
+
 // TestPackFallbackPolicyGatesReuse pins the fallback_policy gating: with a single
 // candidate (a neutral front portrait), the three-quarter role is a COMPATIBLE
 // match and the side-angle role is only a PREVIEW. Under compatible_only the

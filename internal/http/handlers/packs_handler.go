@@ -306,23 +306,43 @@ func (h *PacksHandler) generate(w http.ResponseWriter, r *http.Request, kind pac
 		payload["latency_tier"] = string(*req.LatencyTier)
 	}
 
+	// Phase 6A4: force_regenerate (default false) bypasses per-role reuse and
+	// regenerates the whole pack. Carried on the payload so the worker supersedes
+	// each role's slot.
+	forceRegenerate := req.ForceRegenerate != nil && *req.ForceRegenerate
+	if forceRegenerate {
+		payload["force_regenerate"] = true
+	}
+
 	// Phase 6A3 retrieval-before-generation: resolve every required role through
 	// the retrieval layer (exact → compatible → preview → generated_required,
 	// gated by fallback_policy) before reserving cost. Roles a reusable asset
 	// satisfies become reused items (persisted up front, no provider work); the
 	// rest are the missing roles the worker generates and the only roles priced.
-	reuseItems, missing, ok := h.planPackReuse(w, r, packReuseInput{
-		tenantID:         principal.TenantID,
-		worldID:          req.WorldId,
-		visualIdentityID: identity.ID,
-		entityType:       kind.ownerType,
-		styleProfileID:   req.StyleProfileId,
-		qualityTier:      effectiveQuality,
-		fallbackPolicy:   fallback,
-		roles:            variantKeys,
-	})
-	if !ok {
-		return
+	//
+	// Phase 6A4: when forced, retrieval is bypassed — every required role is
+	// treated as missing (priced + generated) and no reused items are persisted,
+	// so the existing partial path generates the whole pack with no misses-only
+	// discount and no all-hits synchronous completion.
+	var reuseItems []jobs.PackReuseItem
+	var missing []string
+	if forceRegenerate {
+		missing = append([]string(nil), variantKeys...)
+	} else {
+		var ok bool
+		reuseItems, missing, ok = h.planPackReuse(w, r, packReuseInput{
+			tenantID:         principal.TenantID,
+			worldID:          req.WorldId,
+			visualIdentityID: identity.ID,
+			entityType:       kind.ownerType,
+			styleProfileID:   req.StyleProfileId,
+			qualityTier:      effectiveQuality,
+			fallbackPolicy:   fallback,
+			roles:            variantKeys,
+		})
+		if !ok {
+			return
+		}
 	}
 
 	// Idempotency context is shared by the reuse and the generate paths so a

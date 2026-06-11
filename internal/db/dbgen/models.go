@@ -289,6 +289,7 @@ type VisualAsset struct {
 	GeneratedAt         pgtype.Timestamptz `json:"generated_at"`
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
+	SupersededByAssetID *string            `json:"superseded_by_asset_id"`
 }
 
 type VisualIdentity struct {

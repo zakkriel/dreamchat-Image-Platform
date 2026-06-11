@@ -132,6 +132,13 @@ type Repository interface {
 	// asset_packs. The worker calls it at the terminal step.
 	UpdateAssetPackCompleteness(ctx context.Context, packID string, delivered, missing []string) error
 	InsertPackItemWithAsset(ctx context.Context, asset assets.InsertParams, item AssetPackItemInsertParams) error
+	// InsertPackItemWithAssetSuperseding is the Phase 6A4 forced-regeneration
+	// pack-item write: same atomic asset + asset_pack_items transaction as
+	// InsertPackItemWithAsset, but it first archives the prior ready asset of the
+	// role's exact slot and versions the new one (prior_max + 1), all under a slot
+	// advisory lock. A forced pack has no reused items, so there is no skip logic
+	// here — every role takes this path.
+	InsertPackItemWithAssetSuperseding(ctx context.Context, asset assets.InsertParams, item AssetPackItemInsertParams, slot assets.VariantSlot) error
 	InsertAssetPackItem(ctx context.Context, params AssetPackItemInsertParams) error
 	ListAssetPackItems(ctx context.Context, packID string) ([]AssetPackItem, error)
 }
@@ -317,6 +324,40 @@ func (r *pgRepository) InsertPackItemWithAsset(ctx context.Context, asset assets
 	}()
 	q := dbgen.New(tx)
 	if _, err := assets.InsertWithQueries(ctx, q, asset); err != nil {
+		return err
+	}
+	if err := q.InsertAssetPackItem(ctx, dbgen.InsertAssetPackItemParams{
+		ID:            item.ID,
+		AssetPackID:   item.AssetPackID,
+		VisualAssetID: item.VisualAssetID,
+		VariantKey:    item.VariantKey,
+		SortOrder:     item.SortOrder,
+	}); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+func (r *pgRepository) InsertPackItemWithAssetSuperseding(ctx context.Context, asset assets.InsertParams, item AssetPackItemInsertParams, slot assets.VariantSlot) error {
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+	q := dbgen.New(tx)
+	// Supersede + insert the new ready asset (versioned, prior ready rows
+	// archived) under the slot lock, then append the pack item — all in one
+	// transaction so a delivered regenerated variant is observable atomically.
+	if _, err := assets.SupersedeVariantSlotWithQueries(ctx, q, asset, slot); err != nil {
 		return err
 	}
 	if err := q.InsertAssetPackItem(ctx, dbgen.InsertAssetPackItemParams{

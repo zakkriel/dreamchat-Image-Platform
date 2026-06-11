@@ -302,15 +302,36 @@ func (w *Worker) generatePackItem(ctx context.Context, job Job, plan packPlan, p
 		GenerationJobID:     &jobIDRef,
 	}
 	assets.ClassifyVariant(plan.entityType, variantKey).ApplyTo(&assetParams)
-	if err := w.Jobs.InsertPackItemWithAsset(ctx, assetParams, AssetPackItemInsertParams{
+	item := AssetPackItemInsertParams{
 		ID:            ids.NewAssetPackItemID(),
 		AssetPackID:   plan.packID,
 		VisualAssetID: assetID,
 		VariantKey:    variantKey,
 		SortOrder:     int32(index),
-	}); err != nil {
-		w.markPackAttemptFailed(ctx, attempt.ID, fmt.Errorf("%w: insert asset + pack item: %v", errPersistence, err), latency)
-		return "", err
+	}
+	// Phase 6A4 forced regeneration: a forced pack supersedes each role's slot.
+	// The atomic asset + pack-item write archives the prior ready asset of the
+	// EXACT pack-role slot (FindExactVisualAsset predicate) and versions the new
+	// one (prior_max + 1), in the same transaction and under a slot lock. A
+	// forced pack has no reused items, so every role takes this path; a non-forced
+	// pack uses the byte-for-byte unchanged InsertPackItemWithAsset.
+	var insertErr error
+	if plan.forceRegenerate {
+		insertErr = w.Jobs.InsertPackItemWithAssetSuperseding(ctx, assetParams, item, assets.VariantSlot{
+			TenantID:         job.TenantID,
+			WorldID:          plan.worldID,
+			VisualIdentityID: plan.visualIdentityID,
+			VariantKey:       variantKey,
+			StateVersion:     packSupersedeStateVersion,
+			StyleProfileID:   derefStr(plan.styleProfileID),
+			QualityTier:      plan.qualityTier,
+		})
+	} else {
+		insertErr = w.Jobs.InsertPackItemWithAsset(ctx, assetParams, item)
+	}
+	if insertErr != nil {
+		w.markPackAttemptFailed(ctx, attempt.ID, fmt.Errorf("%w: insert asset + pack item: %v", errPersistence, insertErr), latency)
+		return "", insertErr
 	}
 
 	if err := w.Jobs.MarkProviderAttemptSucceeded(ctx, attempt.ID, latency); err != nil {
@@ -338,6 +359,24 @@ type packPlan struct {
 	qualityTier         string
 	styleProfileID      *string
 	styleProfileVersion *int32
+	// forceRegenerate (Phase 6A4) makes every role supersede its slot instead of
+	// a plain insert. Carried on the job input_payload by the pack handler.
+	forceRegenerate bool
+}
+
+// packSupersedeStateVersion is the state version a forced pack regeneration
+// supersedes on. It mirrors the handler's packReuseStateVersion: pack assets are
+// generated at the entity's default state (state_version = 1, the visual_assets
+// default), so the supersede slot must target that same state — otherwise the
+// archive predicate would miss the prior ready row and leave two ready rows.
+const packSupersedeStateVersion = 1
+
+// derefStr returns the pointed-to string, or "" for a nil pointer.
+func derefStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // missingRoles returns the required roles not present in delivered, preserving
@@ -401,5 +440,6 @@ func packPlanFromJob(job Job) (packPlan, error) {
 	// style. style_profile_version is optional (no request carries one yet).
 	plan.styleProfileID = payloadStrPtr(job.InputPayload, "style_profile_id")
 	plan.styleProfileVersion = payloadInt32Ptr(job.InputPayload, "style_profile_version")
+	plan.forceRegenerate = payloadBool(job.InputPayload, "force_regenerate")
 	return plan, nil
 }

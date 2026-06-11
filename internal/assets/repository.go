@@ -42,6 +42,7 @@ type VisualAsset struct {
 	PromptHash          *string
 	Seed                *string
 	Metadata            map[string]any
+	SupersededByAssetID *string
 }
 
 // InsertParams captures what the worker writes when a generation succeeds.
@@ -70,6 +71,11 @@ type InsertParams struct {
 	PromptHash          *string
 	Seed                *string
 	GenerationJobID     *string
+	// Version is the per-asset version written to visual_assets.version. Zero
+	// means "use the default" (1) — the normal generate path leaves it 0. A
+	// forced regeneration (Phase 6A4) sets it to prior_max_version + 1 so
+	// versions stay monotonic across regenerations of a slot.
+	Version int32
 }
 
 // ArtifactLookup is the narrow exact-reuse query for the single-artifact
@@ -89,6 +95,15 @@ type ArtifactLookup struct {
 type Repository interface {
 	GetByIDForTenant(ctx context.Context, id, tenantID string) (VisualAsset, error)
 	Insert(ctx context.Context, params InsertParams) (VisualAsset, error)
+
+	// SupersedeAndInsertArtifact is the Phase 6A4 forced-regeneration artifact
+	// write: in one transaction, under a slot advisory lock, it inserts the new
+	// asset as the single ready row for the artifact slot (version =
+	// prior_max_version + 1) and archives every prior ready row of the exact same
+	// slot, linking each forward to the new asset. Committed readers therefore
+	// flip atomically from the old ready row to the regenerated one — never
+	// observing zero or multiple ready rows.
+	SupersedeAndInsertArtifact(ctx context.Context, params InsertParams, slot ArtifactSlot) (VisualAsset, error)
 
 	// FindReadyArtifactByPromptHash returns the single reusable (status =
 	// 'ready') artifact asset whose owner + style + quality + render hash match
@@ -112,11 +127,12 @@ type Repository interface {
 }
 
 type pgRepository struct {
-	q *dbgen.Queries
+	q    *dbgen.Queries
+	pool *pgxpool.Pool
 }
 
 func NewRepository(pool *pgxpool.Pool) Repository {
-	return &pgRepository{q: dbgen.New(pool)}
+	return &pgRepository{q: dbgen.New(pool), pool: pool}
 }
 
 func (r *pgRepository) Insert(ctx context.Context, params InsertParams) (VisualAsset, error) {
@@ -138,10 +154,17 @@ func InsertWithQueries(ctx context.Context, q *dbgen.Queries, params InsertParam
 	if err != nil {
 		return VisualAsset{}, err
 	}
+	// version defaults to 1 (the prior schema DEFAULT) when the caller leaves it
+	// unset; a forced regeneration supplies prior_max_version + 1.
+	version := params.Version
+	if version == 0 {
+		version = 1
+	}
 	row, err := q.InsertVisualAsset(ctx, dbgen.InsertVisualAssetParams{
 		ID:                  params.ID,
 		TenantID:            params.TenantID,
 		WorldID:             params.WorldID,
+		Version:             version,
 		VisualIdentityID:    params.VisualIdentityID,
 		AssetType:           params.AssetType,
 		VariantKey:          params.VariantKey,
@@ -309,5 +332,6 @@ func fromRow(row dbgen.VisualAsset) VisualAsset {
 		PromptHash:          row.PromptHash,
 		Seed:                row.Seed,
 		Metadata:            meta,
+		SupersededByAssetID: row.SupersededByAssetID,
 	}
 }

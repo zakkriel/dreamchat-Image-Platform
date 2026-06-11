@@ -151,6 +151,10 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		QualityTier:    qualityTier,
 	})
 
+	// Phase 6A4: force_regenerate (default false) bypasses reuse and always
+	// generates. It is carried on the payload so the worker supersedes the slot.
+	forceRegenerate := req.ForceRegenerate != nil && *req.ForceRegenerate
+
 	payload := map[string]any{
 		"artifact_id":      artifactID,
 		"world_id":         req.WorldId,
@@ -163,6 +167,11 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 	if req.LatencyTier != nil {
 		payload["latency_tier"] = string(*req.LatencyTier)
 	}
+	// Only set the key when forced, so a default request's payload stays
+	// byte-for-byte the Phase 6A2 shape.
+	if forceRegenerate {
+		payload["force_regenerate"] = true
+	}
 
 	// Idempotency context is shared by both the reuse and the generate paths so
 	// a same-key replay returns the same job regardless of which path created it.
@@ -174,7 +183,10 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 	// provider work, look for an existing ready artifact with this exact render
 	// hash. Exact reuse is allowed for EVERY fallback_policy (including none) —
 	// fallback_policy gates compatible/preview fallback, not exact reuse.
-	if h.Reuse != nil {
+	//
+	// Phase 6A4: force_regenerate skips this lookup entirely → always reserve +
+	// enqueue + generate, and the worker supersedes the slot.
+	if h.Reuse != nil && !forceRegenerate {
 		existing, err := h.Reuse.FindReadyArtifactByPromptHash(r.Context(), assets.ArtifactLookup{
 			TenantID:       principal.TenantID,
 			WorldID:        req.WorldId,

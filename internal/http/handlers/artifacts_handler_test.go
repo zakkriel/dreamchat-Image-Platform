@@ -563,3 +563,65 @@ func TestArtifactGenerateDifferentArtifactIDMissesEvenWithSameDescription(t *tes
 		t.Fatalf("expected the normal generate path for a different artifact_id, got %d", len(creator.calls))
 	}
 }
+
+// Phase 6A4: force_regenerate:true with an existing exact hit must BYPASS reuse —
+// no cache-hit short-circuit, the normal reserve+enqueue generate path runs, and
+// the job payload carries force_regenerate so the worker supersedes the slot.
+func TestArtifactGenerateForceRegenerateBypassesExactHit(t *testing.T) {
+	creator := newStubCreator()
+	assetsRepo := newStubAssetsRepo()
+	// Seed an exact hit that a non-forced request would reuse.
+	seedReadyArtifact(assetsRepo, "asset_existing_force", "w1", "art_force", "A bronze key", "sty_ok", "standard")
+
+	router := newArtifactsRouterWithReuse(creator, seededStyles(), config.ProviderMock, assetsRepo)
+	body := map[string]any{
+		"world_id":         "w1",
+		"style_profile_id": "sty_ok",
+		"description":      "A bronze key",
+		"force_regenerate": true,
+	}
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/artifacts/art_force/generate",
+		tenantA, []string{"images:write"}, body, nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(creator.cacheHitCalls) != 0 {
+		t.Fatalf("force_regenerate must not short-circuit to a cache hit, got %d", len(creator.cacheHitCalls))
+	}
+	if len(creator.calls) != 1 {
+		t.Fatalf("force_regenerate must go through CreateAndEnqueue (reserve+enqueue), got %d calls", len(creator.calls))
+	}
+	if creator.calls[0].CacheResult != "generated_required" {
+		t.Fatalf("forced regenerate is a real generation: expected cache_result=generated_required, got %q", creator.calls[0].CacheResult)
+	}
+	if fr, _ := creator.calls[0].InputPayload["force_regenerate"].(bool); !fr {
+		t.Fatalf("forced job payload must carry force_regenerate=true so the worker supersedes, got %v", creator.calls[0].InputPayload["force_regenerate"])
+	}
+}
+
+// Phase 6A4: force_regenerate:false (explicit) with an exact hit is unchanged
+// 6A2 — still a cache hit, no generation.
+func TestArtifactGenerateForceRegenerateFalseStillReusesHit(t *testing.T) {
+	creator := newStubCreator()
+	assetsRepo := newStubAssetsRepo()
+	existingID := seedReadyArtifact(assetsRepo, "asset_existing_noforce", "w1", "art_noforce", "A bronze key", "sty_ok", "standard")
+
+	router := newArtifactsRouterWithReuse(creator, seededStyles(), config.ProviderMock, assetsRepo)
+	body := map[string]any{
+		"world_id":         "w1",
+		"style_profile_id": "sty_ok",
+		"description":      "A bronze key",
+		"force_regenerate": false,
+	}
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/artifacts/art_noforce/generate",
+		tenantA, []string{"images:write"}, body, nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(creator.calls) != 0 {
+		t.Fatalf("force_regenerate:false must still reuse (no generate), got %d generate calls", len(creator.calls))
+	}
+	if len(creator.cacheHitCalls) != 1 || creator.cacheHitCalls[0].FinalAssetID != existingID {
+		t.Fatalf("expected exact reuse of %q with force_regenerate:false, got %+v", existingID, creator.cacheHitCalls)
+	}
+}
