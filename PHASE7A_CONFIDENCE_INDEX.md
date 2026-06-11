@@ -41,8 +41,25 @@ Hard filters (each empty result short-circuits to the noted error):
 2. provider availability (only providers configured in this process) → else
    `provider_unavailable_for_route`;
 3. quality tier match (when requested) → else `no_route`;
-4. requested preview capability (when requested) → else
+4. **general `required_capability` match** (when requested) → else
+   `unsupported_capability`;
+5. requested preview capability (when requested) → else
    `unsupported_capability`.
+
+The resolver is **capability-aware on both axes**: `RequiredCapability` filters
+on `provider_routes.required_capability` (general route capability:
+`scene_capable`, `pack_capable`, …) and `RequiredPreviewCapability` filters on
+`preview_capability` — independently. Routes can exist for the operation/quality
+yet none satisfy the requested capability; that returns `unsupported_capability`,
+**never** collapsed into `no_route` (`TestGeneralCapabilityUnsupportedNotCollapsedToNoRoute`).
+
+**Handler capability mapping**: artifact generation and style preview request
+`scene_capable`; pack generation requests `pack_capable` (**Option A**: a seeded
+`route_mock_text_to_image_pack` with `required_capability=pack_capable` serves
+it, reusing the mock text_to_image price). BFL's model floor is
+`{draft_only,scene_capable}` with no pack route, so BFL is correctly **not**
+eligible for pack generation; a pack request resolvable only to BFL returns
+`unsupported_capability`.
 
 Among survivors, the explicit, tested tie-break ranks: latency-tier match (when
 requested) → configured provider preference → `provider_routes.priority` ASC
@@ -70,6 +87,14 @@ provider the worker cannot invoke. The worker resolves the adapter by the
 persisted `provider_id`; a missing adapter is a clear terminal failure
 (`provider_unavailable`, reservation released) — never a silent fallback to
 another provider.
+
+## BFL high-res decision (92)
+
+The seed and the adapter now **agree**: `provider_models.supports_high_res =
+false` (migration 0006) matches `Capabilities().SupportsHighRes = false`. BFL
+stays at its conservative floor — no high-res is claimed without provider /
+benchmark evidence. CI asserts the seeded BFL model row has
+`supports_high_res = false`.
 
 ## BFL configuration and testing (88)
 
@@ -99,11 +124,16 @@ concurrent-race case.
 
 ## Where the resolved route is persisted, and proof of consistency (91)
 
-`generation_jobs` has no first-class provider/model columns, so the handler
-persists `provider_id` / `model_id` / `provider_route_id` in
-`input_payload` (`applyResolvedRoute`), and sets the same provider/model on the
-cost pre-flight params. The worker reads them back (`resolvedRouteFromPayload`)
-and stamps them on the `visual_assets` row. Proof:
+`generation_jobs` has no first-class provider/model columns, so the resolved
+route lives in `input_payload`. **The `jobs.Service` is the single persister**:
+`CreateAndEnqueue` stamps `provider_id` / `model_id` / `provider_route_id` onto
+the payload **from the cost params** (`withResolvedRoutePayload`), so the
+worker-consumed route is identical to the pricing key by construction — and
+every caller that sets the pricing context (handlers and direct-service tests)
+gets a worker-runnable job with no separate payload step to keep in sync. The
+handler also mirrors the values via `applyResolvedRoute` (identical values) so
+handler-level tests can observe them. The worker reads them back
+(`resolvedRouteFromPayload`) and stamps them on the `visual_assets` row. Proof:
 
 - **Pricing uses the resolved model**: `applyResolvedRoute` sets
   `params.ProviderID/ModelID` from the resolved route, and
@@ -122,9 +152,10 @@ and stamps them on the `visual_assets` row. Proof:
 ## Seed migration choice (92)
 
 `0006_bfl_provider_seed.up.sql` is **seed-only DML** (BFL provider model, route,
-price rows) — it adds **no table and no column**, so it is intentionally **not**
-listed in `sqlc.yaml` (sqlc only needs schema-defining migrations) and the table
-count stays **18**. BFL's route is given a higher `priority` number (200) than
+price rows, plus the `pack_capable` mock route for capability-aware pack routing)
+— it adds **no table and no column**, so it is intentionally **not** listed in
+`sqlc.yaml` (sqlc only needs schema-defining migrations) and the table count
+stays **18** (verified locally). BFL's route is given a higher `priority` number (200) than
 mock's (100), so mock stays the default when both are available and no provider
 preference is supplied; BFL is selected when `IMAGE_PROVIDER=bfl` provides a
 preference. CI applies `0006` and asserts the BFL seed rows exist.

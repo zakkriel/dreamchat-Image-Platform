@@ -217,6 +217,7 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		OperationType:      artifactOperationType,
 		QualityTier:        qualityTier,
 		LatencyTier:        latencyTier,
+		RequiredCapability: capabilitySceneCapable,
 		ProviderPreference: h.ProviderPreference,
 	})
 	if err != nil {

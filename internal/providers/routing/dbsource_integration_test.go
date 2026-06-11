@@ -4,6 +4,7 @@ package routing_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 
@@ -86,6 +87,44 @@ func TestResolverSelectsBFLWithPreferenceAndAvailability(t *testing.T) {
 	}
 	if got.ProviderID != "bfl" || got.ProviderModelID != "pm_bfl_flux_pro_11" {
 		t.Fatalf("expected seeded bfl route, got %+v", got)
+	}
+}
+
+func TestResolverResolvesPackCapableMockRoute(t *testing.T) {
+	pool := openPool(t)
+	defer pool.Close()
+
+	r := routing.NewResolver(routing.NewDBRouteSource(pool), map[string]bool{"mock": true, "bfl": true})
+	got, err := r.Resolve(context.Background(), routing.ResolveRequest{
+		OperationType:      "text_to_image",
+		QualityTier:        "standard",
+		RequiredCapability: "pack_capable",
+	})
+	if err != nil {
+		t.Fatalf("resolve pack_capable: %v", err)
+	}
+	// Only the mock model is pack_capable (seed 0006 route_mock_text_to_image_pack);
+	// BFL's floor is scene_capable, so packs never resolve to BFL.
+	if got.ProviderID != "mock" || got.ProviderRouteID != "route_mock_text_to_image_pack" {
+		t.Fatalf("expected pack_capable mock route, got %+v", got)
+	}
+}
+
+func TestResolverPackCapableUnsupportedWhenOnlyBFL(t *testing.T) {
+	pool := openPool(t)
+	defer pool.Close()
+
+	// Only BFL available; BFL has no pack_capable route → unsupported_capability
+	// (NOT no_route — a route exists for the operation/quality, just not the
+	// capability).
+	r := routing.NewResolver(routing.NewDBRouteSource(pool), map[string]bool{"bfl": true})
+	_, err := r.Resolve(context.Background(), routing.ResolveRequest{
+		OperationType:      "text_to_image",
+		QualityTier:        "standard",
+		RequiredCapability: "pack_capable",
+	})
+	if !errors.Is(err, routing.ErrUnsupportedCapability) {
+		t.Fatalf("expected ErrUnsupportedCapability, got %v", err)
 	}
 }
 

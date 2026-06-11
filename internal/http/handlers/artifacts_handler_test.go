@@ -459,6 +459,31 @@ func TestArtifactGeneratePassesResolvedModelAndPreference(t *testing.T) {
 	}
 }
 
+// Artifact generation requests the scene_capable route capability.
+func TestArtifactGeneratePassesSceneCapability(t *testing.T) {
+	resolver := okResolver()
+	router := newArtifactsRouterWithResolver(newStubCreator(), seededStyles(), resolver, "mock", nil)
+	body := map[string]any{"world_id": "w1", "style_profile_id": "sty_ok", "description": "x"}
+	if rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/artifacts/art_1/generate", tenantA, []string{"images:write"}, body, nil); rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if resolver.lastReq.RequiredCapability != "scene_capable" {
+		t.Fatalf("expected scene_capable, got %q", resolver.lastReq.RequiredCapability)
+	}
+}
+
+// An unsupported capability fails 422 before any cost reservation / job create.
+func TestArtifactGenerateUnsupportedCapabilityReturns422BeforeWrites(t *testing.T) {
+	creator := newStubCreator()
+	router := newArtifactsRouterWithResolver(creator, seededStyles(), &fakeResolver{err: routing.ErrUnsupportedCapability}, "mock", nil)
+	body := map[string]any{"world_id": "w1", "style_profile_id": "sty_ok", "description": "x"}
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/artifacts/art_1/generate", tenantA, []string{"images:write"}, body, nil)
+	assertError(t, rec, http.StatusUnprocessableEntity, "unsupported_capability")
+	if len(creator.calls) != 0 {
+		t.Fatalf("expected zero service calls on unsupported capability, got %d", len(creator.calls))
+	}
+}
+
 func TestArtifactGenerateEnqueueFailureReturns500(t *testing.T) {
 	creator := newStubCreator()
 	creator.failErr = errors.New("wraps: " + jobs.ErrEnqueueFailed.Error())

@@ -103,12 +103,14 @@ type CreateAndEnqueueParams struct {
 	// Pre-flight cost context (docs/architecture/cost-control.md §3).
 	// ProviderID/ModelID/OperationType select the price; Units is the
 	// quantity priced (image count for unit_type=image). UserID is the
-	// optional narrowest budget scope.
-	ProviderID    string
-	ModelID       string
-	OperationType string
-	Units         int32
-	UserID        string
+	// optional narrowest budget scope. ProviderRouteID is the resolved route
+	// (Phase 7A) persisted alongside provider/model for the worker + provenance.
+	ProviderID      string
+	ModelID         string
+	ProviderRouteID string
+	OperationType   string
+	Units           int32
+	UserID          string
 
 	// Idempotency context. When IdempotencyKey is empty the service skips
 	// the idempotency table altogether and creates a fresh job.
@@ -282,6 +284,14 @@ func (s *Service) WithFinalizer(f cost.Finalizer) *Service {
 // status=queued forever. The error is returned to the handler as
 // ErrEnqueueFailed so the response is 500.
 func (s *Service) CreateAndEnqueue(ctx context.Context, params CreateAndEnqueueParams) (CreateResult, error) {
+	// Phase 7A: persist the resolved provider/model/route onto the job payload
+	// from the cost params, so the worker consumes EXACTLY what was priced
+	// (resolved model id = pricing key = job model id = asset model id). This is
+	// the single source of persistence — every caller that sets the pricing
+	// context (handlers, tests) gets a worker-consumable job, with no separate
+	// payload-writing step to keep in sync.
+	params.InputPayload = withResolvedRoutePayload(params.InputPayload, params.ProviderID, params.ModelID, params.ProviderRouteID)
+
 	payload, err := marshalPayload(params.InputPayload)
 	if err != nil {
 		return CreateResult{}, err
@@ -856,6 +866,26 @@ func nonNilStrings(in []string) []string {
 		return []string{}
 	}
 	return in
+}
+
+// withResolvedRoutePayload stamps the resolved provider/model/route onto a job's
+// input_payload (generation_jobs has no first-class provider/model columns, so
+// the payload is the carrier the worker reads). provider_id/model_id are set
+// when non-empty; provider_route_id is best-effort provenance.
+func withResolvedRoutePayload(payload map[string]any, providerID, modelID, routeID string) map[string]any {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	if providerID != "" {
+		payload["provider_id"] = providerID
+	}
+	if modelID != "" {
+		payload["model_id"] = modelID
+	}
+	if routeID != "" {
+		payload["provider_route_id"] = routeID
+	}
+	return payload
 }
 
 // stylePayloadString pulls style_profile_id out of the job's input payload —

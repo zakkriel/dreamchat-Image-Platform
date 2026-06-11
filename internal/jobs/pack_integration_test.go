@@ -22,6 +22,7 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
 	"github.com/zakkriel/drchat-image-platform/internal/providers"
 	"github.com/zakkriel/drchat-image-platform/internal/providers/mock"
+	"github.com/zakkriel/drchat-image-platform/internal/providers/routing"
 	"github.com/zakkriel/drchat-image-platform/internal/styles"
 	"github.com/zakkriel/drchat-image-platform/internal/telemetry"
 )
@@ -226,6 +227,49 @@ func TestEndToEndCharacterPackGeneration(t *testing.T) {
 	}
 	if got := scalar(t, pool, `SELECT actual_cost_usd::text FROM generation_jobs WHERE id = $1`, jobID); got != "0.0700" {
 		t.Fatalf("job actual_cost_usd: expected 0.0700, got %s", got)
+	}
+}
+
+// TestPackUnsupportedCapabilityNoWrites: a pack request requires pack_capable;
+// with only BFL available (no pack_capable route) resolution fails 422
+// unsupported_capability BEFORE any cost reservation, job creation, or enqueue.
+func TestPackUnsupportedCapabilityNoWrites(t *testing.T) {
+	pool := openTestPool(t)
+	defer pool.Close()
+	cleanup(t, pool)
+	defer cleanup(t, pool)
+	seedFixtures(t, pool)
+	seedPackIdentities(t, pool)
+
+	enq := newRecordingEnqueuer()
+	svc := newCostService(pool, enq)
+	// Resolver with only BFL available → no pack_capable route → unsupported.
+	resolver := routing.NewResolver(routing.NewDBRouteSource(pool), map[string]bool{"bfl": true})
+	packs := handlers.NewPacksHandler(svc, styles.NewRepository(pool), identities.NewRepository(pool), resolver, "bfl").
+		WithRetriever(assets.NewRetriever(assets.NewRepository(pool)))
+	r := chi.NewRouter()
+	r.Post("/v1/characters/{character_id}/generate-pack", packs.GenerateCharacterPack)
+
+	rec := sendPackRequest(t, r, "/v1/characters/"+itCharacterID+"/generate-pack", map[string]any{
+		"world_id":         "w1",
+		"style_profile_id": itStyleID,
+	}, "")
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "unsupported_capability") {
+		t.Fatalf("expected unsupported_capability, got %s", rec.Body.String())
+	}
+
+	var jobCount, resv, packsCount int
+	_ = pool.QueryRow(context.Background(), `SELECT count(*) FROM generation_jobs WHERE tenant_id=$1`, itTenant).Scan(&jobCount)
+	_ = pool.QueryRow(context.Background(), `SELECT count(*) FROM cost_reservations WHERE tenant_id=$1`, itTenant).Scan(&resv)
+	_ = pool.QueryRow(context.Background(), `SELECT count(*) FROM asset_packs WHERE tenant_id=$1`, itTenant).Scan(&packsCount)
+	if jobCount != 0 || resv != 0 || packsCount != 0 {
+		t.Fatalf("expected no writes, got jobs=%d reservations=%d packs=%d", jobCount, resv, packsCount)
+	}
+	if len(enq.packSnapshot()) != 0 {
+		t.Fatalf("expected nothing enqueued, got %v", enq.packSnapshot())
 	}
 }
 

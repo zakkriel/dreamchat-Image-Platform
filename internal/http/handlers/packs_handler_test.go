@@ -406,6 +406,35 @@ func TestPackWrongWorldIdentityReturns422(t *testing.T) {
 	assertError(t, rec, http.StatusUnprocessableEntity, "invalid_request")
 }
 
+// Pack generation requests the pack_capable route capability (Phase 7A,
+// Option A: a seeded pack_capable mock route serves it).
+func TestPackPassesPackCapability(t *testing.T) {
+	resolver := okResolver()
+	router := newPacksRouterWithResolver(&estimatingPackCreator{}, seededPackIdentities(), resolver)
+	body := map[string]any{"world_id": packWorldID, "style_profile_id": "sty_ok"}
+	if rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/characters/char_hero/generate-pack",
+		tenantA, []string{"images:write"}, body, nil); rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d body=%s", rec.Code, "")
+	}
+	if resolver.lastReq.RequiredCapability != "pack_capable" {
+		t.Fatalf("expected pack_capable, got %q", resolver.lastReq.RequiredCapability)
+	}
+}
+
+// Pack generation with an unsupported capability fails 422 before any cost
+// reservation / job create / enqueue.
+func TestPackUnsupportedCapabilityReturns422BeforeWrites(t *testing.T) {
+	creator := newStubCreator()
+	router := newPacksRouterWithResolver(creator, seededPackIdentities(), &fakeResolver{err: routing.ErrUnsupportedCapability})
+	body := map[string]any{"world_id": packWorldID, "style_profile_id": "sty_ok"}
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/characters/char_hero/generate-pack",
+		tenantA, []string{"images:write"}, body, nil)
+	assertError(t, rec, http.StatusUnprocessableEntity, "unsupported_capability")
+	if len(creator.calls) != 0 {
+		t.Fatalf("expected zero service calls on unsupported capability, got %d", len(creator.calls))
+	}
+}
+
 // Phase 7A: a pack request that resolves no provider route fails 422 no_route
 // before any cost reservation / job create.
 func TestPackNoRouteReturns422BeforeAnyWrites(t *testing.T) {

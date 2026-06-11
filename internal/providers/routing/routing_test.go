@@ -152,6 +152,89 @@ func TestLatencyTierParticipates(t *testing.T) {
 	}
 }
 
+func TestGeneralCapabilitySceneResolves(t *testing.T) {
+	// mockRoute() has required_capability=scene_capable.
+	got, err := resolve(t, []Route{mockRoute()}, map[string]bool{"mock": true},
+		ResolveRequest{OperationType: "text_to_image", QualityTier: "standard", RequiredCapability: "scene_capable"})
+	if err != nil {
+		t.Fatalf("resolve scene_capable: %v", err)
+	}
+	if got.ProviderRouteID != "route_mock" {
+		t.Fatalf("expected scene_capable route, got %+v", got)
+	}
+}
+
+func TestGeneralCapabilityPackDoesNotResolveSceneRoute(t *testing.T) {
+	// Only a scene_capable route exists; a pack_capable request must NOT collapse
+	// to it — it must report unsupported_capability.
+	if _, err := resolve(t, []Route{mockRoute()}, map[string]bool{"mock": true},
+		ResolveRequest{OperationType: "text_to_image", QualityTier: "standard", RequiredCapability: "pack_capable"}); !errors.Is(err, ErrUnsupportedCapability) {
+		t.Fatalf("expected ErrUnsupportedCapability for pack_capable vs scene route, got %v", err)
+	}
+}
+
+func TestGeneralCapabilityResolvesPackRouteWhenPresent(t *testing.T) {
+	scene := mockRoute()
+	pack := mockRoute()
+	pack.RouteID, pack.RequiredCapability = "route_pack", "pack_capable"
+	got, err := resolve(t, []Route{scene, pack}, map[string]bool{"mock": true},
+		ResolveRequest{OperationType: "text_to_image", QualityTier: "standard", RequiredCapability: "pack_capable"})
+	if err != nil {
+		t.Fatalf("resolve pack_capable: %v", err)
+	}
+	if got.ProviderRouteID != "route_pack" {
+		t.Fatalf("expected pack_capable route, got %+v", got)
+	}
+}
+
+func TestGeneralCapabilityUnsupportedNotCollapsedToNoRoute(t *testing.T) {
+	// Routes exist for operation + quality, just none with the requested
+	// capability → unsupported_capability, NOT no_route.
+	err := func() error {
+		_, e := resolve(t, []Route{mockRoute()}, map[string]bool{"mock": true},
+			ResolveRequest{OperationType: "text_to_image", QualityTier: "standard", RequiredCapability: "production_capable"})
+		return e
+	}()
+	if !errors.Is(err, ErrUnsupportedCapability) {
+		t.Fatalf("expected ErrUnsupportedCapability, got %v", err)
+	}
+	if errors.Is(err, ErrNoRoute) {
+		t.Fatalf("must not collapse to ErrNoRoute")
+	}
+}
+
+func TestGeneralAndPreviewCapabilityIndependent(t *testing.T) {
+	// General capability and preview capability filter independently. A route
+	// matching general capability but not the preview requirement → unsupported.
+	r := mockRoute() // scene_capable, true_preview
+	r.PreviewCapability = "no_preview"
+	if _, err := resolve(t, []Route{r}, map[string]bool{"mock": true},
+		ResolveRequest{OperationType: "text_to_image", QualityTier: "standard", RequiredCapability: "scene_capable", RequiredPreviewCapability: "true_preview"}); !errors.Is(err, ErrUnsupportedCapability) {
+		t.Fatalf("expected unsupported when preview misses despite capability match, got %v", err)
+	}
+}
+
+func TestTieBreakDeterministicAfterCapabilityFilter(t *testing.T) {
+	// Two pack_capable routes differing only in model/route id; capability filter
+	// keeps both, tie-break must pick the same one regardless of order.
+	a := mockRoute()
+	a.RouteID, a.ModelID, a.RequiredCapability = "route_a", "pm_a", "pack_capable"
+	b := mockRoute()
+	b.RouteID, b.ModelID, b.RequiredCapability = "route_b", "pm_b", "pack_capable"
+	req := ResolveRequest{OperationType: "text_to_image", QualityTier: "standard", RequiredCapability: "pack_capable"}
+	g1, err := resolve(t, []Route{a, b}, map[string]bool{"mock": true}, req)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	g2, err := resolve(t, []Route{b, a}, map[string]bool{"mock": true}, req)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if g1.ProviderModelID != "pm_a" || g2.ProviderModelID != "pm_a" {
+		t.Fatalf("tie-break not deterministic after capability filter: %q vs %q", g1.ProviderModelID, g2.ProviderModelID)
+	}
+}
+
 func TestCapabilityMissReturnsUnsupported(t *testing.T) {
 	// mock route advertises true_preview; require a capability nothing satisfies.
 	r := mockRoute()

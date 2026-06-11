@@ -41,6 +41,11 @@ type ResolveRequest struct {
 	OperationType string
 	QualityTier   string
 	LatencyTier   string
+	// RequiredCapability, when non-empty, restricts selection to routes whose
+	// provider_routes.required_capability matches exactly (e.g. scene_capable,
+	// pack_capable). This is the general route capability — distinct from the
+	// preview capability below.
+	RequiredCapability string
 	// RequiredPreviewCapability, when non-empty and not "no_preview", restricts
 	// selection to routes whose preview_capability matches. Optional /
 	// future-facing: Phase 7A callers leave it empty (true_preview is 7B).
@@ -108,6 +113,7 @@ func NewResolver(source RouteSource, available map[string]bool) *Resolver {
 //	active route + active model + operation match   (hard filter; else no_route)
 //	provider availability                            (hard filter; else provider_unavailable_for_route)
 //	quality tier match (when requested)              (hard filter; else no_route)
+//	required_capability match (when requested)       (hard filter; else unsupported_capability)
 //	requested preview capability (when requested)    (hard filter; else unsupported_capability)
 //	-- among survivors, ranked by: --
 //	latency tier match (when requested)              (matching first)
@@ -158,7 +164,23 @@ func (r *Resolver) Resolve(ctx context.Context, req ResolveRequest) (ResolvedRou
 		candidates = filtered
 	}
 
-	// Stage 4: requested preview capability (hard filter when requested). An
+	// Stage 4: general required capability (hard filter when requested). Routes
+	// exist for the operation/quality but none satisfy the requested capability →
+	// unsupported_capability (NOT no_route).
+	if req.RequiredCapability != "" {
+		filtered := make([]Route, 0, len(candidates))
+		for _, rt := range candidates {
+			if rt.RequiredCapability == req.RequiredCapability {
+				filtered = append(filtered, rt)
+			}
+		}
+		if len(filtered) == 0 {
+			return ResolvedRoute{}, ErrUnsupportedCapability
+		}
+		candidates = filtered
+	}
+
+	// Stage 5: requested preview capability (hard filter when requested). An
 	// empty value or "no_preview" imposes no requirement.
 	if req.RequiredPreviewCapability != "" && req.RequiredPreviewCapability != "no_preview" {
 		filtered := make([]Route, 0, len(candidates))
@@ -173,7 +195,7 @@ func (r *Resolver) Resolve(ctx context.Context, req ResolveRequest) (ResolvedRou
 		candidates = filtered
 	}
 
-	// Stage 5: deterministic tie-break.
+	// Stage 6: deterministic tie-break.
 	best := candidates[0]
 	for _, rt := range candidates[1:] {
 		if ranksBefore(rt, best, req) {

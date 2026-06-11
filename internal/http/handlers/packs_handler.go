@@ -384,6 +384,7 @@ func (h *PacksHandler) generate(w http.ResponseWriter, r *http.Request, kind pac
 		OperationType:      artifactOperationType,
 		QualityTier:        effectiveQuality,
 		LatencyTier:        latencyTier,
+		RequiredCapability: capabilityPackCapable,
 		ProviderPreference: h.ProviderPreference,
 	})
 	if err != nil {

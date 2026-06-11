@@ -138,6 +138,7 @@ func (h *StylePreviewHandler) GeneratePreview(w http.ResponseWriter, r *http.Req
 		TenantID:           principal.TenantID,
 		OperationType:      artifactOperationType,
 		QualityTier:        qualityTier,
+		RequiredCapability: capabilitySceneCapable,
 		ProviderPreference: h.ProviderPreference,
 	})
 	if err != nil {

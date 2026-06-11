@@ -2044,6 +2044,11 @@ components:
 #     reservation. The resolved provider/model is the pricing key, is persisted
 #     on the job, and is stamped as visual-asset provenance
 #     (`provider_id` / `model_id` / `provider_route_id`).
+#   * Resolution is capability-aware on BOTH `provider_routes.required_capability`
+#     and `preview_capability`: artifact + style-preview require `scene_capable`,
+#     pack generation requires `pack_capable`. A request whose
+#     operation/quality matches but whose capability nothing satisfies returns
+#     `422 unsupported_capability` (not `no_route`).
 #   * New 422 error codes when no route can serve a request: `no_route`,
 #     `unsupported_capability`, `provider_unavailable_for_route`. These replace
 #     the pre-7A `503 provider_unavailable` mock-only gate — selecting a

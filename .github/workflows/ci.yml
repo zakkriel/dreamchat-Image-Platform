@@ -224,19 +224,25 @@ jobs:
           test "$route" = "1"
           test "$price" = "1"
 
-      - name: assert bfl provider seed present (Phase 7A)
+      - name: assert bfl + pack-capable seed present (Phase 7A)
         env:
           PGPASSWORD: image_platform
         run: |
+          # BFL model: present, active, and conservative (no high-res — matches
+          # the adapter's Capabilities().SupportsHighRes=false).
           model=$(psql -h localhost -U image_platform -d image_platform -tAc \
-            "SELECT 1 FROM provider_models WHERE id = 'pm_bfl_flux_pro_11' AND provider_id = 'bfl' AND status = 'active'")
+            "SELECT 1 FROM provider_models WHERE id = 'pm_bfl_flux_pro_11' AND provider_id = 'bfl' AND status = 'active' AND supports_high_res = false")
           route=$(psql -h localhost -U image_platform -d image_platform -tAc \
-            "SELECT 1 FROM provider_routes WHERE id = 'route_bfl_text_to_image_standard' AND is_enabled = true")
+            "SELECT 1 FROM provider_routes WHERE id = 'route_bfl_text_to_image_standard' AND is_enabled = true AND required_capability = 'scene_capable'")
           price=$(psql -h localhost -U image_platform -d image_platform -tAc \
             "SELECT 1 FROM provider_model_prices WHERE id = 'price_bfl_text_to_image_001' AND is_active = true AND unit_type = 'image'")
+          # pack_capable mock route (capability-aware routing for pack generation).
+          packroute=$(psql -h localhost -U image_platform -d image_platform -tAc \
+            "SELECT 1 FROM provider_routes WHERE id = 'route_mock_text_to_image_pack' AND provider_id = 'mock' AND required_capability = 'pack_capable' AND is_enabled = true")
           test "$model" = "1"
           test "$route" = "1"
           test "$price" = "1"
+          test "$packroute" = "1"
 
       - name: assert single-active-price index is enforced
         env:

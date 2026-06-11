@@ -97,6 +97,19 @@ func TestStylePreviewMissingWorldIDReturns400(t *testing.T) {
 	}
 }
 
+// Style preview requests the scene_capable route capability.
+func TestStylePreviewPassesSceneCapability(t *testing.T) {
+	resolver := okResolver()
+	router := newStylePreviewRouterWithResolver(newStubCreator(), seededPreviewStyles(), resolver)
+	body := map[string]any{"world_id": "w1"}
+	if rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/styles/sty_ok/preview", tenantA, []string{"images:write"}, body, nil); rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if resolver.lastReq.RequiredCapability != "scene_capable" {
+		t.Fatalf("expected scene_capable, got %q", resolver.lastReq.RequiredCapability)
+	}
+}
+
 // Phase 7A: a style preview that resolves no route fails 422 no_route before
 // any cost reservation / enqueue.
 func TestStylePreviewNoRouteReturns422(t *testing.T) {

@@ -11,6 +11,19 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/providers/routing"
 )
 
+// Capability requirements each generation path imposes on route resolution
+// (Phase 7A). These select the provider-route `required_capability` the resolver
+// must match.
+const (
+	// capabilitySceneCapable is required by single-image generation (artifact +
+	// style preview): a provider able to render a coherent scene/subject.
+	capabilitySceneCapable = "scene_capable"
+	// capabilityPackCapable is required by pack generation: a provider able to
+	// produce an identity-consistent multi-role pack. Mock advertises it; BFL
+	// (conservative floor) does not, so BFL cannot serve packs in 7A.
+	capabilityPackCapable = "pack_capable"
+)
+
 // RouteResolver is the handler-facing view of the provider route resolver
 // (internal/providers/routing). The handler resolves a route ONCE, at request
 // time, before reserving cost — the worker consumes the persisted result and
@@ -100,8 +113,12 @@ func writeJobAccepted(w http.ResponseWriter, result jobs.CreateResult) {
 func applyResolvedRoute(params *jobs.CreateAndEnqueueParams, payload map[string]any, resolved routing.ResolvedRoute) {
 	params.ProviderID = resolved.ProviderID
 	params.ModelID = resolved.ProviderModelID
+	params.ProviderRouteID = resolved.ProviderRouteID
 	params.OperationType = resolved.OperationType
 
+	// The jobs.Service is the authoritative persister (it stamps these onto the
+	// payload from the params for every caller); writing them here too keeps the
+	// values identical and lets handler-level tests observe the persisted route.
 	payload["provider_id"] = resolved.ProviderID
 	payload["model_id"] = resolved.ProviderModelID
 	payload["provider_route_id"] = resolved.ProviderRouteID
