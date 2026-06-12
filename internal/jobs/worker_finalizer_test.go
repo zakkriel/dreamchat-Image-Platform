@@ -89,6 +89,7 @@ func TestWorkerCompletedJobOnlyFinalizesNoRegeneration(t *testing.T) {
 	jobsRepo := newFakeJobsRepo()
 	seedJob(jobsRepo, "job_done", "completed")
 	assetsRepo := &fakeAssetsRepo{}
+	jobsRepo.assets = assetsRepo
 	provider := &countingProvider{}
 	fin := &fakeFinalizer{}
 	w := &Worker{Jobs: jobsRepo, Assets: assetsRepo, Storage: &fakeStorage{}, Providers: testRegistry(provider), Finalizer: fin}
@@ -111,6 +112,7 @@ func TestWorkerFailedJobOnlyReleasesNoRegeneration(t *testing.T) {
 	jobsRepo := newFakeJobsRepo()
 	seedJob(jobsRepo, "job_gone", "failed")
 	assetsRepo := &fakeAssetsRepo{}
+	jobsRepo.assets = assetsRepo
 	provider := &countingProvider{}
 	fin := &fakeFinalizer{}
 	w := &Worker{Jobs: jobsRepo, Assets: assetsRepo, Storage: &fakeStorage{}, Providers: testRegistry(provider), Finalizer: fin}
@@ -137,6 +139,7 @@ func TestWorkerRetryAfterCommitFailureDoesNotRegenerate(t *testing.T) {
 		InputPayload: map[string]any{"description": "x"},
 	})
 	assetsRepo := &fakeAssetsRepo{}
+	jobsRepo.assets = assetsRepo
 	provider := &countingProvider{}
 	fin := &fakeFinalizer{failNextCommit: true}
 	w := &Worker{Jobs: jobsRepo, Assets: assetsRepo, Storage: &fakeStorage{}, Providers: testRegistry(provider), Finalizer: fin}
@@ -174,8 +177,10 @@ func TestWorkerCommitsReservationOnSuccess(t *testing.T) {
 		InputPayload: map[string]any{"description": "x"},
 	})
 	fin := &fakeFinalizer{}
+	assetsRepo := &fakeAssetsRepo{}
+	jobsRepo.assets = assetsRepo
 	w := &Worker{
-		Jobs: jobsRepo, Assets: &fakeAssetsRepo{}, Storage: &fakeStorage{},
+		Jobs: jobsRepo, Assets: assetsRepo, Storage: &fakeStorage{},
 		Providers: testRegistry(mock.New()), Finalizer: fin,
 	}
 	if err := w.Process(context.Background(), "job_fin1", 0); err != nil {

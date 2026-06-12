@@ -29,6 +29,11 @@ type Querier interface {
 	// slot-scoped (the FindExactVisualAsset predicate) so a forced pack regenerate
 	// never touches a compatible/preview neighbor.
 	ArchivePriorReadyVariantSlot(ctx context.Context, arg ArchivePriorReadyVariantSlotParams) error
+	// CancelGenerationJob transitions a non-terminal job to cancelled (Phase 7C-1a).
+	// The caller validates the source status under LockGenerationJobForUpdate first;
+	// this write sets the terminal cancel fields in the same transaction as the
+	// reservation release.
+	CancelGenerationJob(ctx context.Context, arg CancelGenerationJobParams) (GenerationJob, error)
 	// CommitBudgetHold moves a hold's amount from reserved → spent on the budget.
 	// GREATEST guards against a negative reserved_amount if accounting ever drifts.
 	CommitBudgetHold(ctx context.Context, arg CommitBudgetHoldParams) error
@@ -208,6 +213,16 @@ type Querier interface {
 	// candidates (and exercised directly by the integration tests). Anchors are
 	// excluded; deterministic order matches ListVisualAssetCandidates.
 	ListVisualAssetCandidatesByCompatTag(ctx context.Context, arg ListVisualAssetCandidatesByCompatTagParams) ([]VisualAsset, error)
+	// LockGenerationJobForUpdate row-locks a job and returns its current status.
+	// It is the serialization point that makes in-flight cancel safe (Phase 7C-1):
+	// admin cancel and the worker's guarded asset-persist BOTH take this lock on
+	// the same row, so whichever commits first wins and the loser observes the
+	// committed status. ErrNoRows ⇒ missing or cross-tenant job (→ 404).
+	LockGenerationJobForUpdate(ctx context.Context, arg LockGenerationJobForUpdateParams) (string, error)
+	// LockGenerationJobRowForUpdate row-locks a job and returns the full row so the
+	// retry path can read the persisted resolved route + payload under the same
+	// lock it validates and reopens the job with.
+	LockGenerationJobRowForUpdate(ctx context.Context, arg LockGenerationJobRowForUpdateParams) (GenerationJob, error)
 	// MarkBudgetHoldStatus records the hold's terminal state. The WHERE guard on
 	// status='reserved' makes a re-run a no-op.
 	MarkBudgetHoldStatus(ctx context.Context, arg MarkBudgetHoldStatusParams) error
@@ -259,6 +274,28 @@ type Querier interface {
 	// ReservePausedBudget records a hold against a paused budget without
 	// enforcing the limit (paused = recording only; never deny).
 	ReservePausedBudget(ctx context.Context, arg ReservePausedBudgetParams) (string, error)
+	// ResetBudgetPeriodIfElapsed lazily rolls a budget over to its current UTC
+	// window (Phase 7C-1c). It runs inside the reservation transaction, before the
+	// limit is enforced, so a daily/monthly budget whose window has elapsed starts
+	// the new period clean:
+	//   - advance period_start to the current window start
+	//   - zero spent_amount
+	//   - clear an `exceeded` status back to `active` (paused stays paused)
+	//   - reserved_amount is left untouched, so a live hold opened just before the
+	//     reset survives until its job terminates.
+	// The WHERE period_start < <window start> guard makes the reset idempotent: two
+	// concurrent reservations serialize on the row lock the UPDATE takes, and only
+	// the first (whose period_start is still behind the window) actually resets.
+	// The window start is computed in UTC from now() so no clock is injected.
+	ResetBudgetPeriodIfElapsed(ctx context.Context, id string) (int64, error)
+	// RetryResetGenerationJob reopens a failed job (Phase 7C-1b). It keeps the job
+	// identity, payload, fallback policy, delivery mode, persisted resolved route,
+	// and preview_asset_ids, but clears the terminal failure fields and the run
+	// timestamps, links the fresh cost reservation + estimate, and clears
+	// final_asset_ids so a prior failed-final attempt leaves no stale final output.
+	// The caller validates the source status is 'failed' under
+	// LockGenerationJobForUpdate and reserves cost in the same transaction.
+	RetryResetGenerationJob(ctx context.Context, arg RetryResetGenerationJobParams) (GenerationJob, error)
 	// SetGenerationJobActualCost records the committed actual on the job row.
 	SetGenerationJobActualCost(ctx context.Context, arg SetGenerationJobActualCostParams) error
 	// SetGenerationJobAssetPack links the job to the pack it created. Run inside
@@ -288,7 +325,8 @@ type Querier interface {
 	UpdateAssetPackCompleteness(ctx context.Context, arg UpdateAssetPackCompletenessParams) error
 	UpdateAssetPackStatus(ctx context.Context, arg UpdateAssetPackStatusParams) error
 	// UpdateCostBudget mutates only limit_amount and status. reserved_amount,
-	// spent_amount, and the scope/period identity stay platform-owned and fixed.
+	// spent_amount, period_start, and the scope/period identity stay platform-owned
+	// and fixed (period_start advances only via the lazy reservation-time reset).
 	UpdateCostBudget(ctx context.Context, arg UpdateCostBudgetParams) (UpdateCostBudgetRow, error)
 	// UpdateLatestJobCostEvent stamps the estimated/actual cost and final status
 	// onto the most recent cost event for a job (the one the worker wrote for the

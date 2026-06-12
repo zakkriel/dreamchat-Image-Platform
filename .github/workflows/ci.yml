@@ -153,6 +153,8 @@ jobs:
                -v ON_ERROR_STOP=1 -f migrations/0005_supersede_on_regenerate.up.sql
           psql -h localhost -U image_platform -d image_platform \
                -v ON_ERROR_STOP=1 -f migrations/0006_bfl_provider_seed.up.sql
+          psql -h localhost -U image_platform -d image_platform \
+               -v ON_ERROR_STOP=1 -f migrations/0007_budget_period_reset.up.sql
 
       - name: assert all expected tables exist
         env:
@@ -164,7 +166,18 @@ jobs:
           # 17 from 0001 + cost_reservation_budget_holds from 0003 (Phase 4B).
           # 0004 (Phase 6A3) and 0005 (Phase 6A4) only ADD columns — no new table.
           # 0006 (Phase 7A) is seed-only DML (BFL provider/route/price) — no new table.
+          # 0007 (Phase 7C-1c) only ADDs cost_budgets.period_start — no new table.
           test "$count" = "18"
+
+      - name: assert budget period_start column exists
+        env:
+          PGPASSWORD: image_platform
+        run: |
+          cols=$(psql -h localhost -U image_platform -d image_platform -tAc \
+            "SELECT count(*) FROM information_schema.columns
+             WHERE table_name = 'cost_budgets'
+               AND column_name = 'period_start'")
+          test "$cols" = "1"
 
       - name: assert supersede column exists
         env:

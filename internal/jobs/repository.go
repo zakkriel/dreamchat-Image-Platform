@@ -120,6 +120,15 @@ type Repository interface {
 	MarkPreviewReady(ctx context.Context, id, tenantID string, previewAssetIDs []string) (Job, error)
 	MarkCompleted(ctx context.Context, id, tenantID string, finalAssetIDs []string) (Job, error)
 	MarkFailed(ctx context.Context, id, tenantID, errorCode, errorMessage string, retryable bool) (Job, error)
+
+	// InsertFinalAssetAndCompleteJobIfNotCancelled and
+	// InsertPreviewAssetAndMarkPreviewReadyIfNotCancelled are the Phase 7C-1a
+	// guarded worker output writes: each locks the generation_jobs row, skips
+	// the write if the job is cancelled, and otherwise inserts the asset and
+	// transitions the job in one transaction. They close the in-flight cancel
+	// race so a cancelled job can never have an output asset attached.
+	InsertFinalAssetAndCompleteJobIfNotCancelled(ctx context.Context, jobID, tenantID string, params assets.InsertParams, forced bool, slot assets.ArtifactSlot) (assets.VisualAsset, PersistOutcome, error)
+	InsertPreviewAssetAndMarkPreviewReadyIfNotCancelled(ctx context.Context, jobID, tenantID string, params assets.InsertParams) (assets.VisualAsset, PersistOutcome, error)
 	InsertProviderAttempt(ctx context.Context, params ProviderAttemptInsertParams) (ProviderAttempt, error)
 	MarkProviderAttemptSucceeded(ctx context.Context, id string, latencyMs int32) error
 	MarkProviderAttemptFailed(ctx context.Context, id, errorCode, errorMessage string, latencyMs int32) error
@@ -448,6 +457,14 @@ func marshalPayload(payload map[string]any) ([]byte, error) {
 		payload = map[string]any{}
 	}
 	return json.Marshal(payload)
+}
+
+// JobFromGenerationRow converts a dbgen generation_jobs row into the domain Job
+// view. Exposed so the admin job-control package (Phase 7C-1), which runs its
+// own cancel/retry transactions over generation_jobs, can return the same Job
+// shape the repository does without duplicating the column mapping.
+func JobFromGenerationRow(row dbgen.GenerationJob) Job {
+	return rowToJob(row)
 }
 
 func rowToJob(row dbgen.GenerationJob) Job {

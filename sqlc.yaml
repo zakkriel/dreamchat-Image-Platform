@@ -7,6 +7,7 @@ sql:
       - "migrations/0003_cost_lifecycle.up.sql"
       - "migrations/0004_pack_completeness.up.sql"
       - "migrations/0005_supersede_on_regenerate.up.sql"
+      - "migrations/0007_budget_period_reset.up.sql"
     gen:
       go:
         package: "dbgen"

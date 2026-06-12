@@ -291,6 +291,10 @@ func (s *Service) CreateAndEnqueue(ctx context.Context, params CreateAndEnqueueP
 	// context (handlers, tests) gets a worker-consumable job, with no separate
 	// payload-writing step to keep in sync.
 	params.InputPayload = withResolvedRoutePayload(params.InputPayload, params.ProviderID, params.ModelID, params.ProviderRouteID)
+	// Phase 7C-1b: persist the priced operation_type + units alongside the
+	// resolved route so an admin retry can re-reserve cost against the exact same
+	// operation/units/model without re-resolving the route.
+	params.InputPayload = withCostContextPayload(params.InputPayload, params.OperationType, params.Units)
 
 	payload, err := marshalPayload(params.InputPayload)
 	if err != nil {
@@ -884,6 +888,23 @@ func withResolvedRoutePayload(payload map[string]any, providerID, modelID, route
 	}
 	if routeID != "" {
 		payload["provider_route_id"] = routeID
+	}
+	return payload
+}
+
+// withCostContextPayload stamps the priced operation_type and units onto a
+// job's input_payload (Phase 7C-1b). generation_jobs has no first-class
+// operation/units columns, so the payload is the carrier an admin retry reads
+// to re-reserve cost against the same operation/units without re-resolving.
+func withCostContextPayload(payload map[string]any, operationType string, units int32) map[string]any {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	if operationType != "" {
+		payload["operation_type"] = operationType
+	}
+	if units > 0 {
+		payload["units"] = units
 	}
 	return payload
 }

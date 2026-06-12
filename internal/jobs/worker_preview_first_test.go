@@ -130,6 +130,7 @@ func (p *previewFirstProvider) callCount() int {
 func TestPreviewFirstTwoPhaseLifecycle(t *testing.T) {
 	jobsRepo := newFakeJobsRepo()
 	assetsRepo := &fakeAssetsRepo{}
+	jobsRepo.assets = assetsRepo
 	storage := &fakeStorage{}
 	fin := &fakeFinalizer{}
 	seedPreviewFirstJob(jobsRepo, "job_pf", previewFirstPayload())
@@ -225,6 +226,7 @@ func assertProvenance(t *testing.T, tier string, p assets.InsertParams) {
 func TestPreviewFirstPreviewFailureReleasesAndCreatesNoAsset(t *testing.T) {
 	jobsRepo := newFakeJobsRepo()
 	assetsRepo := &fakeAssetsRepo{}
+	jobsRepo.assets = assetsRepo
 	fin := &fakeFinalizer{}
 	seedPreviewFirstJob(jobsRepo, "job_pf_fail1", previewFirstPayload())
 	provider := &previewFirstProvider{failOnCall: 1}
@@ -258,6 +260,7 @@ func TestPreviewFirstPreviewFailureReleasesAndCreatesNoAsset(t *testing.T) {
 func TestPreviewFirstFinalFailureKeepsPreviewReadable(t *testing.T) {
 	jobsRepo := newFakeJobsRepo()
 	assetsRepo := &fakeAssetsRepo{}
+	jobsRepo.assets = assetsRepo
 	fin := &fakeFinalizer{}
 	seedPreviewFirstJob(jobsRepo, "job_pf_fail2", previewFirstPayload())
 	provider := &previewFirstProvider{failOnCall: 2}
@@ -294,6 +297,7 @@ func TestPreviewFirstFinalFailureKeepsPreviewReadable(t *testing.T) {
 func TestPreviewFirstRetryResumesFinalWithoutDuplicatingPreview(t *testing.T) {
 	jobsRepo := newFakeJobsRepo()
 	assetsRepo := &fakeAssetsRepo{}
+	jobsRepo.assets = assetsRepo
 	fin := &fakeFinalizer{}
 	seedPreviewFirstJob(jobsRepo, "job_pf_resume", previewFirstPayload())
 	// Simulate a prior attempt that already committed the preview: the job is
@@ -346,6 +350,7 @@ func TestPreviewFirstRetryResumesFinalWithoutDuplicatingPreview(t *testing.T) {
 func TestPreviewFirstSinglePhaseUnchangedWhenNotOptedIn(t *testing.T) {
 	jobsRepo := newFakeJobsRepo()
 	assetsRepo := &fakeAssetsRepo{}
+	jobsRepo.assets = assetsRepo
 	fin := &fakeFinalizer{}
 	// Same payload but final_only (no delivery_mode / preview_capability).
 	seedPreviewFirstJob(jobsRepo, "job_single", map[string]any{

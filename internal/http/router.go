@@ -31,6 +31,7 @@ type Deps struct {
 	JobsRepo       jobs.Repository
 	JobsService    jobs.Creator
 	AdminCost      handlers.AdminCostService
+	AdminJobs      handlers.AdminJobsService
 
 	// Resolver is the Phase 7A provider route resolver. The artifact, pack, and
 	// style-preview handlers resolve a route per request before reserving cost.
@@ -50,6 +51,7 @@ type HealthResponse struct {
 const (
 	scopeAdminRead  = "admin:read"
 	scopeAdminCosts = "admin:costs"
+	scopeAdminJobs  = "admin:jobs"
 )
 
 func NewRouter(deps Deps) *chi.Mux {
@@ -137,6 +139,7 @@ func mountV1(r chi.Router, deps Deps) {
 		mountPacks(v1, deps)
 		mountJobs(v1, deps)
 		mountAdminCost(v1, deps)
+		mountAdminJobs(v1, deps)
 		v1.Handle("/*", http.HandlerFunc(notFound))
 	})
 }
@@ -250,5 +253,19 @@ func mountAdminCost(v1 chi.Router, deps Deps) {
 		a.Put("/cost-budgets/{budget_id}", h.UpdateBudget)
 
 		a.Get("/cost-reservations", h.ListReservations)
+	})
+}
+
+// mountAdminJobs wires the Phase 7C-1 admin job-control surface. Both routes
+// require the admin:jobs scope; tenant is taken from the principal.
+func mountAdminJobs(v1 chi.Router, deps Deps) {
+	if deps.AdminJobs == nil {
+		return
+	}
+	h := handlers.NewAdminJobsHandler(deps.AdminJobs)
+	v1.Route("/admin/jobs", func(a chi.Router) {
+		a.Use(auth.RequireScopes(scopeAdminJobs))
+		a.Post("/{job_id}/cancel", h.Cancel)
+		a.Post("/{job_id}/retry", h.Retry)
 	})
 }

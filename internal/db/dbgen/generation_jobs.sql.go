@@ -11,6 +11,70 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const cancelGenerationJob = `-- name: CancelGenerationJob :one
+UPDATE generation_jobs
+SET status = 'cancelled',
+    error_code = 'cancelled',
+    error_message = $3,
+    retryable = false,
+    completed_at = now(),
+    updated_at = now()
+WHERE id = $1
+  AND tenant_id = $2
+RETURNING id, tenant_id, world_id, job_type, status,
+          requested_by_token_id, visual_identity_id, asset_pack_id,
+          input_payload, requested_outputs, fallback_policy, cache_result,
+          preview_asset_ids, final_asset_ids,
+          error_code, error_message, retryable,
+          cost_reservation_id, cost_estimate_usd, actual_cost_usd,
+          queue_duration_ms, generation_duration_ms,
+          created_at, updated_at, started_at, completed_at
+`
+
+type CancelGenerationJobParams struct {
+	ID           string  `json:"id"`
+	TenantID     string  `json:"tenant_id"`
+	ErrorMessage *string `json:"error_message"`
+}
+
+// CancelGenerationJob transitions a non-terminal job to cancelled (Phase 7C-1a).
+// The caller validates the source status under LockGenerationJobForUpdate first;
+// this write sets the terminal cancel fields in the same transaction as the
+// reservation release.
+func (q *Queries) CancelGenerationJob(ctx context.Context, arg CancelGenerationJobParams) (GenerationJob, error) {
+	row := q.db.QueryRow(ctx, cancelGenerationJob, arg.ID, arg.TenantID, arg.ErrorMessage)
+	var i GenerationJob
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.WorldID,
+		&i.JobType,
+		&i.Status,
+		&i.RequestedByTokenID,
+		&i.VisualIdentityID,
+		&i.AssetPackID,
+		&i.InputPayload,
+		&i.RequestedOutputs,
+		&i.FallbackPolicy,
+		&i.CacheResult,
+		&i.PreviewAssetIds,
+		&i.FinalAssetIds,
+		&i.ErrorCode,
+		&i.ErrorMessage,
+		&i.Retryable,
+		&i.CostReservationID,
+		&i.CostEstimateUsd,
+		&i.ActualCostUsd,
+		&i.QueueDurationMs,
+		&i.GenerationDurationMs,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+	)
+	return i, err
+}
+
 const getGenerationJobByID = `-- name: GetGenerationJobByID :one
 SELECT id, tenant_id, world_id, job_type, status,
        requested_by_token_id, visual_identity_id, asset_pack_id,
@@ -358,6 +422,88 @@ func (q *Queries) InsertGenerationJob(ctx context.Context, arg InsertGenerationJ
 	return i, err
 }
 
+const lockGenerationJobForUpdate = `-- name: LockGenerationJobForUpdate :one
+SELECT status
+FROM generation_jobs
+WHERE id = $1
+  AND tenant_id = $2
+FOR UPDATE
+`
+
+type LockGenerationJobForUpdateParams struct {
+	ID       string `json:"id"`
+	TenantID string `json:"tenant_id"`
+}
+
+// LockGenerationJobForUpdate row-locks a job and returns its current status.
+// It is the serialization point that makes in-flight cancel safe (Phase 7C-1):
+// admin cancel and the worker's guarded asset-persist BOTH take this lock on
+// the same row, so whichever commits first wins and the loser observes the
+// committed status. ErrNoRows ⇒ missing or cross-tenant job (→ 404).
+func (q *Queries) LockGenerationJobForUpdate(ctx context.Context, arg LockGenerationJobForUpdateParams) (string, error) {
+	row := q.db.QueryRow(ctx, lockGenerationJobForUpdate, arg.ID, arg.TenantID)
+	var status string
+	err := row.Scan(&status)
+	return status, err
+}
+
+const lockGenerationJobRowForUpdate = `-- name: LockGenerationJobRowForUpdate :one
+SELECT id, tenant_id, world_id, job_type, status,
+       requested_by_token_id, visual_identity_id, asset_pack_id,
+       input_payload, requested_outputs, fallback_policy, cache_result,
+       preview_asset_ids, final_asset_ids,
+       error_code, error_message, retryable,
+       cost_reservation_id, cost_estimate_usd, actual_cost_usd,
+       queue_duration_ms, generation_duration_ms,
+       created_at, updated_at, started_at, completed_at
+FROM generation_jobs
+WHERE id = $1
+  AND tenant_id = $2
+FOR UPDATE
+`
+
+type LockGenerationJobRowForUpdateParams struct {
+	ID       string `json:"id"`
+	TenantID string `json:"tenant_id"`
+}
+
+// LockGenerationJobRowForUpdate row-locks a job and returns the full row so the
+// retry path can read the persisted resolved route + payload under the same
+// lock it validates and reopens the job with.
+func (q *Queries) LockGenerationJobRowForUpdate(ctx context.Context, arg LockGenerationJobRowForUpdateParams) (GenerationJob, error) {
+	row := q.db.QueryRow(ctx, lockGenerationJobRowForUpdate, arg.ID, arg.TenantID)
+	var i GenerationJob
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.WorldID,
+		&i.JobType,
+		&i.Status,
+		&i.RequestedByTokenID,
+		&i.VisualIdentityID,
+		&i.AssetPackID,
+		&i.InputPayload,
+		&i.RequestedOutputs,
+		&i.FallbackPolicy,
+		&i.CacheResult,
+		&i.PreviewAssetIds,
+		&i.FinalAssetIds,
+		&i.ErrorCode,
+		&i.ErrorMessage,
+		&i.Retryable,
+		&i.CostReservationID,
+		&i.CostEstimateUsd,
+		&i.ActualCostUsd,
+		&i.QueueDurationMs,
+		&i.GenerationDurationMs,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+	)
+	return i, err
+}
+
 const markGenerationJobCompleted = `-- name: MarkGenerationJobCompleted :one
 UPDATE generation_jobs
 SET status = 'completed',
@@ -571,6 +717,84 @@ type MarkGenerationJobRunningParams struct {
 
 func (q *Queries) MarkGenerationJobRunning(ctx context.Context, arg MarkGenerationJobRunningParams) (GenerationJob, error) {
 	row := q.db.QueryRow(ctx, markGenerationJobRunning, arg.ID, arg.TenantID)
+	var i GenerationJob
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.WorldID,
+		&i.JobType,
+		&i.Status,
+		&i.RequestedByTokenID,
+		&i.VisualIdentityID,
+		&i.AssetPackID,
+		&i.InputPayload,
+		&i.RequestedOutputs,
+		&i.FallbackPolicy,
+		&i.CacheResult,
+		&i.PreviewAssetIds,
+		&i.FinalAssetIds,
+		&i.ErrorCode,
+		&i.ErrorMessage,
+		&i.Retryable,
+		&i.CostReservationID,
+		&i.CostEstimateUsd,
+		&i.ActualCostUsd,
+		&i.QueueDurationMs,
+		&i.GenerationDurationMs,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+	)
+	return i, err
+}
+
+const retryResetGenerationJob = `-- name: RetryResetGenerationJob :one
+UPDATE generation_jobs
+SET status = 'queued',
+    error_code = NULL,
+    error_message = NULL,
+    retryable = NULL,
+    started_at = NULL,
+    completed_at = NULL,
+    final_asset_ids = '{}',
+    cost_reservation_id = $1,
+    cost_estimate_usd = $2,
+    actual_cost_usd = NULL,
+    updated_at = now()
+WHERE id = $3
+  AND tenant_id = $4
+RETURNING id, tenant_id, world_id, job_type, status,
+          requested_by_token_id, visual_identity_id, asset_pack_id,
+          input_payload, requested_outputs, fallback_policy, cache_result,
+          preview_asset_ids, final_asset_ids,
+          error_code, error_message, retryable,
+          cost_reservation_id, cost_estimate_usd, actual_cost_usd,
+          queue_duration_ms, generation_duration_ms,
+          created_at, updated_at, started_at, completed_at
+`
+
+type RetryResetGenerationJobParams struct {
+	CostReservationID *string        `json:"cost_reservation_id"`
+	CostEstimateUsd   pgtype.Numeric `json:"cost_estimate_usd"`
+	ID                string         `json:"id"`
+	TenantID          string         `json:"tenant_id"`
+}
+
+// RetryResetGenerationJob reopens a failed job (Phase 7C-1b). It keeps the job
+// identity, payload, fallback policy, delivery mode, persisted resolved route,
+// and preview_asset_ids, but clears the terminal failure fields and the run
+// timestamps, links the fresh cost reservation + estimate, and clears
+// final_asset_ids so a prior failed-final attempt leaves no stale final output.
+// The caller validates the source status is 'failed' under
+// LockGenerationJobForUpdate and reserves cost in the same transaction.
+func (q *Queries) RetryResetGenerationJob(ctx context.Context, arg RetryResetGenerationJobParams) (GenerationJob, error) {
+	row := q.db.QueryRow(ctx, retryResetGenerationJob,
+		arg.CostReservationID,
+		arg.CostEstimateUsd,
+		arg.ID,
+		arg.TenantID,
+	)
 	var i GenerationJob
 	err := row.Scan(
 		&i.ID,

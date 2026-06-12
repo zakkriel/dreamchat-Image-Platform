@@ -109,6 +109,89 @@ SELECT id, tenant_id, world_id, job_type, status,
 FROM generation_jobs
 WHERE id = $1;
 
+-- LockGenerationJobForUpdate row-locks a job and returns its current status.
+-- It is the serialization point that makes in-flight cancel safe (Phase 7C-1):
+-- admin cancel and the worker's guarded asset-persist BOTH take this lock on
+-- the same row, so whichever commits first wins and the loser observes the
+-- committed status. ErrNoRows ⇒ missing or cross-tenant job (→ 404).
+-- name: LockGenerationJobForUpdate :one
+SELECT status
+FROM generation_jobs
+WHERE id = $1
+  AND tenant_id = $2
+FOR UPDATE;
+
+-- CancelGenerationJob transitions a non-terminal job to cancelled (Phase 7C-1a).
+-- The caller validates the source status under LockGenerationJobForUpdate first;
+-- this write sets the terminal cancel fields in the same transaction as the
+-- reservation release.
+-- name: CancelGenerationJob :one
+UPDATE generation_jobs
+SET status = 'cancelled',
+    error_code = 'cancelled',
+    error_message = $3,
+    retryable = false,
+    completed_at = now(),
+    updated_at = now()
+WHERE id = $1
+  AND tenant_id = $2
+RETURNING id, tenant_id, world_id, job_type, status,
+          requested_by_token_id, visual_identity_id, asset_pack_id,
+          input_payload, requested_outputs, fallback_policy, cache_result,
+          preview_asset_ids, final_asset_ids,
+          error_code, error_message, retryable,
+          cost_reservation_id, cost_estimate_usd, actual_cost_usd,
+          queue_duration_ms, generation_duration_ms,
+          created_at, updated_at, started_at, completed_at;
+
+-- RetryResetGenerationJob reopens a failed job (Phase 7C-1b). It keeps the job
+-- identity, payload, fallback policy, delivery mode, persisted resolved route,
+-- and preview_asset_ids, but clears the terminal failure fields and the run
+-- timestamps, links the fresh cost reservation + estimate, and clears
+-- final_asset_ids so a prior failed-final attempt leaves no stale final output.
+-- The caller validates the source status is 'failed' under
+-- LockGenerationJobForUpdate and reserves cost in the same transaction.
+-- name: RetryResetGenerationJob :one
+UPDATE generation_jobs
+SET status = 'queued',
+    error_code = NULL,
+    error_message = NULL,
+    retryable = NULL,
+    started_at = NULL,
+    completed_at = NULL,
+    final_asset_ids = '{}',
+    cost_reservation_id = sqlc.arg(cost_reservation_id),
+    cost_estimate_usd = sqlc.arg(cost_estimate_usd),
+    actual_cost_usd = NULL,
+    updated_at = now()
+WHERE id = sqlc.arg(id)
+  AND tenant_id = sqlc.arg(tenant_id)
+RETURNING id, tenant_id, world_id, job_type, status,
+          requested_by_token_id, visual_identity_id, asset_pack_id,
+          input_payload, requested_outputs, fallback_policy, cache_result,
+          preview_asset_ids, final_asset_ids,
+          error_code, error_message, retryable,
+          cost_reservation_id, cost_estimate_usd, actual_cost_usd,
+          queue_duration_ms, generation_duration_ms,
+          created_at, updated_at, started_at, completed_at;
+
+-- LockGenerationJobRowForUpdate row-locks a job and returns the full row so the
+-- retry path can read the persisted resolved route + payload under the same
+-- lock it validates and reopens the job with.
+-- name: LockGenerationJobRowForUpdate :one
+SELECT id, tenant_id, world_id, job_type, status,
+       requested_by_token_id, visual_identity_id, asset_pack_id,
+       input_payload, requested_outputs, fallback_policy, cache_result,
+       preview_asset_ids, final_asset_ids,
+       error_code, error_message, retryable,
+       cost_reservation_id, cost_estimate_usd, actual_cost_usd,
+       queue_duration_ms, generation_duration_ms,
+       created_at, updated_at, started_at, completed_at
+FROM generation_jobs
+WHERE id = $1
+  AND tenant_id = $2
+FOR UPDATE;
+
 -- name: MarkGenerationJobRunning :one
 UPDATE generation_jobs
 SET status = 'running',

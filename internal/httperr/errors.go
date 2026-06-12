@@ -21,6 +21,10 @@ const (
 	CodeIdempotencyConflict = "idempotency_conflict"
 	CodeProviderUnavailable = "provider_unavailable"
 
+	// Admin job control (Phase 7C-1). Returned when cancel/retry is requested
+	// from a status the action does not allow (HTTP 409).
+	CodeInvalidState = "invalid_state"
+
 	// Cost-control pre-flight (docs/architecture/cost-control.md §5). Both
 	// surface as HTTP 422 in Phase 4 (see Phase 4 corrections 1, 2, 6, 7).
 	CodeNoPriceEntry   = "no_price_entry"

@@ -79,6 +79,7 @@ type CostBudget struct {
 	Status         string             `json:"status"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+	PeriodStart    pgtype.Timestamptz `json:"period_start"`
 }
 
 type CostReservation struct {

@@ -78,23 +78,23 @@ RETURNING id, provider_id, model_id, operation_type, unit_type,
 -- name: InsertCostBudget :one
 INSERT INTO cost_budgets (
     id, tenant_id, scope_type, scope_id, period,
-    limit_amount, currency, status
+    limit_amount, currency, status, period_start
 ) VALUES (
     sqlc.arg(id), sqlc.arg(tenant_id), sqlc.arg(scope_type), sqlc.arg(scope_id), sqlc.arg(period),
-    sqlc.arg(limit_amount)::numeric, sqlc.arg(currency), sqlc.arg(status)
+    sqlc.arg(limit_amount)::numeric, sqlc.arg(currency), sqlc.arg(status), sqlc.arg(period_start)
 )
 RETURNING id, tenant_id, scope_type, scope_id, period,
           limit_amount::text AS limit_amount,
           reserved_amount::text AS reserved_amount,
           spent_amount::text AS spent_amount,
-          currency, status, created_at, updated_at;
+          currency, status, period_start, created_at, updated_at;
 
 -- name: ListCostBudgets :many
 SELECT id, tenant_id, scope_type, scope_id, period,
        limit_amount::text AS limit_amount,
        reserved_amount::text AS reserved_amount,
        spent_amount::text AS spent_amount,
-       currency, status, created_at, updated_at
+       currency, status, period_start, created_at, updated_at
 FROM cost_budgets
 ORDER BY tenant_id, scope_type, scope_id, period;
 
@@ -103,12 +103,13 @@ SELECT id, tenant_id, scope_type, scope_id, period,
        limit_amount::text AS limit_amount,
        reserved_amount::text AS reserved_amount,
        spent_amount::text AS spent_amount,
-       currency, status, created_at, updated_at
+       currency, status, period_start, created_at, updated_at
 FROM cost_budgets
 WHERE id = $1;
 
 -- UpdateCostBudget mutates only limit_amount and status. reserved_amount,
--- spent_amount, and the scope/period identity stay platform-owned and fixed.
+-- spent_amount, period_start, and the scope/period identity stay platform-owned
+-- and fixed (period_start advances only via the lazy reservation-time reset).
 -- name: UpdateCostBudget :one
 UPDATE cost_budgets
 SET limit_amount = COALESCE(sqlc.narg(limit_amount), limit_amount),
@@ -119,7 +120,7 @@ RETURNING id, tenant_id, scope_type, scope_id, period,
           limit_amount::text AS limit_amount,
           reserved_amount::text AS reserved_amount,
           spent_amount::text AS spent_amount,
-          currency, status, created_at, updated_at;
+          currency, status, period_start, created_at, updated_at;
 
 -- ---------------------------------------------------------------------------
 -- Cost reservations (read-only admin list)

@@ -157,6 +157,18 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 			}
 		}
 		return nil
+	case statusCancelled:
+		// Phase 7C-1a: cancel is terminal. Do not call the provider, upload,
+		// insert an asset, mark completed, or commit cost. Release the
+		// reservation as a safe idempotent cleanup (admin cancel already
+		// released it inside its own transaction) and stop cleanly.
+		if w.Finalizer != nil {
+			if err := w.Finalizer.Release(ctx, job.ID); err != nil {
+				w.log().Error("worker: release cost reservation (cancelled job)", "job_id", jobID, "error", err)
+				return err
+			}
+		}
+		return nil
 	}
 
 	// Phase 7A: select the provider adapter from the route the handler resolved
@@ -244,20 +256,20 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 	// forward. The exact slot is the FindReadyArtifactByPromptHash predicate, so a
 	// regenerate never archives a compatible/preview neighbor. A non-forced job
 	// takes the byte-for-byte unchanged single insert (version defaults to 1).
-	var asset assets.VisualAsset
-	if payloadBool(job.InputPayload, "force_regenerate") {
-		asset, err = w.Assets.SupersedeAndInsertArtifact(ctx, insertParams, artifactSlotFor(job, insertParams))
-	} else {
-		asset, err = w.Assets.Insert(ctx, insertParams)
-	}
+	// Phase 7C-1a guarded persist: insert the final asset and complete the job
+	// in ONE transaction under the job row lock. If a cancel landed before this
+	// write, nothing is inserted, the job stays cancelled, and we stop cleanly
+	// without committing cost — closing the race between a provider returning
+	// and a cancel arriving. Forced jobs supersede their slot inside the same
+	// guarded transaction.
+	forced := payloadBool(job.InputPayload, "force_regenerate")
+	asset, outcome, err := w.Jobs.InsertFinalAssetAndCompleteJobIfNotCancelled(ctx, job.ID, job.TenantID, insertParams, forced, artifactSlotFor(job, insertParams))
 	if err != nil {
 		w.recordFailure(ctx, job, attempt.ID, attempt.ProviderID, fmt.Errorf("insert asset: %w", err), latency, finalAttempt)
 		return err
 	}
-
-	if _, err := w.Jobs.MarkCompleted(ctx, job.ID, job.TenantID, []string{asset.ID}); err != nil {
-		w.log().Error("worker: mark completed", "job_id", jobID, "error", err)
-		return err
+	if outcome == PersistSkippedCancelled {
+		return w.finishCancelled(ctx, job, "final")
 	}
 
 	if err := w.Jobs.MarkProviderAttemptSucceeded(ctx, attempt.ID, int32(latency)); err != nil {
@@ -292,6 +304,24 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 		}
 	}
 
+	return nil
+}
+
+// finishCancelled handles a guarded persist that skipped because the job was
+// cancelled before persistence (Phase 7C-1a). The worker records no output,
+// does not commit cost, releases the reservation idempotently (admin cancel
+// already released it in its own transaction), and returns nil so the task is
+// not retried as an error. Provider work that already completed is simply
+// discarded — its result is never recorded as job output.
+func (w *Worker) finishCancelled(ctx context.Context, job Job, phase string) error {
+	w.log().Info("worker: job cancelled before persist; skipping output",
+		"job_id", job.ID, "phase", phase)
+	if w.Finalizer != nil {
+		if err := w.Finalizer.Release(ctx, job.ID); err != nil {
+			w.log().Error("worker: release cost reservation (cancelled before persist)", "job_id", job.ID, "error", err)
+			return err
+		}
+	}
 	return nil
 }
 
@@ -382,25 +412,25 @@ func (w *Worker) processPreviewFirst(ctx context.Context, job Job, provider prov
 		}
 
 		previewParams := w.buildArtifactInsertParams(job, resolved, previewAssetID, urls, result, worldID)
-		// The preview tier is tagged preview_safe and lands status=preview_ready
-		// via InsertPreview; it is never a reuse target.
+		// The preview tier is tagged preview_safe and lands status=preview_ready;
+		// it is never a reuse target.
 		previewParams.CompatibilityTags = []string{assets.TagPreviewSafe}
-		if _, err := w.Assets.InsertPreview(ctx, previewParams); err != nil {
+		// Phase 7C-1a guarded persist: insert the preview asset and mark the job
+		// preview_ready in ONE transaction under the job row lock. If a cancel
+		// landed first, nothing is inserted and the job stays cancelled — a
+		// cancelled preview-first job never gets a preview output recorded. The
+		// preview state is committed before final generation begins, so it stays
+		// externally observable through the job read and the job-assets read.
+		_, outcome, err := w.Jobs.InsertPreviewAssetAndMarkPreviewReadyIfNotCancelled(ctx, job.ID, job.TenantID, previewParams)
+		if err != nil {
 			w.recordFailure(ctx, job, attempt.ID, attempt.ProviderID, fmt.Errorf("insert preview asset: %w", err), latency, finalAttempt)
 			return err
 		}
+		if outcome == PersistSkippedCancelled {
+			return w.finishCancelled(ctx, job, "preview")
+		}
 		if err := w.Jobs.MarkProviderAttemptSucceeded(ctx, attempt.ID, int32(latency)); err != nil {
 			w.log().Warn("worker: mark attempt succeeded (preview)", "attempt_id", attempt.ID, "error", err)
-		}
-
-		// Commit preview_ready + preview_asset_ids BEFORE final generation begins.
-		// This is a distinct DB transaction from both the preview asset insert
-		// above and the final persistence below, so another process can observe
-		// the preview state through the job read and job-assets read before the
-		// final asset lands.
-		if _, err := w.Jobs.MarkPreviewReady(ctx, job.ID, job.TenantID, []string{previewAssetID}); err != nil {
-			w.log().Error("worker: mark preview ready", "job_id", job.ID, "error", err)
-			return err
 		}
 	}
 
@@ -446,23 +476,21 @@ func (w *Worker) processPreviewFirst(ctx context.Context, job Job, provider prov
 	}
 
 	finalParams := w.buildArtifactInsertParams(job, resolved, finalAssetID, urls, result, worldID)
-	// The final tier supersedes prior ready finals exactly like the single-phase
-	// path when forced (Phase 6A4); the preview asset is a different status and
-	// is never superseded.
-	var asset assets.VisualAsset
-	if payloadBool(job.InputPayload, "force_regenerate") {
-		asset, err = w.Assets.SupersedeAndInsertArtifact(ctx, finalParams, artifactSlotFor(job, finalParams))
-	} else {
-		asset, err = w.Assets.Insert(ctx, finalParams)
-	}
+	// Phase 7C-1a guarded persist: insert the final asset and complete the job
+	// in ONE transaction under the job row lock. If a cancel landed after the
+	// preview was delivered but before this final write, nothing is inserted,
+	// the job stays cancelled, and final_asset_ids stays empty — the preview
+	// asset (committed earlier) remains readable. Forced jobs supersede prior
+	// ready finals inside the same guarded transaction (Phase 6A4); the preview
+	// asset is a different status and is never superseded.
+	forced := payloadBool(job.InputPayload, "force_regenerate")
+	asset, outcome, err := w.Jobs.InsertFinalAssetAndCompleteJobIfNotCancelled(ctx, job.ID, job.TenantID, finalParams, forced, artifactSlotFor(job, finalParams))
 	if err != nil {
 		w.recordFailure(ctx, job, attempt.ID, attempt.ProviderID, fmt.Errorf("insert asset: %w", err), latency, finalAttempt)
 		return err
 	}
-
-	if _, err := w.Jobs.MarkCompleted(ctx, job.ID, job.TenantID, []string{asset.ID}); err != nil {
-		w.log().Error("worker: mark completed (preview-first)", "job_id", job.ID, "error", err)
-		return err
+	if outcome == PersistSkippedCancelled {
+		return w.finishCancelled(ctx, job, "final")
 	}
 	if err := w.Jobs.MarkProviderAttemptSucceeded(ctx, attempt.ID, int32(latency)); err != nil {
 		w.log().Warn("worker: mark attempt succeeded (final)", "attempt_id", attempt.ID, "error", err)

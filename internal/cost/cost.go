@@ -255,21 +255,34 @@ func (s *Service) reserveBudgets(ctx context.Context, tx pgx.Tx, in ReserveInput
 	spq := dbgen.New(sp)
 
 	for _, b := range toEnforce {
+		// Phase 7C-1c: lazy budget period reset. Before enforcing the limit,
+		// roll this budget over to its current UTC window if the window has
+		// elapsed — advancing period_start, zeroing spent_amount, and clearing
+		// an `exceeded` status back to `active`. This runs inside the savepoint
+		// (and thus the reservation transaction), so the reset and the hold
+		// commit or roll back together. The query is idempotent under
+		// concurrency: the UPDATE takes a row lock held until the outer
+		// transaction commits, and its `period_start < window` guard means only
+		// the first concurrent reserver actually resets. A budget that was
+		// `exceeded` last period is therefore `active` again here, so it falls
+		// through to the active branch and can admit the reservation.
+		if _, err := spq.ResetBudgetPeriodIfElapsed(ctx, b.ID); err != nil {
+			return false, err
+		}
 		switch b.Status {
-		case "exceeded":
-			return false, nil
 		case "paused":
-			// Recording only: hold against it but never deny.
+			// Recording only: hold against it but never deny. The reset never
+			// unpauses a paused budget, so the pre-read status is still valid.
 			if _, err := spq.ReservePausedBudget(ctx, dbgen.ReservePausedBudgetParams{Amount: amount, ID: b.ID}); err != nil {
 				if errors.Is(err, pgx.ErrNoRows) {
 					continue // status raced away from paused; don't deny
 				}
 				return false, err
 			}
-		default: // active
+		default: // active — or exceeded-but-just-reset-to-active in a fresh period.
 			if _, err := spq.ReserveActiveBudget(ctx, dbgen.ReserveActiveBudgetParams{Amount: amount, ID: b.ID}); err != nil {
 				if errors.Is(err, pgx.ErrNoRows) {
-					return false, nil // would exceed the limit
+					return false, nil // still exceeded this period, or would exceed the limit
 				}
 				return false, err
 			}
@@ -382,6 +395,29 @@ func (l *Lifecycle) finalize(ctx context.Context, jobID, target string) error {
 			_ = tx.Rollback(ctx)
 		}
 	}()
+	if err := l.finalizeInTx(ctx, tx, jobID, target); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+// ReleaseInTx releases a job's reservation within the caller's transaction
+// (reserved → released, returning each held amount to its budget's reserved
+// pool; spent untouched). It is the building block admin cancel uses to set a
+// job `cancelled` and release its reservation atomically in one transaction.
+// Like Release it is a no-op when the reservation is not in `reserved`.
+func (l *Lifecycle) ReleaseInTx(ctx context.Context, tx pgx.Tx, jobID string) error {
+	return l.finalizeInTx(ctx, tx, jobID, statusReleased)
+}
+
+// finalizeInTx performs the terminal transition against the caller's
+// transaction without committing it, so it can be composed into a larger
+// transaction (admin cancel) or wrapped by finalize for the worker path.
+func (l *Lifecycle) finalizeInTx(ctx context.Context, tx pgx.Tx, jobID, target string) error {
 	q := dbgen.New(tx)
 
 	var (
@@ -416,10 +452,6 @@ func (l *Lifecycle) finalize(ctx context.Context, jobID, target string) error {
 	}
 
 	if noop {
-		if err := tx.Commit(ctx); err != nil {
-			return err
-		}
-		committed = true
 		return nil
 	}
 
@@ -456,10 +488,6 @@ func (l *Lifecycle) finalize(ctx context.Context, jobID, target string) error {
 		}
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return err
-	}
-	committed = true
 	return nil
 }
 

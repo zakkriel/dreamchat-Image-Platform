@@ -103,6 +103,12 @@ func (noopJobsRepo) MarkCompleted(context.Context, string, string, []string) (jo
 func (noopJobsRepo) MarkFailed(context.Context, string, string, string, string, bool) (jobs.Job, error) {
 	return jobs.Job{}, nil
 }
+func (noopJobsRepo) InsertFinalAssetAndCompleteJobIfNotCancelled(context.Context, string, string, assets.InsertParams, bool, assets.ArtifactSlot) (assets.VisualAsset, jobs.PersistOutcome, error) {
+	return assets.VisualAsset{}, jobs.PersistPersisted, nil
+}
+func (noopJobsRepo) InsertPreviewAssetAndMarkPreviewReadyIfNotCancelled(context.Context, string, string, assets.InsertParams) (assets.VisualAsset, jobs.PersistOutcome, error) {
+	return assets.VisualAsset{}, jobs.PersistPersisted, nil
+}
 func (noopJobsRepo) InsertProviderAttempt(context.Context, jobs.ProviderAttemptInsertParams) (jobs.ProviderAttempt, error) {
 	return jobs.ProviderAttempt{}, nil
 }

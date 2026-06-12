@@ -178,6 +178,14 @@ func (h *AdminCostHandler) CreateBudget(w http.ResponseWriter, r *http.Request) 
 	if dec, ok := rawDecimal(body["limit_amount"]); ok {
 		in.LimitAmount = dec
 	}
+	if raw, found := body["period_start"]; found {
+		if t, ok := rawTimePtr(raw); ok {
+			in.PeriodStart = t
+		} else if !isJSONNull(raw) {
+			httperr.Write(w, r, http.StatusBadRequest, httperr.CodeInvalidRequest, "period_start must be an RFC3339 timestamp or null")
+			return
+		}
+	}
 	budget, err := h.Service.CreateBudget(r.Context(), actor, in)
 	if err != nil {
 		h.writeErr(w, r, err)
