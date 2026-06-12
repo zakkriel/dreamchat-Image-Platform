@@ -18,10 +18,43 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/idempotency"
 	"github.com/zakkriel/drchat-image-platform/internal/ids"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
+	"github.com/zakkriel/drchat-image-platform/internal/providers/routing"
 	"github.com/zakkriel/drchat-image-platform/internal/styles"
 )
 
 var jobIDRe = regexp.MustCompile(`^job_[0-9a-f]{16}$`)
+
+// fakeResolver is the handler-test RouteResolver. By default it resolves the
+// seeded mock route; tests set err to exercise the 422 routing-failure paths,
+// and inspect lastReq to assert the request the handler built (e.g. provider
+// preference, quality tier).
+type fakeResolver struct {
+	route   routing.ResolvedRoute
+	err     error
+	calls   int
+	lastReq routing.ResolveRequest
+}
+
+func (f *fakeResolver) Resolve(_ context.Context, req routing.ResolveRequest) (routing.ResolvedRoute, error) {
+	f.calls++
+	f.lastReq = req
+	if f.err != nil {
+		return routing.ResolvedRoute{}, f.err
+	}
+	return f.route, nil
+}
+
+// okResolver resolves the seeded mock route, mirroring
+// migrations/0002_seed_mock_provider.up.sql.
+func okResolver() *fakeResolver {
+	return &fakeResolver{route: routing.ResolvedRoute{
+		ProviderID:        "mock",
+		ProviderRouteID:   "route_mock_text_to_image_standard",
+		ProviderModelID:   "pm_mock_v1",
+		OperationType:     "text_to_image",
+		PreviewCapability: "true_preview",
+	}}
+}
 
 // stubCreator simulates the jobs.Service contract in-process. It supports
 // the idempotency flow the handler depends on: same (token, key, endpoint,
@@ -63,6 +96,26 @@ func (s *stubCreator) setReplayStatus(tokenID, key, status string) {
 	if existing, ok := s.byKey[tokenID+"|"+key]; ok {
 		s.statusByJobID[existing.jobID] = status
 	}
+}
+
+// LookupReplay mirrors the idempotency replay pre-check the handler runs before
+// route resolution: a known (token, key) returns the stored job (or a conflict
+// on endpoint/body mismatch); an unknown key returns found=false.
+func (s *stubCreator) LookupReplay(_ context.Context, in jobs.ReplayLookup) (jobs.CreateResult, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing, ok := s.byKey[in.TokenID+"|"+in.Key]
+	if !ok {
+		return jobs.CreateResult{}, false, nil
+	}
+	if existing.endpoint != in.Endpoint || existing.requestHash != in.RequestHash {
+		return jobs.CreateResult{}, true, jobs.ErrIdempotencyConflict
+	}
+	status := s.statusByJobID[existing.jobID]
+	if status == "" {
+		status = "queued"
+	}
+	return jobs.CreateResult{JobID: existing.jobID, Status: status, Replayed: true, AssetPackID: existing.packID}, true, nil
 }
 
 func (s *stubCreator) CreateAndEnqueue(_ context.Context, params jobs.CreateAndEnqueueParams) (jobs.CreateResult, error) {
@@ -173,7 +226,11 @@ func newArtifactsRouter(creator jobs.Creator, stylesRepo styles.Repository, prov
 }
 
 func newArtifactsRouterWithReuse(creator jobs.Creator, stylesRepo styles.Repository, provider config.Provider, reuse ArtifactReuseLookup) chi.Router {
-	h := NewArtifactsHandler(creator, stylesRepo, provider, reuse)
+	return newArtifactsRouterWithResolver(creator, stylesRepo, okResolver(), string(provider), reuse)
+}
+
+func newArtifactsRouterWithResolver(creator jobs.Creator, stylesRepo styles.Repository, resolver RouteResolver, preference string, reuse ArtifactReuseLookup) chi.Router {
+	h := NewArtifactsHandler(creator, stylesRepo, resolver, preference, reuse)
 	r := chi.NewRouter()
 	r.Post("/v1/artifacts/{artifact_id}/generate", h.Generate)
 	return r
@@ -291,6 +348,10 @@ type estimatingCreator struct {
 	got jobs.CreateAndEnqueueParams
 }
 
+func (c *estimatingCreator) LookupReplay(_ context.Context, _ jobs.ReplayLookup) (jobs.CreateResult, bool, error) {
+	return jobs.CreateResult{}, false, nil
+}
+
 func (c *estimatingCreator) CreateAndEnqueue(_ context.Context, params jobs.CreateAndEnqueueParams) (jobs.CreateResult, error) {
 	c.got = params
 	return jobs.CreateResult{
@@ -355,15 +416,71 @@ func TestArtifactGenerateUnknownStyleReturns422(t *testing.T) {
 	}
 }
 
-func TestArtifactGenerateBFLProviderReturns503BeforeAnyWrites(t *testing.T) {
+// Phase 7A: a request that resolves no provider route fails 422 no_route BEFORE
+// any cost reservation / job create (the resolver runs before CreateAndEnqueue).
+func TestArtifactGenerateNoRouteReturns422BeforeAnyWrites(t *testing.T) {
 	creator := newStubCreator()
-	router := newArtifactsRouter(creator, seededStyles(), config.ProviderBFL)
+	resolver := &fakeResolver{err: routing.ErrNoRoute}
+	router := newArtifactsRouterWithResolver(creator, seededStyles(), resolver, "mock", nil)
 	body := map[string]any{"world_id": "w1", "style_profile_id": "sty_ok", "description": "x"}
 	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/artifacts/art_1/generate", tenantA, []string{"images:write"},
-		body, map[string]string{idempotency.HeaderKey: "phase3-bfl-1"})
-	assertError(t, rec, http.StatusServiceUnavailable, "provider_unavailable")
+		body, map[string]string{idempotency.HeaderKey: "phase7a-noroute-1"})
+	assertError(t, rec, http.StatusUnprocessableEntity, "no_route")
 	if len(creator.calls) != 0 {
-		t.Fatalf("expected zero service calls when provider unavailable, got %d", len(creator.calls))
+		t.Fatalf("expected zero service calls when no route resolves, got %d", len(creator.calls))
+	}
+}
+
+// The resolved model is passed to CreateAndEnqueue (it becomes the pricing key),
+// and the resolver receives the configured provider preference + quality tier.
+func TestArtifactGeneratePassesResolvedModelAndPreference(t *testing.T) {
+	creator := newStubCreator()
+	resolver := okResolver()
+	router := newArtifactsRouterWithResolver(creator, seededStyles(), resolver, "bfl", nil)
+	body := map[string]any{"world_id": "w1", "style_profile_id": "sty_ok", "description": "x", "quality_tier": "high"}
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/artifacts/art_1/generate", tenantA, []string{"images:write"}, body, nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if len(creator.calls) != 1 {
+		t.Fatalf("expected one create call, got %d", len(creator.calls))
+	}
+	if got := creator.calls[0].ModelID; got != "pm_mock_v1" {
+		t.Fatalf("expected resolved model pm_mock_v1 passed to create, got %q", got)
+	}
+	if got := creator.calls[0].ProviderID; got != "mock" {
+		t.Fatalf("expected resolved provider mock passed to create, got %q", got)
+	}
+	if creator.calls[0].InputPayload["model_id"] != "pm_mock_v1" || creator.calls[0].InputPayload["provider_route_id"] != "route_mock_text_to_image_standard" {
+		t.Fatalf("resolved route not persisted in payload: %+v", creator.calls[0].InputPayload)
+	}
+	if resolver.lastReq.ProviderPreference != "bfl" || resolver.lastReq.QualityTier != "high" {
+		t.Fatalf("resolver request mismatch: %+v", resolver.lastReq)
+	}
+}
+
+// Artifact generation requests the scene_capable route capability.
+func TestArtifactGeneratePassesSceneCapability(t *testing.T) {
+	resolver := okResolver()
+	router := newArtifactsRouterWithResolver(newStubCreator(), seededStyles(), resolver, "mock", nil)
+	body := map[string]any{"world_id": "w1", "style_profile_id": "sty_ok", "description": "x"}
+	if rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/artifacts/art_1/generate", tenantA, []string{"images:write"}, body, nil); rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if resolver.lastReq.RequiredCapability != "scene_capable" {
+		t.Fatalf("expected scene_capable, got %q", resolver.lastReq.RequiredCapability)
+	}
+}
+
+// An unsupported capability fails 422 before any cost reservation / job create.
+func TestArtifactGenerateUnsupportedCapabilityReturns422BeforeWrites(t *testing.T) {
+	creator := newStubCreator()
+	router := newArtifactsRouterWithResolver(creator, seededStyles(), &fakeResolver{err: routing.ErrUnsupportedCapability}, "mock", nil)
+	body := map[string]any{"world_id": "w1", "style_profile_id": "sty_ok", "description": "x"}
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/artifacts/art_1/generate", tenantA, []string{"images:write"}, body, nil)
+	assertError(t, rec, http.StatusUnprocessableEntity, "unsupported_capability")
+	if len(creator.calls) != 0 {
+		t.Fatalf("expected zero service calls on unsupported capability, got %d", len(creator.calls))
 	}
 }
 

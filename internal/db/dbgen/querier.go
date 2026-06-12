@@ -164,6 +164,19 @@ type Querier interface {
 	// ---------------------------------------------------------------------------
 	ListCostReservationsAdmin(ctx context.Context, arg ListCostReservationsAdminParams) ([]ListCostReservationsAdminRow, error)
 	ListProviderModelPrices(ctx context.Context) ([]ListProviderModelPricesRow, error)
+	// Provider routing substrate (Phase 7A, internal/providers/routing).
+	//
+	// ListProviderRoutesForOperation returns every route for an operation joined to
+	// its model's status, so the deterministic resolver can filter on active route
+	// + active model, match quality/latency tiers and capability, apply provider
+	// availability, and tie-break — all in one place it can also unit-test.
+	//
+	// Prices are deliberately NOT consulted here. Route selection is independent of
+	// pricing; the resolved model is then priced at cost-reservation time, where a
+	// missing/expired active price surfaces as no_price_entry (422). Keeping the two
+	// concerns separate is what lets a request fail with no_route vs no_price_entry
+	// for the right reason.
+	ListProviderRoutesForOperation(ctx context.Context, operationType string) ([]ListProviderRoutesForOperationRow, error)
 	// ListReservedBudgetHolds returns the still-reserved holds for a reservation.
 	// Processed once inside the guarded transition; marking each hold committed /
 	// released afterwards is belt-and-suspenders against a partial retry.

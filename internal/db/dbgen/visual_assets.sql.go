@@ -368,16 +368,16 @@ INSERT INTO visual_assets (
     style_profile_id, style_profile_version,
     quality_tier, status, version,
     low_res_url, high_res_url, thumbnail_url,
-    provider_id, model_id, prompt_hash, seed,
+    provider_id, model_id, provider_route_id, prompt_hash, seed,
     generation_job_id, metadata, generated_at
 ) VALUES (
     $1, $2, $3, $4, $5, $6,
     $7, $8, $9, $10,
     $11, $12,
-    $13, 'ready', $23,
+    $13, 'ready', $24,
     $14, $15, $16,
-    $17, $18, $19, $20,
-    $21, $22, now()
+    $17, $18, $19, $20, $21,
+    $22, $23, now()
 )
 RETURNING id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
           variant_family, version, state_version, style_profile_id,
@@ -409,6 +409,7 @@ type InsertVisualAssetParams struct {
 	ThumbnailUrl        *string  `json:"thumbnail_url"`
 	ProviderID          *string  `json:"provider_id"`
 	ModelID             *string  `json:"model_id"`
+	ProviderRouteID     *string  `json:"provider_route_id"`
 	PromptHash          *string  `json:"prompt_hash"`
 	Seed                *string  `json:"seed"`
 	GenerationJobID     *string  `json:"generation_job_id"`
@@ -440,6 +441,7 @@ func (q *Queries) InsertVisualAsset(ctx context.Context, arg InsertVisualAssetPa
 		arg.ThumbnailUrl,
 		arg.ProviderID,
 		arg.ModelID,
+		arg.ProviderRouteID,
 		arg.PromptHash,
 		arg.Seed,
 		arg.GenerationJobID,

@@ -75,12 +75,44 @@ func (r *fakeJobsRepo) Insert(_ context.Context, params InsertParams) (Job, erro
 		JobType:            params.JobType,
 		Status:             "queued",
 		RequestedByTokenID: params.RequestedByTokenID,
-		InputPayload:       params.InputPayload,
+		InputPayload:       withDefaultResolvedRoute(params.InputPayload),
 		FallbackPolicy:     params.FallbackPolicy,
 		CacheResult:        params.CacheResult,
 	}
 	r.jobs[params.ID] = job
 	return job, nil
+}
+
+// testRegistry registers the adapter under "mock", which is the provider_id
+// withDefaultResolvedRoute stamps on worker test jobs. The Phase 7A worker looks
+// the adapter up by that persisted provider_id. (The error/selective providers
+// report other capability ids, but the resolved route — not the adapter's own
+// capability id — is what the worker keys on.)
+func testRegistry(p providers.ImageProvider) *providers.Registry {
+	reg := providers.NewRegistry()
+	reg.Register("mock", p)
+	return reg
+}
+
+// withDefaultResolvedRoute mirrors what the handler persists at job-creation
+// time (Phase 7A): the resolved provider/model/route on input_payload. Worker
+// unit tests don't go through the handler, so the fake repo injects the mock
+// route defaults when a test payload omits them; a test that sets its own
+// provider_id/model_id keeps them.
+func withDefaultResolvedRoute(payload map[string]any) map[string]any {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	if _, ok := payload["provider_id"]; !ok {
+		payload["provider_id"] = "mock"
+	}
+	if _, ok := payload["model_id"]; !ok {
+		payload["model_id"] = "pm_mock_v1"
+	}
+	if _, ok := payload["provider_route_id"]; !ok {
+		payload["provider_route_id"] = "route_mock_text_to_image_standard"
+	}
+	return payload
 }
 
 func (r *fakeJobsRepo) GetByIDForTenant(_ context.Context, id, tenantID string) (Job, error) {
@@ -485,10 +517,10 @@ func TestWorkerProcessHappyPath(t *testing.T) {
 	})
 
 	w := &Worker{
-		Jobs:     jobsRepo,
-		Assets:   assetsRepo,
-		Storage:  storage,
-		Provider: mock.New(),
+		Jobs:      jobsRepo,
+		Assets:    assetsRepo,
+		Storage:   storage,
+		Providers: testRegistry(mock.New()),
 	}
 	if err := w.Process(context.Background(), "job_test1", 0); err != nil {
 		t.Fatalf("Process: %v", err)
@@ -546,7 +578,7 @@ func TestWorkerProcessPersistsRequestQualityTierAndRenderHash(t *testing.T) {
 		},
 	})
 
-	w := &Worker{Jobs: jobsRepo, Assets: assetsRepo, Storage: storage, Provider: mock.New()}
+	w := &Worker{Jobs: jobsRepo, Assets: assetsRepo, Storage: storage, Providers: testRegistry(mock.New())}
 	if err := w.Process(context.Background(), "job_quality", 0); err != nil {
 		t.Fatalf("Process: %v", err)
 	}
@@ -587,10 +619,10 @@ func TestWorkerProcessProviderErrorOnFinalAttemptMarksFailed(t *testing.T) {
 	})
 
 	w := &Worker{
-		Jobs:     jobsRepo,
-		Assets:   assetsRepo,
-		Storage:  storage,
-		Provider: errorProvider{},
+		Jobs:      jobsRepo,
+		Assets:    assetsRepo,
+		Storage:   storage,
+		Providers: testRegistry(errorProvider{}),
 	}
 
 	// Simulate MaxAttempts-1 (the last attempt → finalAttempt=true).
@@ -623,10 +655,10 @@ func TestWorkerProcessProviderErrorOnEarlyAttemptDoesNotMarkFailed(t *testing.T)
 	})
 
 	w := &Worker{
-		Jobs:     jobsRepo,
-		Assets:   assetsRepo,
-		Storage:  storage,
-		Provider: errorProvider{},
+		Jobs:      jobsRepo,
+		Assets:    assetsRepo,
+		Storage:   storage,
+		Providers: testRegistry(errorProvider{}),
 	}
 	// Early attempt → finalAttempt=false; job stays for retry.
 	if err := w.Process(context.Background(), "job_test3", 0); err == nil {
@@ -650,10 +682,10 @@ func TestWorkerProcessAttemptNumberMatchesRetryCount(t *testing.T) {
 		InputPayload: map[string]any{"description": "x"},
 	})
 	w := &Worker{
-		Jobs:     jobsRepo,
-		Assets:   assetsRepo,
-		Storage:  storage,
-		Provider: mock.New(),
+		Jobs:      jobsRepo,
+		Assets:    assetsRepo,
+		Storage:   storage,
+		Providers: testRegistry(mock.New()),
 	}
 	if err := w.Process(context.Background(), "job_test4", 1); err != nil {
 		t.Fatalf("Process: %v", err)
@@ -707,7 +739,7 @@ func TestWorkerProcessForceRegenerateSupersedesArtifactSlot(t *testing.T) {
 		},
 	})
 
-	w := &Worker{Jobs: jobsRepo, Assets: assetsRepo, Storage: storage, Provider: mock.New()}
+	w := &Worker{Jobs: jobsRepo, Assets: assetsRepo, Storage: storage, Providers: testRegistry(mock.New())}
 	if err := w.Process(context.Background(), "job_force", 0); err != nil {
 		t.Fatalf("Process: %v", err)
 	}

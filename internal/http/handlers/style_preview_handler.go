@@ -8,11 +8,11 @@ import (
 
 	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/auth"
-	"github.com/zakkriel/drchat-image-platform/internal/config"
 	"github.com/zakkriel/drchat-image-platform/internal/http/apigen"
 	"github.com/zakkriel/drchat-image-platform/internal/httperr"
 	"github.com/zakkriel/drchat-image-platform/internal/idempotency"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
+	"github.com/zakkriel/drchat-image-platform/internal/providers/routing"
 	"github.com/zakkriel/drchat-image-platform/internal/styles"
 )
 
@@ -24,13 +24,14 @@ import (
 // GET /v1/jobs/{job_id}/assets like any other delivery. The handler owns only
 // authorization, validation, payload assembly, and the 202/4xx/5xx shaping.
 type StylePreviewHandler struct {
-	Service  jobs.Creator
-	Styles   styles.Repository
-	Provider config.Provider
+	Service            jobs.Creator
+	Styles             styles.Repository
+	Resolver           RouteResolver
+	ProviderPreference string
 }
 
-func NewStylePreviewHandler(service jobs.Creator, stylesRepo styles.Repository, provider config.Provider) *StylePreviewHandler {
-	return &StylePreviewHandler{Service: service, Styles: stylesRepo, Provider: provider}
+func NewStylePreviewHandler(service jobs.Creator, stylesRepo styles.Repository, resolver RouteResolver, providerPreference string) *StylePreviewHandler {
+	return &StylePreviewHandler{Service: service, Styles: stylesRepo, Resolver: resolver, ProviderPreference: providerPreference}
 }
 
 // stylePreviewFallbackDescription is the provider prompt when a style carries
@@ -44,14 +45,6 @@ func stylePreviewArtifactID(styleID string) string {
 }
 
 func (h *StylePreviewHandler) GeneratePreview(w http.ResponseWriter, r *http.Request) {
-	// Provider gate first, before any idempotency/job/queue work (mirrors the
-	// artifact generate path): the only provider that renders end-to-end today
-	// is the mock.
-	if h.Provider != config.ProviderMock {
-		httperr.Write(w, r, http.StatusServiceUnavailable, httperr.CodeProviderUnavailable, "configured image provider is not available in this phase")
-		return
-	}
-
 	principal := auth.PrincipalFromContext(r.Context())
 	if principal == nil {
 		httperr.Write(w, r, http.StatusInternalServerError, httperr.CodeInternalError, "missing principal")
@@ -130,6 +123,29 @@ func (h *StylePreviewHandler) GeneratePreview(w http.ResponseWriter, r *http.Req
 		"preview_kind": "style_preview",
 	}
 
+	idemKey := r.Header.Get(idempotency.HeaderKey)
+	endpoint := r.Method + " " + r.URL.Path
+	requestHash := jobs.HashRequestBody(raw)
+
+	// Idempotency replay check FIRST (Phase 7A): a replay short-circuits before
+	// route resolution + cost reservation.
+	if idemKey != "" && handleReplay(w, r, h.Service, principal.TokenID, idemKey, endpoint, requestHash) {
+		return
+	}
+
+	// Resolve the provider route once, before reserving cost.
+	resolved, err := h.Resolver.Resolve(r.Context(), routing.ResolveRequest{
+		TenantID:           principal.TenantID,
+		OperationType:      artifactOperationType,
+		QualityTier:        qualityTier,
+		RequiredCapability: capabilitySceneCapable,
+		ProviderPreference: h.ProviderPreference,
+	})
+	if err != nil {
+		writeRouteError(w, r, err)
+		return
+	}
+
 	params := jobs.CreateAndEnqueueParams{
 		TenantID:           principal.TenantID,
 		RequestedByTokenID: principal.TokenID,
@@ -138,15 +154,13 @@ func (h *StylePreviewHandler) GeneratePreview(w http.ResponseWriter, r *http.Req
 		InputPayload:       payload,
 		FallbackPolicy:     "none",
 		CacheResult:        "generated_required",
-		ProviderID:         artifactProviderID,
-		ModelID:            artifactModelID,
-		OperationType:      artifactOperationType,
 		Units:              artifactUnits,
 	}
-	if idemKey := r.Header.Get(idempotency.HeaderKey); idemKey != "" {
+	applyResolvedRoute(&params, payload, resolved)
+	if idemKey != "" {
 		params.IdempotencyKey = idemKey
-		params.Endpoint = r.Method + " " + r.URL.Path
-		params.RequestHash = jobs.HashRequestBody(raw)
+		params.Endpoint = endpoint
+		params.RequestHash = requestHash
 	}
 
 	result, err := h.Service.CreateAndEnqueue(r.Context(), params)
@@ -155,25 +169,5 @@ func (h *StylePreviewHandler) GeneratePreview(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	status := result.Status
-	if status == "" {
-		status = "queued"
-	}
-	resp := apigen.GenerationJobAccepted{
-		JobId:  result.JobID,
-		Status: apigen.GenerationJobAcceptedStatus(status),
-	}
-	if result.EstimatedCostUSD != "" {
-		est := result.EstimatedCostUSD
-		resp.EstimatedCostUsd = &est
-	}
-	if result.Currency != "" {
-		cur := result.Currency
-		resp.Currency = &cur
-	}
-	if result.CostReservationID != "" {
-		rid := result.CostReservationID
-		resp.CostReservationId = &rid
-	}
-	writeJSON(w, http.StatusAccepted, resp)
+	writeJobAccepted(w, result)
 }

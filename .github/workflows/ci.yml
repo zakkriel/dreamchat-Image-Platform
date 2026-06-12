@@ -151,6 +151,8 @@ jobs:
                -v ON_ERROR_STOP=1 -f migrations/0004_pack_completeness.up.sql
           psql -h localhost -U image_platform -d image_platform \
                -v ON_ERROR_STOP=1 -f migrations/0005_supersede_on_regenerate.up.sql
+          psql -h localhost -U image_platform -d image_platform \
+               -v ON_ERROR_STOP=1 -f migrations/0006_bfl_provider_seed.up.sql
 
       - name: assert all expected tables exist
         env:
@@ -161,6 +163,7 @@ jobs:
           echo "table count: $count"
           # 17 from 0001 + cost_reservation_budget_holds from 0003 (Phase 4B).
           # 0004 (Phase 6A3) and 0005 (Phase 6A4) only ADD columns — no new table.
+          # 0006 (Phase 7A) is seed-only DML (BFL provider/route/price) — no new table.
           test "$count" = "18"
 
       - name: assert supersede column exists
@@ -220,6 +223,26 @@ jobs:
           test "$model" = "1"
           test "$route" = "1"
           test "$price" = "1"
+
+      - name: assert bfl + pack-capable seed present (Phase 7A)
+        env:
+          PGPASSWORD: image_platform
+        run: |
+          # BFL model: present, active, and conservative (no high-res — matches
+          # the adapter's Capabilities().SupportsHighRes=false).
+          model=$(psql -h localhost -U image_platform -d image_platform -tAc \
+            "SELECT 1 FROM provider_models WHERE id = 'pm_bfl_flux_pro_11' AND provider_id = 'bfl' AND status = 'active' AND supports_high_res = false")
+          route=$(psql -h localhost -U image_platform -d image_platform -tAc \
+            "SELECT 1 FROM provider_routes WHERE id = 'route_bfl_text_to_image_standard' AND is_enabled = true AND required_capability = 'scene_capable'")
+          price=$(psql -h localhost -U image_platform -d image_platform -tAc \
+            "SELECT 1 FROM provider_model_prices WHERE id = 'price_bfl_text_to_image_001' AND is_active = true AND unit_type = 'image'")
+          # pack_capable mock route (capability-aware routing for pack generation).
+          packroute=$(psql -h localhost -U image_platform -d image_platform -tAc \
+            "SELECT 1 FROM provider_routes WHERE id = 'route_mock_text_to_image_pack' AND provider_id = 'mock' AND required_capability = 'pack_capable' AND is_enabled = true")
+          test "$model" = "1"
+          test "$route" = "1"
+          test "$price" = "1"
+          test "$packroute" = "1"
 
       - name: assert single-active-price index is enforced
         env:

@@ -18,11 +18,12 @@ import (
 
 	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/auth"
-	"github.com/zakkriel/drchat-image-platform/internal/config"
 	"github.com/zakkriel/drchat-image-platform/internal/cost"
 	"github.com/zakkriel/drchat-image-platform/internal/http/handlers"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
+	"github.com/zakkriel/drchat-image-platform/internal/providers"
 	"github.com/zakkriel/drchat-image-platform/internal/providers/mock"
+	"github.com/zakkriel/drchat-image-platform/internal/providers/routing"
 	"github.com/zakkriel/drchat-image-platform/internal/storage"
 	"github.com/zakkriel/drchat-image-platform/internal/styles"
 	"github.com/zakkriel/drchat-image-platform/internal/telemetry"
@@ -191,8 +192,24 @@ func (e *recordingEnqueuer) snapshot() []string {
 	return out
 }
 
-func mountTestRouter(svc jobs.Creator, stylesRepo styles.Repository, jobsRepo jobs.Repository, assetsRepo assets.Repository) *chi.Mux {
-	h := handlers.NewArtifactsHandler(svc, stylesRepo, config.ProviderMock, assetsRepo)
+// itResolver builds a real DB-backed route resolver over the test pool, with
+// mock the only available provider (BFL_API_KEY is unset in CI). It resolves the
+// seeded mock route end to end, exactly as the API process does.
+func itResolver(pool *pgxpool.Pool) handlers.RouteResolver {
+	return routing.NewResolver(routing.NewDBRouteSource(pool), map[string]bool{"mock": true})
+}
+
+// registryFor registers a single adapter under "mock" — the provider_id the
+// seeded mock route resolves to — so the worker looks it up by the persisted
+// resolved provider_id.
+func registryFor(p providers.ImageProvider) *providers.Registry {
+	reg := providers.NewRegistry()
+	reg.Register("mock", p)
+	return reg
+}
+
+func mountTestRouter(pool *pgxpool.Pool, svc jobs.Creator, stylesRepo styles.Repository, jobsRepo jobs.Repository, assetsRepo assets.Repository) *chi.Mux {
+	h := handlers.NewArtifactsHandler(svc, stylesRepo, itResolver(pool), "mock", assetsRepo)
 	jobsH := handlers.NewJobsHandler(jobsRepo)
 	r := chi.NewRouter()
 	r.Post("/v1/artifacts/{artifact_id}/generate", h.Generate)
@@ -234,7 +251,7 @@ func TestEndToEndArtifactGeneration(t *testing.T) {
 	stylesRepo := styles.NewRepository(pool)
 	enq := newRecordingEnqueuer()
 	svc := jobs.NewService(pool, enq, cost.NewService(nil))
-	r := mountTestRouter(svc, stylesRepo, jobsRepo, assets.NewRepository(pool))
+	r := mountTestRouter(pool, svc, stylesRepo, jobsRepo, assets.NewRepository(pool))
 
 	rec := sendArtifactRequest(t, r, map[string]any{
 		"world_id":         "w1",
@@ -253,10 +270,10 @@ func TestEndToEndArtifactGeneration(t *testing.T) {
 
 	// Drive the worker synchronously against the same DB + storage.
 	worker := &jobs.Worker{
-		Jobs:     jobsRepo,
-		Assets:   assetsRepo,
-		Storage:  store,
-		Provider: mock.New(),
+		Jobs:      jobsRepo,
+		Assets:    assetsRepo,
+		Storage:   store,
+		Providers: registryFor(mock.New()),
 	}
 	if err := worker.Process(context.Background(), jobID, 0); err != nil {
 		t.Fatalf("worker process: %v", err)
@@ -333,7 +350,7 @@ func TestEndToEndArtifactExactReuse(t *testing.T) {
 	enq := newRecordingEnqueuer()
 	fin := cost.NewLifecycle(pool, nil)
 	svc := jobs.NewService(pool, enq, cost.NewService(nil)).WithFinalizer(fin)
-	r := mountTestRouter(svc, stylesRepo, jobsRepo, assetsRepo)
+	r := mountTestRouter(pool, svc, stylesRepo, jobsRepo, assetsRepo)
 
 	body := map[string]any{
 		"world_id":         "w1",
@@ -353,7 +370,7 @@ func TestEndToEndArtifactExactReuse(t *testing.T) {
 		t.Fatalf("first: missing job_id: %v", firstResp)
 	}
 
-	worker := &jobs.Worker{Jobs: jobsRepo, Assets: assetsRepo, Storage: store, Provider: mock.New(), Finalizer: fin}
+	worker := &jobs.Worker{Jobs: jobsRepo, Assets: assetsRepo, Storage: store, Providers: registryFor(mock.New()), Finalizer: fin}
 	if err := worker.Process(context.Background(), firstJobID, 0); err != nil {
 		t.Fatalf("worker process: %v", err)
 	}
@@ -465,7 +482,7 @@ func TestEndToEndArtifactReuseMisses(t *testing.T) {
 	svc := jobs.NewService(pool, enq, cost.NewService(nil)).WithFinalizer(fin)
 
 	// Mount with a per-artifact path so we can vary artifact_id.
-	h := handlers.NewArtifactsHandler(svc, stylesRepo, config.ProviderMock, assetsRepo)
+	h := handlers.NewArtifactsHandler(svc, stylesRepo, itResolver(pool), "mock", assetsRepo)
 	r := chi.NewRouter()
 	r.Post("/v1/artifacts/{artifact_id}/generate", h.Generate)
 
@@ -497,7 +514,7 @@ func TestEndToEndArtifactReuseMisses(t *testing.T) {
 
 	// Seed an existing ready artifact for art_base / "A bronze key" / standard.
 	baseJob := send("art_base", map[string]any{"world_id": "w1", "style_profile_id": itStyleID, "description": "A bronze key"})
-	worker := &jobs.Worker{Jobs: jobsRepo, Assets: assetsRepo, Storage: store, Provider: mock.New(), Finalizer: fin}
+	worker := &jobs.Worker{Jobs: jobsRepo, Assets: assetsRepo, Storage: store, Providers: registryFor(mock.New()), Finalizer: fin}
 	if err := worker.Process(context.Background(), baseJob, 0); err != nil {
 		t.Fatalf("worker process base: %v", err)
 	}
@@ -548,8 +565,8 @@ func TestEndToEndArtifactForceRegenerateSupersedes(t *testing.T) {
 	enq := newRecordingEnqueuer()
 	fin := cost.NewLifecycle(pool, nil)
 	svc := jobs.NewService(pool, enq, cost.NewService(nil)).WithFinalizer(fin)
-	r := mountTestRouter(svc, stylesRepo, jobsRepo, assetsRepo)
-	worker := &jobs.Worker{Jobs: jobsRepo, Assets: assetsRepo, Storage: store, Provider: mock.New(), Finalizer: fin}
+	r := mountTestRouter(pool, svc, stylesRepo, jobsRepo, assetsRepo)
+	worker := &jobs.Worker{Jobs: jobsRepo, Assets: assetsRepo, Storage: store, Providers: registryFor(mock.New()), Finalizer: fin}
 
 	body := map[string]any{"world_id": "w1", "style_profile_id": itStyleID, "description": "A bronze key"}
 
@@ -695,7 +712,7 @@ func TestIdempotencyConcurrentRequestsCreateExactlyOneJob(t *testing.T) {
 	stylesRepo := styles.NewRepository(pool)
 	enq := newRecordingEnqueuer()
 	svc := jobs.NewService(pool, enq, cost.NewService(nil))
-	r := mountTestRouter(svc, stylesRepo, jobsRepo, assets.NewRepository(pool))
+	r := mountTestRouter(pool, svc, stylesRepo, jobsRepo, assets.NewRepository(pool))
 
 	body := map[string]any{
 		"world_id":         "w1",
@@ -771,7 +788,7 @@ func TestIdempotencyDifferentBodyReturns409(t *testing.T) {
 	stylesRepo := styles.NewRepository(pool)
 	enq := newRecordingEnqueuer()
 	svc := jobs.NewService(pool, enq, cost.NewService(nil))
-	r := mountTestRouter(svc, stylesRepo, jobsRepo, assets.NewRepository(pool))
+	r := mountTestRouter(pool, svc, stylesRepo, jobsRepo, assets.NewRepository(pool))
 
 	first := sendArtifactRequest(t, r, map[string]any{
 		"world_id": "w1", "style_profile_id": itStyleID, "description": "A bronze key",
@@ -800,7 +817,7 @@ func TestEnqueueFailureMarksJobFailedAndReturns500(t *testing.T) {
 	enq := newRecordingEnqueuer()
 	enq.failOn["*"] = true
 	svc := jobs.NewService(pool, enq, cost.NewService(nil))
-	r := mountTestRouter(svc, stylesRepo, jobsRepo, assets.NewRepository(pool))
+	r := mountTestRouter(pool, svc, stylesRepo, jobsRepo, assets.NewRepository(pool))
 
 	rec := sendArtifactRequest(t, r, map[string]any{
 		"world_id": "w1", "style_profile_id": itStyleID, "description": "Will fail to enqueue",
@@ -843,7 +860,7 @@ func TestIdempotencyReplayEchoesCurrentJobStatus(t *testing.T) {
 	enq := newRecordingEnqueuer()
 	enq.failOn["*"] = true
 	svc := jobs.NewService(pool, enq, cost.NewService(nil))
-	r := mountTestRouter(svc, stylesRepo, jobsRepo, assets.NewRepository(pool))
+	r := mountTestRouter(pool, svc, stylesRepo, jobsRepo, assets.NewRepository(pool))
 
 	body := map[string]any{
 		"world_id": "w1", "style_profile_id": itStyleID, "description": "A bronze key",

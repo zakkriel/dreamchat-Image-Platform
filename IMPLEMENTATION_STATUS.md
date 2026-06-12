@@ -146,11 +146,51 @@ before this is production-ready.**
   preview/final two-phase path) is explicitly **deferred to Phase 7** along
   with the BFL adapter and provider routing.
 
+- **Phase 7A — Real provider routing + BFL adapter** (Done): generation is now
+  routed through a data-driven resolver instead of the mock-only gate.
+  (1) **Route resolver** (`internal/providers/routing`) selects a provider route
+  from `provider_routes` joined to `provider_models`, filtering on active
+  route + active model + operation + quality tier and on provider
+  **availability** (only providers configured in this process), with an explicit
+  tested tie-break (latency match → provider preference → route `priority` ASC →
+  provider_id/model_id/route_id ASC). It is **capability-aware** on both
+  `provider_routes.required_capability` (general route capability) and
+  `preview_capability`: a request whose operation/quality matches but whose
+  capability nothing satisfies returns `unsupported_capability` (not `no_route`).
+  Handlers set the requirement explicitly: artifact + style preview →
+  `scene_capable`, pack → `pack_capable` (served by a seeded pack_capable mock
+  route; BFL's conservative floor is `scene_capable`, so BFL is correctly not
+  eligible for packs). (2) **Resolve once, at
+  job creation** — the handler runs idempotency-replay **first**, then resolves
+  the route, then reserves cost **using the resolved model** (the pricing key),
+  then persists the resolved `provider_id`/`model_id`/`provider_route_id` in
+  `generation_jobs.input_payload` (no first-class columns; no migration for it).
+  (3) **Provider registry** (`providers.Registry`) maps `provider_id` → adapter;
+  the worker selects the adapter by the **persisted** provider id and never
+  re-resolves, stamping the resolved provider/model/route as `visual_assets`
+  provenance; a missing adapter fails the job clearly. (4) **BFL adapter**
+  (`internal/providers/bfl`) is a real `ImageProvider`: submit → poll → download
+  against the BFL API with an injectable HTTP client, bounded timeout, context
+  cancellation, and meaningful error mapping; selectable when
+  `IMAGE_PROVIDER=bfl` + `BFL_API_KEY` are set. BFL stays conservative — **no
+  high-res**: the seed (`supports_high_res=false`) and the adapter
+  (`SupportsHighRes:false`) agree. (5) **Error behavior** — route
+  resolution failures are `422` (`no_route`, `unsupported_capability`,
+  `provider_unavailable_for_route`), replacing the old `503 provider_unavailable`
+  gate; a resolved model with no active price is still `422 no_price_entry`.
+  Mock remains a first-class, default route through the same resolver. Seed
+  migration `0006` adds the BFL provider/model/route/price rows **and** the
+  pack_capable mock route (DML only — **no new table**, count stays 18; not in
+  `sqlc.yaml`). Strictly additive OpenAPI (`0.6.0 → 0.7.0`, mirrored).
+  `true_preview` two-phase generation is **not** implemented (Phase 7B).
+
 ## Remaining
 
-- **Phase 7 — Real provider + production controls**: BFL adapter,
-  provider routing, capability checks, admin retry/cancel, rate limits,
-  period reset, webhooks, RLS.
+- **Phase 7B — `true_preview` two-phase generation**: preview-first job
+  lifecycle, provider preview routing.
+- **Phase 7C — Production controls**: capability checks beyond routing, admin
+  retry/cancel, rate limits, period reset, webhooks, RLS, provider fallback
+  chains.
 
 ## Notes
 

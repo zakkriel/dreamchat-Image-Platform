@@ -25,6 +25,13 @@ const (
 	// surface as HTTP 422 in Phase 4 (see Phase 4 corrections 1, 2, 6, 7).
 	CodeNoPriceEntry   = "no_price_entry"
 	CodeBudgetExceeded = "budget_exceeded"
+
+	// Provider route resolution (Phase 7A). All three surface as HTTP 422: the
+	// request was well-formed but no provider route can serve it. They replace
+	// the pre-7A 503 provider_unavailable gate.
+	CodeNoRoute                     = "no_route"
+	CodeUnsupportedCapability       = "unsupported_capability"
+	CodeProviderUnavailableForRoute = "provider_unavailable_for_route"
 )
 
 type Body struct {

@@ -18,6 +18,7 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/config"
 	"github.com/zakkriel/drchat-image-platform/internal/identities"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
+	"github.com/zakkriel/drchat-image-platform/internal/providers/routing"
 	"github.com/zakkriel/drchat-image-platform/internal/styles"
 )
 
@@ -125,6 +126,10 @@ func (noopJobsRepo) ListAssetPackItems(context.Context, string) ([]jobs.AssetPac
 
 type noopJobsService struct{}
 
+func (noopJobsService) LookupReplay(context.Context, jobs.ReplayLookup) (jobs.CreateResult, bool, error) {
+	return jobs.CreateResult{}, false, nil
+}
+
 func (noopJobsService) CreateAndEnqueue(context.Context, jobs.CreateAndEnqueueParams) (jobs.CreateResult, error) {
 	return jobs.CreateResult{JobID: "job_routerstubaaaaaaa"}, nil
 }
@@ -206,10 +211,24 @@ func newPhase2Deps(t *testing.T, repo *stubRepo) Deps {
 func withPhase3Stubs(d Deps) Deps {
 	d.JobsRepo = &noopJobsRepo{}
 	d.JobsService = noopJobsService{}
+	d.Resolver = noopResolver{}
 	if d.Config != nil {
 		d.Config.ImageProvider = config.ProviderMock
 	}
 	return d
+}
+
+// noopResolver satisfies handlers.RouteResolver for the router mounting tests:
+// it always resolves the seeded mock route.
+type noopResolver struct{}
+
+func (noopResolver) Resolve(context.Context, routing.ResolveRequest) (routing.ResolvedRoute, error) {
+	return routing.ResolvedRoute{
+		ProviderID:      "mock",
+		ProviderRouteID: "route_mock_text_to_image_standard",
+		ProviderModelID: "pm_mock_v1",
+		OperationType:   "text_to_image",
+	}, nil
 }
 
 func TestHealthEndpoint(t *testing.T) {

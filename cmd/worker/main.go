@@ -15,6 +15,7 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/cost"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
 	"github.com/zakkriel/drchat-image-platform/internal/providers"
+	"github.com/zakkriel/drchat-image-platform/internal/providers/bfl"
 	"github.com/zakkriel/drchat-image-platform/internal/providers/mock"
 	"github.com/zakkriel/drchat-image-platform/internal/storage"
 	"github.com/zakkriel/drchat-image-platform/internal/telemetry"
@@ -54,13 +55,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	provider := buildProvider(cfg)
+	registry := buildRegistry(cfg, logger)
 
 	worker := &jobs.Worker{
 		Jobs:      jobs.NewRepository(pool),
 		Assets:    assets.NewRepository(pool),
 		Storage:   store,
-		Provider:  provider,
+		Providers: registry,
 		Logger:    logger,
 		Finalizer: cost.NewLifecycle(pool, logger),
 	}
@@ -116,12 +117,21 @@ func openPool(dsn string) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
-func buildProvider(cfg *config.Config) providers.ImageProvider {
-	// Phase 3 only enables the mock provider end-to-end. BFL stays untouched
-	// and is rejected at the API boundary with 503 provider_unavailable, so
-	// the worker should never receive a BFL job.
-	_ = cfg
-	return mock.New()
+// buildRegistry registers exactly the providers configured in this process
+// (Phase 7A): mock is always available; bfl is registered only when a
+// BFL_API_KEY is set. The route resolver (API side) consults the same
+// availability set via cfg.AvailableProviders(), so the worker is never handed a
+// job for a provider it cannot invoke.
+func buildRegistry(cfg *config.Config, logger interface {
+	Info(msg string, args ...any)
+}) *providers.Registry {
+	reg := providers.NewRegistry()
+	reg.Register(mock.ProviderID, mock.New())
+	if cfg.BFLAPIKey != "" {
+		reg.Register(bfl.ProviderID, bfl.New(cfg.BFLAPIKey))
+		logger.Info("bfl provider registered")
+	}
+	return reg
 }
 
 // asynqLogger adapts slog to asynq's logger interface.
