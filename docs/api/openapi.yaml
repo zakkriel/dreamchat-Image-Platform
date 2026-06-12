@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: DreamChat Image Platform API
-  version: 0.7.0
+  version: 0.8.0
   description: |
     Standalone API for generating, storing, retrieving, and versioning persistent visual assets for DreamChat worlds.
 
@@ -1149,7 +1149,18 @@ components:
     # ------------------------------------------------------------------------
     GenerationJobStatus:
       type: string
-      description: Lifecycle status of a generation job.
+      description: |
+        Lifecycle status of a generation job.
+
+        `preview_ready` is the Phase 7B two-phase intermediate state: a
+        `delivery_mode=preview_first` job that resolved a `true_preview` route
+        emits a lighter preview asset and commits this status (with
+        `preview_asset_ids` populated) BEFORE final generation begins, so the
+        preview is externally observable through `GET /v1/jobs/{job_id}` and
+        `GET /v1/jobs/{job_id}/assets` before the final asset lands. The same
+        job then continues to `completed` (with `final_asset_ids`). A
+        `final_only` (or omitted) job never enters `preview_ready` — it is the
+        unchanged Phase 7A single-phase lifecycle.
       enum:
         - queued
         - running
@@ -1157,6 +1168,29 @@ components:
         - completed
         - failed
         - cancelled
+    DeliveryMode:
+      type: string
+      description: |
+        Phase 7B preview-first delivery opt-in. Default `final_only`.
+        - `final_only`: single-phase generation; the job runs straight to
+          `completed` with `final_asset_ids`. Behaviorally unchanged from
+          Phase 7A.
+        - `preview_first`: two-phase generation. Route resolution imposes a
+          HARD `true_preview` capability requirement — if no enabled
+          `true_preview` route can serve the request the API returns 422
+          `unsupported_capability` BEFORE cost reservation, job creation, or
+          enqueue (there is no automatic downgrade to `final_only` and no
+          `derived_preview` fallback). When a `true_preview` route is found the
+          worker emits a lighter preview asset (`status=preview_ready`,
+          compatibility tag `preview_safe`), commits the job to
+          `preview_ready` with `preview_asset_ids`, then generates the final
+          asset (`status=ready`) and completes the same job with
+          `final_asset_ids`. Cost is reserved once and committed once, only
+          after final success.
+      enum:
+        - final_only
+        - preview_first
+      default: final_only
     QualityTier:
       type: string
       description: Output quality tier requested for generation.
@@ -1416,6 +1450,13 @@ components:
           $ref: '#/components/schemas/FallbackPolicy'
           description: |
             See GenerateCharacterPackRequest.fallback_policy.
+        delivery_mode:
+          $ref: '#/components/schemas/DeliveryMode'
+          description: |
+            Phase 7B preview-first opt-in. Default `final_only`.
+            `preview_first` imposes a hard `true_preview` routing requirement
+            (422 `unsupported_capability` when no true-preview route exists)
+            and drives the two-phase preview_ready → completed lifecycle.
         force_regenerate:
           type: boolean
           default: false
@@ -1481,6 +1522,14 @@ components:
         preview_asset_ids:
           type: array
           items: { type: string }
+          description: |
+            Phase 7B: the preview asset(s) of a `delivery_mode=preview_first`
+            job. Populated (and committed alongside `status=preview_ready`)
+            BEFORE final generation begins, so a preview is observable before
+            the final asset lands. Empty for `final_only` jobs. If final
+            generation fails after the preview was delivered, the job becomes
+            `failed`, `final_asset_ids` stays empty, and the preview asset
+            remains readable (it is the last useful output, not superseded).
         final_asset_ids:
           type: array
           items: { type: string }
@@ -1675,6 +1724,14 @@ components:
         world_id: { type: string }
         quality_tier:
           $ref: '#/components/schemas/QualityTier'
+        delivery_mode:
+          $ref: '#/components/schemas/DeliveryMode'
+          description: |
+            Phase 7B preview-first opt-in for the style preview sample.
+            Default `final_only`. `preview_first` imposes a hard
+            `true_preview` routing requirement (422 `unsupported_capability`
+            when no true-preview route exists) and drives the two-phase
+            preview_ready → completed lifecycle.
     CreateStyleProfileRequest:
       type: object
       required: [name, style_mode, positive_prompt]

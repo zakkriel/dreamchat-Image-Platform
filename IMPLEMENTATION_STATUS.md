@@ -184,10 +184,52 @@ before this is production-ready.**
   `sqlc.yaml`). Strictly additive OpenAPI (`0.6.0 → 0.7.0`, mirrored).
   `true_preview` two-phase generation is **not** implemented (Phase 7B).
 
+- **Phase 7B — `true_preview` two-phase generation** (Done): a request can now
+  opt into preview-first delivery and get a lighter preview asset before the
+  final one, in a single job with a single charge.
+  (1) **Request opt-in** — `delivery_mode: final_only | preview_first` (default
+  `final_only`) added to `GenerateArtifactRequest` and `StylePreviewRequest`
+  (OpenAPI `0.7.0 → 0.8.0`, strictly additive, mirrored). Packs stay
+  final-only: the pack schema does not expose `delivery_mode`, and the pack
+  handler ignores a stray field (the lenient decoder drops unknown keys), so a
+  pack can never two-phase. (2) **Hard true_preview routing** — `preview_first`
+  sets the resolver's `RequiredPreviewCapability=true_preview` alongside the
+  normal `scene_capable`. Mock (a `true_preview` route) serves it; BFL
+  (`no_preview`) is excluded, so a BFL-only `preview_first` request returns
+  `422 unsupported_capability` **before** cost reservation, job creation, or
+  enqueue. There is **no** downgrade to `final_only` and **no** `derived_preview`
+  fallback (deferred). `final_only` is unchanged: no preview requirement, BFL
+  stays selectable. Resolution still happens **once**, at job creation, after
+  the idempotency-replay check; the resolved route's `preview_capability` is
+  persisted on the payload so the worker never re-resolves. (3) **Worker
+  two-phase lifecycle** — a job whose payload carries `delivery_mode=preview_first`
+  **and** a `true_preview` route runs: generate a lower-resolution preview
+  (`previewRenderEdge=512` < `deliveryRenderEdge=1024`), upload its tiers, insert
+  a `visual_asset` `status=preview_ready` tagged `preview_safe`, then **commit**
+  the job to `preview_ready` with `preview_asset_ids` — in DB transactions
+  **separate from and before** final generation, so the preview is externally
+  observable through `GET /v1/jobs/{job_id}` and `GET /v1/jobs/{job_id}/assets`
+  before the final asset exists. It then generates the full-resolution final,
+  inserts a `status=ready` asset, completes the job with `final_asset_ids`, and
+  commits the cost reservation. Preview and final are **distinct rows**, both
+  stamped with the resolved provider/model/route provenance. (4) **Cost once** —
+  reserved once at creation, committed once after final success; the preview is
+  never separately charged. (5) **Retry safety** — `preview_ready` is not
+  terminal, so a retried preview-ready job resumes at **final**: a non-empty
+  `preview_asset_ids` skips preview generation entirely (no duplicate preview,
+  no re-charge). A completed/failed job still only finalizes cost (the Phase 7A
+  short-circuit). (6) **Failure after preview** — if final generation fails after
+  the preview was delivered, the job is `failed`, the reservation is **released**,
+  `final_asset_ids` stays empty, and the preview asset stays readable
+  (`preview_ready`, not archived/superseded); `GET /v1/jobs/{job_id}/assets`
+  returns the preview (final takes precedence only when present). Single-phase
+  `final_only`/omitted generation is **behaviorally unchanged** from Phase 7A.
+  **No new table** (count stays **18**): only the existing `preview_ready`
+  status / `preview_asset_ids` primitives plus two additive sqlc queries
+  (`InsertPreviewVisualAsset`, `MarkGenerationJobPreviewReady`).
+
 ## Remaining
 
-- **Phase 7B — `true_preview` two-phase generation**: preview-first job
-  lifecycle, provider preview routing.
 - **Phase 7C — Production controls**: capability checks beyond routing, admin
   retry/cancel, rate limits, period reset, webhooks, RLS, provider fallback
   chains.

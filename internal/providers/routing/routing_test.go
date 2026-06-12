@@ -214,6 +214,87 @@ func TestGeneralAndPreviewCapabilityIndependent(t *testing.T) {
 	}
 }
 
+// --- Phase 7B preview-first routing -----------------------------------------
+
+// TestPreviewFirstResolvesMockTruePreview: a preview_first request
+// (RequiredPreviewCapability=true_preview) resolves the mock true_preview route.
+func TestPreviewFirstResolvesMockTruePreview(t *testing.T) {
+	got, err := resolve(t, []Route{mockRoute()}, map[string]bool{"mock": true},
+		ResolveRequest{
+			OperationType:             "text_to_image",
+			QualityTier:               "standard",
+			RequiredCapability:        "scene_capable",
+			RequiredPreviewCapability: "true_preview",
+		})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got.ProviderID != "mock" || got.ProviderRouteID != "route_mock" {
+		t.Fatalf("expected mock true_preview route, got %+v", got)
+	}
+	if got.PreviewCapability != "true_preview" {
+		t.Fatalf("expected resolved PreviewCapability=true_preview, got %q", got.PreviewCapability)
+	}
+}
+
+// TestPreviewFirstWithOnlyBFLUnsupported: with only BFL (no_preview) available,
+// a preview_first request returns ErrUnsupportedCapability (a hard true_preview
+// requirement — no downgrade, no derived_preview fallback). It must NOT collapse
+// to ErrNoRoute.
+func TestPreviewFirstWithOnlyBFLUnsupported(t *testing.T) {
+	_, err := resolve(t, []Route{bflRoute()}, map[string]bool{"bfl": true},
+		ResolveRequest{
+			OperationType:             "text_to_image",
+			QualityTier:               "standard",
+			RequiredCapability:        "scene_capable",
+			RequiredPreviewCapability: "true_preview",
+		})
+	if !errors.Is(err, ErrUnsupportedCapability) {
+		t.Fatalf("expected ErrUnsupportedCapability for BFL-only preview_first, got %v", err)
+	}
+	if errors.Is(err, ErrNoRoute) {
+		t.Fatalf("must not collapse to ErrNoRoute")
+	}
+}
+
+// TestPreviewFirstPrefersTruePreviewOverBFL: when both mock (true_preview) and
+// BFL (no_preview) are available, preview_first selects mock and excludes BFL.
+func TestPreviewFirstPrefersTruePreviewOverBFL(t *testing.T) {
+	got, err := resolve(t, []Route{mockRoute(), bflRoute()}, map[string]bool{"mock": true, "bfl": true},
+		ResolveRequest{
+			OperationType:             "text_to_image",
+			QualityTier:               "standard",
+			RequiredCapability:        "scene_capable",
+			RequiredPreviewCapability: "true_preview",
+		})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got.ProviderID != "mock" {
+		t.Fatalf("preview_first must exclude BFL (no_preview) and pick mock, got %+v", got)
+	}
+}
+
+// TestFinalOnlyDoesNotConstrainPreviewAndAllowsBFL: a final_only request
+// (RequiredPreviewCapability empty) imposes no preview requirement, so BFL
+// remains selectable (here via preference) even though it is no_preview.
+func TestFinalOnlyDoesNotConstrainPreviewAndAllowsBFL(t *testing.T) {
+	got, err := resolve(t, []Route{mockRoute(), bflRoute()}, map[string]bool{"mock": true, "bfl": true},
+		ResolveRequest{
+			OperationType:      "text_to_image",
+			QualityTier:        "standard",
+			RequiredCapability: "scene_capable",
+			ProviderPreference: "bfl",
+			// RequiredPreviewCapability intentionally empty (final_only).
+		})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got.ProviderID != "bfl" {
+		t.Fatalf("final_only must leave BFL selectable, got %+v", got)
+	}
+}
+
 func TestTieBreakDeterministicAfterCapabilityFilter(t *testing.T) {
 	// Two pack_capable routes differing only in model/route id; capability filter
 	// keeps both, tie-break must pick the same one regardless of order.

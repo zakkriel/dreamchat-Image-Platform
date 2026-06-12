@@ -343,6 +343,30 @@ func (s *stubAssetsRepo) Insert(_ context.Context, params assets.InsertParams) (
 	return asset, nil
 }
 
+func (s *stubAssetsRepo) InsertPreview(_ context.Context, params assets.InsertParams) (assets.VisualAsset, error) {
+	asset := assets.VisualAsset{
+		ID:                  params.ID,
+		TenantID:            params.TenantID,
+		WorldID:             params.WorldID,
+		AssetType:           params.AssetType,
+		VariantKey:          params.VariantKey,
+		StyleProfileID:      params.StyleProfileID,
+		StyleProfileVersion: params.StyleProfileVersion,
+		QualityTier:         params.QualityTier,
+		Status:              "preview_ready",
+		CompatibilityTags:   params.CompatibilityTags,
+		LowResUrl:           params.LowResUrl,
+		HighResUrl:          params.HighResUrl,
+		ThumbnailUrl:        params.ThumbnailUrl,
+		ProviderID:          params.ProviderID,
+		ModelID:             params.ModelID,
+		PromptHash:          params.PromptHash,
+		Seed:                params.Seed,
+	}
+	s.byID[params.ID] = asset
+	return asset, nil
+}
+
 func (s *stubAssetsRepo) SupersedeAndInsertArtifact(ctx context.Context, params assets.InsertParams, _ assets.ArtifactSlot) (assets.VisualAsset, error) {
 	return s.Insert(ctx, params)
 }

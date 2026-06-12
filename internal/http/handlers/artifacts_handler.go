@@ -109,6 +109,10 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		httperr.Write(w, r, http.StatusBadRequest, httperr.CodeInvalidRequest, "fallback_policy must be one of none, compatible_only, preview_allowed, any_existing")
 		return
 	}
+	if req.DeliveryMode != nil && !validDeliveryMode(*req.DeliveryMode) {
+		httperr.Write(w, r, http.StatusBadRequest, httperr.CodeInvalidRequest, "delivery_mode must be one of final_only, preview_first")
+		return
+	}
 
 	if _, err := h.Styles.GetByIDForTenant(r.Context(), req.StyleProfileId, principal.TenantID); err != nil {
 		if errors.Is(err, styles.ErrNotFound) {
@@ -148,6 +152,12 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 	// generates. It is carried on the payload so the worker supersedes the slot.
 	forceRegenerate := req.ForceRegenerate != nil && *req.ForceRegenerate
 
+	// Phase 7B: delivery_mode=preview_first opts the request into two-phase
+	// preview-first delivery. It imposes a hard true_preview routing requirement
+	// (resolved below) and is carried on the payload so the worker runs the
+	// two-phase lifecycle. Default/final_only is the unchanged Phase 7A path.
+	previewFirst := req.DeliveryMode != nil && *req.DeliveryMode == apigen.PreviewFirst
+
 	payload := map[string]any{
 		"artifact_id":      artifactID,
 		"world_id":         req.WorldId,
@@ -164,6 +174,11 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 	// byte-for-byte the Phase 6A2 shape.
 	if forceRegenerate {
 		payload["force_regenerate"] = true
+	}
+	// Only set the key for preview_first, so a final_only/omitted request's
+	// payload stays the Phase 7A shape.
+	if previewFirst {
+		payload["delivery_mode"] = string(apigen.PreviewFirst)
 	}
 
 	// Idempotency context is shared by both the reuse and the generate paths so
@@ -186,7 +201,12 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 	//
 	// Phase 6A4: force_regenerate skips this lookup entirely → always reserve +
 	// enqueue + generate, and the worker supersedes the slot.
-	if h.Reuse != nil && !forceRegenerate {
+	//
+	// Phase 7B: preview_first also bypasses exact reuse and always generates a
+	// fresh preview + final. A final-only ready asset has no preview, so reusing
+	// it would never satisfy the preview_first contract — preview-first must
+	// produce both tiers.
+	if h.Reuse != nil && !forceRegenerate && !previewFirst {
 		existing, err := h.Reuse.FindReadyArtifactByPromptHash(r.Context(), assets.ArtifactLookup{
 			TenantID:       principal.TenantID,
 			WorldID:        req.WorldId,
@@ -212,14 +232,22 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 	if req.LatencyTier != nil {
 		latencyTier = string(*req.LatencyTier)
 	}
-	resolved, err := h.Resolver.Resolve(r.Context(), routing.ResolveRequest{
+	resolveReq := routing.ResolveRequest{
 		TenantID:           principal.TenantID,
 		OperationType:      artifactOperationType,
 		QualityTier:        qualityTier,
 		LatencyTier:        latencyTier,
 		RequiredCapability: capabilitySceneCapable,
 		ProviderPreference: h.ProviderPreference,
-	})
+	}
+	// Phase 7B: preview_first is a HARD true_preview requirement. If no enabled
+	// true_preview route can serve the request the resolver returns
+	// ErrUnsupportedCapability → 422 BEFORE cost reservation, job creation, or
+	// enqueue. There is no downgrade to final_only and no derived_preview fallback.
+	if previewFirst {
+		resolveReq.RequiredPreviewCapability = previewCapabilityTruePreview
+	}
+	resolved, err := h.Resolver.Resolve(r.Context(), resolveReq)
 	if err != nil {
 		writeRouteError(w, r, err)
 		return
@@ -354,6 +382,14 @@ func validLatencyTier(l apigen.LatencyTier) bool {
 func validFallbackPolicy(fp apigen.FallbackPolicy) bool {
 	switch fp {
 	case apigen.None, apigen.CompatibleOnly, apigen.PreviewAllowed, apigen.AnyExisting:
+		return true
+	}
+	return false
+}
+
+func validDeliveryMode(d apigen.DeliveryMode) bool {
+	switch d {
+	case apigen.FinalOnly, apigen.PreviewFirst:
 		return true
 	}
 	return false

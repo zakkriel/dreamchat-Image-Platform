@@ -361,6 +361,133 @@ func (q *Queries) GetVisualAssetByID(ctx context.Context, arg GetVisualAssetByID
 	return i, err
 }
 
+const insertPreviewVisualAsset = `-- name: InsertPreviewVisualAsset :one
+INSERT INTO visual_assets (
+    id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
+    variant_family, compatibility_tags, fallback_allowed, fallback_rank,
+    style_profile_id, style_profile_version,
+    quality_tier, status, version,
+    low_res_url, high_res_url, thumbnail_url,
+    provider_id, model_id, provider_route_id, prompt_hash, seed,
+    generation_job_id, metadata, generated_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6,
+    $7, $8, $9, $10,
+    $11, $12,
+    $13, 'preview_ready', $24,
+    $14, $15, $16,
+    $17, $18, $19, $20, $21,
+    $22, $23, now()
+)
+RETURNING id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
+          variant_family, version, state_version, style_profile_id,
+          style_profile_version, quality_tier, status,
+          compatibility_tags, fallback_allowed, fallback_rank, is_identity_anchor,
+          low_res_url, high_res_url, thumbnail_url,
+          provider_id, model_id, provider_route_id,
+          prompt_hash, seed, reference_asset_ids,
+          generation_job_id, metadata, generated_at,
+          created_at, updated_at, superseded_by_asset_id
+`
+
+type InsertPreviewVisualAssetParams struct {
+	ID                  string   `json:"id"`
+	TenantID            string   `json:"tenant_id"`
+	WorldID             string   `json:"world_id"`
+	VisualIdentityID    *string  `json:"visual_identity_id"`
+	AssetType           string   `json:"asset_type"`
+	VariantKey          string   `json:"variant_key"`
+	VariantFamily       *string  `json:"variant_family"`
+	CompatibilityTags   []string `json:"compatibility_tags"`
+	FallbackAllowed     bool     `json:"fallback_allowed"`
+	FallbackRank        *int32   `json:"fallback_rank"`
+	StyleProfileID      *string  `json:"style_profile_id"`
+	StyleProfileVersion *int32   `json:"style_profile_version"`
+	QualityTier         string   `json:"quality_tier"`
+	LowResUrl           *string  `json:"low_res_url"`
+	HighResUrl          *string  `json:"high_res_url"`
+	ThumbnailUrl        *string  `json:"thumbnail_url"`
+	ProviderID          *string  `json:"provider_id"`
+	ModelID             *string  `json:"model_id"`
+	ProviderRouteID     *string  `json:"provider_route_id"`
+	PromptHash          *string  `json:"prompt_hash"`
+	Seed                *string  `json:"seed"`
+	GenerationJobID     *string  `json:"generation_job_id"`
+	Metadata            []byte   `json:"metadata"`
+	Version             int32    `json:"version"`
+}
+
+// Phase 7B two-phase preview tier. Identical column mapping to InsertVisualAsset
+// but the asset always lands status='preview_ready' (not 'ready'): it is the
+// lighter, earlier output of a preview_first job, committed and observable
+// before the final asset is generated. It is never a reuse target (the artifact
+// reuse lookup matches status='ready' only), so a preview row never satisfies a
+// later request. version is supplied by the caller (the preview path passes 1).
+func (q *Queries) InsertPreviewVisualAsset(ctx context.Context, arg InsertPreviewVisualAssetParams) (VisualAsset, error) {
+	row := q.db.QueryRow(ctx, insertPreviewVisualAsset,
+		arg.ID,
+		arg.TenantID,
+		arg.WorldID,
+		arg.VisualIdentityID,
+		arg.AssetType,
+		arg.VariantKey,
+		arg.VariantFamily,
+		arg.CompatibilityTags,
+		arg.FallbackAllowed,
+		arg.FallbackRank,
+		arg.StyleProfileID,
+		arg.StyleProfileVersion,
+		arg.QualityTier,
+		arg.LowResUrl,
+		arg.HighResUrl,
+		arg.ThumbnailUrl,
+		arg.ProviderID,
+		arg.ModelID,
+		arg.ProviderRouteID,
+		arg.PromptHash,
+		arg.Seed,
+		arg.GenerationJobID,
+		arg.Metadata,
+		arg.Version,
+	)
+	var i VisualAsset
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.WorldID,
+		&i.VisualIdentityID,
+		&i.AssetType,
+		&i.VariantKey,
+		&i.VariantFamily,
+		&i.Version,
+		&i.StateVersion,
+		&i.StyleProfileID,
+		&i.StyleProfileVersion,
+		&i.QualityTier,
+		&i.Status,
+		&i.CompatibilityTags,
+		&i.FallbackAllowed,
+		&i.FallbackRank,
+		&i.IsIdentityAnchor,
+		&i.LowResUrl,
+		&i.HighResUrl,
+		&i.ThumbnailUrl,
+		&i.ProviderID,
+		&i.ModelID,
+		&i.ProviderRouteID,
+		&i.PromptHash,
+		&i.Seed,
+		&i.ReferenceAssetIds,
+		&i.GenerationJobID,
+		&i.Metadata,
+		&i.GeneratedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.SupersededByAssetID,
+	)
+	return i, err
+}
+
 const insertVisualAsset = `-- name: InsertVisualAsset :one
 INSERT INTO visual_assets (
     id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,

@@ -141,6 +141,13 @@ type Querier interface {
 	InsertGenerationCostEvent(ctx context.Context, arg InsertGenerationCostEventParams) error
 	InsertGenerationJob(ctx context.Context, arg InsertGenerationJobParams) (GenerationJob, error)
 	InsertIdempotencyKey(ctx context.Context, arg InsertIdempotencyKeyParams) (IdempotencyKey, error)
+	// Phase 7B two-phase preview tier. Identical column mapping to InsertVisualAsset
+	// but the asset always lands status='preview_ready' (not 'ready'): it is the
+	// lighter, earlier output of a preview_first job, committed and observable
+	// before the final asset is generated. It is never a reuse target (the artifact
+	// reuse lookup matches status='ready' only), so a preview row never satisfies a
+	// later request. version is supplied by the caller (the preview path passes 1).
+	InsertPreviewVisualAsset(ctx context.Context, arg InsertPreviewVisualAssetParams) (VisualAsset, error)
 	InsertProviderAttempt(ctx context.Context, arg InsertProviderAttemptParams) (ProviderAttempt, error)
 	// InsertProviderModelPrice creates a new active price entry. effective_from is
 	// now(); effective_to is NULL (current).
@@ -206,6 +213,13 @@ type Querier interface {
 	MarkBudgetHoldStatus(ctx context.Context, arg MarkBudgetHoldStatusParams) error
 	MarkGenerationJobCompleted(ctx context.Context, arg MarkGenerationJobCompletedParams) (GenerationJob, error)
 	MarkGenerationJobFailed(ctx context.Context, arg MarkGenerationJobFailedParams) (GenerationJob, error)
+	// Phase 7B two-phase generation: the preview tier landed. Flip the job to
+	// preview_ready and record preview_asset_ids. This is committed BEFORE final
+	// generation begins (a separate transaction from final persistence) so the
+	// preview state is externally observable through the job read and the
+	// job-assets read before the final asset exists. final_asset_ids stays empty
+	// until MarkGenerationJobCompleted runs after final success.
+	MarkGenerationJobPreviewReady(ctx context.Context, arg MarkGenerationJobPreviewReadyParams) (GenerationJob, error)
 	MarkGenerationJobRunning(ctx context.Context, arg MarkGenerationJobRunningParams) (GenerationJob, error)
 	MarkProviderAttemptFailed(ctx context.Context, arg MarkProviderAttemptFailedParams) error
 	MarkProviderAttemptSucceeded(ctx context.Context, arg MarkProviderAttemptSucceededParams) error

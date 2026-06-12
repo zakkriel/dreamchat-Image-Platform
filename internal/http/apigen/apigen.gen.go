@@ -78,6 +78,12 @@ const (
 	CostReservationStatusReserved  CostReservationStatus = "reserved"
 )
 
+// Defines values for DeliveryMode.
+const (
+	FinalOnly    DeliveryMode = "final_only"
+	PreviewFirst DeliveryMode = "preview_first"
+)
+
 // Defines values for FallbackPolicy.
 const (
 	AnyExisting    FallbackPolicy = "any_existing"
@@ -512,6 +518,24 @@ type CreateVisualIdentityRequest struct {
 	WorldId        string    `json:"world_id"`
 }
 
+// DeliveryMode Phase 7B preview-first delivery opt-in. Default `final_only`.
+//   - `final_only`: single-phase generation; the job runs straight to
+//     `completed` with `final_asset_ids`. Behaviorally unchanged from
+//     Phase 7A.
+//   - `preview_first`: two-phase generation. Route resolution imposes a
+//     HARD `true_preview` capability requirement — if no enabled
+//     `true_preview` route can serve the request the API returns 422
+//     `unsupported_capability` BEFORE cost reservation, job creation, or
+//     enqueue (there is no automatic downgrade to `final_only` and no
+//     `derived_preview` fallback). When a `true_preview` route is found the
+//     worker emits a lighter preview asset (`status=preview_ready`,
+//     compatibility tag `preview_safe`), commits the job to
+//     `preview_ready` with `preview_asset_ids`, then generates the final
+//     asset (`status=ready`) and completes the same job with
+//     `final_asset_ids`. Cost is reserved once and committed once, only
+//     after final success.
+type DeliveryMode string
+
 // Error Standard error body returned for all non-2xx responses. Served with
 // content type `application/problem+json`. `code` is a stable, lowercase
 // machine-readable identifier (e.g. `unauthorized`, `forbidden`,
@@ -540,7 +564,24 @@ type FallbackPolicy string
 
 // GenerateArtifactRequest defines model for GenerateArtifactRequest.
 type GenerateArtifactRequest struct {
-	Description string `json:"description"`
+	// DeliveryMode Phase 7B preview-first delivery opt-in. Default `final_only`.
+	// - `final_only`: single-phase generation; the job runs straight to
+	//   `completed` with `final_asset_ids`. Behaviorally unchanged from
+	//   Phase 7A.
+	// - `preview_first`: two-phase generation. Route resolution imposes a
+	//   HARD `true_preview` capability requirement — if no enabled
+	//   `true_preview` route can serve the request the API returns 422
+	//   `unsupported_capability` BEFORE cost reservation, job creation, or
+	//   enqueue (there is no automatic downgrade to `final_only` and no
+	//   `derived_preview` fallback). When a `true_preview` route is found the
+	//   worker emits a lighter preview asset (`status=preview_ready`,
+	//   compatibility tag `preview_safe`), commits the job to
+	//   `preview_ready` with `preview_asset_ids`, then generates the final
+	//   asset (`status=ready`) and completes the same job with
+	//   `final_asset_ids`. Cost is reserved once and committed once, only
+	//   after final success.
+	DeliveryMode *DeliveryMode `json:"delivery_mode,omitempty"`
+	Description  string        `json:"description"`
 
 	// FallbackPolicy Controls which retrieval outcomes count as a usable hit vs. forcing
 	// generation. Default `compatible_only`. See
@@ -648,10 +689,28 @@ type GenerationJob struct {
 	FinalAssetIds   *[]string `json:"final_asset_ids,omitempty"`
 	Id              string    `json:"id"`
 	JobType         string    `json:"job_type"`
+
+	// PreviewAssetIds Phase 7B: the preview asset(s) of a `delivery_mode=preview_first`
+	// job. Populated (and committed alongside `status=preview_ready`)
+	// BEFORE final generation begins, so a preview is observable before
+	// the final asset lands. Empty for `final_only` jobs. If final
+	// generation fails after the preview was delivered, the job becomes
+	// `failed`, `final_asset_ids` stays empty, and the preview asset
+	// remains readable (it is the last useful output, not superseded).
 	PreviewAssetIds *[]string `json:"preview_asset_ids,omitempty"`
 	Retryable       *bool     `json:"retryable,omitempty"`
 
 	// Status Lifecycle status of a generation job.
+	//
+	// `preview_ready` is the Phase 7B two-phase intermediate state: a
+	// `delivery_mode=preview_first` job that resolved a `true_preview` route
+	// emits a lighter preview asset and commits this status (with
+	// `preview_asset_ids` populated) BEFORE final generation begins, so the
+	// preview is externally observable through `GET /v1/jobs/{job_id}` and
+	// `GET /v1/jobs/{job_id}/assets` before the final asset lands. The same
+	// job then continues to `completed` (with `final_asset_ids`). A
+	// `final_only` (or omitted) job never enters `preview_ready` — it is the
+	// unchanged Phase 7A single-phase lifecycle.
 	Status           GenerationJobStatus `json:"status"`
 	UpdatedAt        time.Time           `json:"updated_at"`
 	VisualIdentityId *string             `json:"visual_identity_id,omitempty"`
@@ -684,6 +743,16 @@ type GenerationJobAccepted struct {
 type GenerationJobAcceptedStatus string
 
 // GenerationJobStatus Lifecycle status of a generation job.
+//
+// `preview_ready` is the Phase 7B two-phase intermediate state: a
+// `delivery_mode=preview_first` job that resolved a `true_preview` route
+// emits a lighter preview asset and commits this status (with
+// `preview_asset_ids` populated) BEFORE final generation begins, so the
+// preview is externally observable through `GET /v1/jobs/{job_id}` and
+// `GET /v1/jobs/{job_id}/assets` before the final asset lands. The same
+// job then continues to `completed` (with `final_asset_ids`). A
+// `final_only` (or omitted) job never enters `preview_ready` — it is the
+// unchanged Phase 7A single-phase lifecycle.
 type GenerationJobStatus string
 
 // HealthResponse defines model for HealthResponse.
@@ -830,6 +899,24 @@ type StyleMode string
 // StylePreviewRequest Body for `POST /v1/styles/{style_id}/preview`. `world_id` is required
 // because generated visual assets are world-scoped (Phase 6B).
 type StylePreviewRequest struct {
+	// DeliveryMode Phase 7B preview-first delivery opt-in. Default `final_only`.
+	// - `final_only`: single-phase generation; the job runs straight to
+	//   `completed` with `final_asset_ids`. Behaviorally unchanged from
+	//   Phase 7A.
+	// - `preview_first`: two-phase generation. Route resolution imposes a
+	//   HARD `true_preview` capability requirement — if no enabled
+	//   `true_preview` route can serve the request the API returns 422
+	//   `unsupported_capability` BEFORE cost reservation, job creation, or
+	//   enqueue (there is no automatic downgrade to `final_only` and no
+	//   `derived_preview` fallback). When a `true_preview` route is found the
+	//   worker emits a lighter preview asset (`status=preview_ready`,
+	//   compatibility tag `preview_safe`), commits the job to
+	//   `preview_ready` with `preview_asset_ids`, then generates the final
+	//   asset (`status=ready`) and completes the same job with
+	//   `final_asset_ids`. Cost is reserved once and committed once, only
+	//   after final success.
+	DeliveryMode *DeliveryMode `json:"delivery_mode,omitempty"`
+
 	// QualityTier Output quality tier requested for generation.
 	QualityTier *QualityTier `json:"quality_tier,omitempty"`
 	WorldId     string       `json:"world_id"`

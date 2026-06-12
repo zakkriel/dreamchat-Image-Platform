@@ -56,6 +56,10 @@ func (noopAssetsRepo) Insert(context.Context, assets.InsertParams) (assets.Visua
 	return assets.VisualAsset{}, nil
 }
 
+func (noopAssetsRepo) InsertPreview(context.Context, assets.InsertParams) (assets.VisualAsset, error) {
+	return assets.VisualAsset{}, nil
+}
+
 func (noopAssetsRepo) SupersedeAndInsertArtifact(context.Context, assets.InsertParams, assets.ArtifactSlot) (assets.VisualAsset, error) {
 	return assets.VisualAsset{}, nil
 }
@@ -88,6 +92,9 @@ func (noopJobsRepo) GetByID(context.Context, string) (jobs.Job, error) {
 	return jobs.Job{}, jobs.ErrNotFound
 }
 func (noopJobsRepo) MarkRunning(context.Context, string, string) (jobs.Job, error) {
+	return jobs.Job{}, nil
+}
+func (noopJobsRepo) MarkPreviewReady(context.Context, string, string, []string) (jobs.Job, error) {
 	return jobs.Job{}, nil
 }
 func (noopJobsRepo) MarkCompleted(context.Context, string, string, []string) (jobs.Job, error) {
