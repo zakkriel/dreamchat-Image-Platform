@@ -204,6 +204,70 @@ func TestJobAssetsPackDeliveryOrder(t *testing.T) {
 	}
 }
 
+// Phase 7B: a preview_ready job (no final assets yet) delivers its preview asset
+// through the job-assets read, so the preview is observable before final.
+func TestJobAssetsPreviewReadyReturnsPreviewAsset(t *testing.T) {
+	repo := newStubAssetsRepo()
+	repo.byID["asset_preview"] = assets.VisualAsset{ID: "asset_preview", TenantID: tenantA, AssetType: "artifact", VariantKey: "default", Version: 1, Status: "preview_ready"}
+
+	lookup := newStubJobAssetsLookup()
+	lookup.jobsByID["job_pf"] = jobs.Job{ID: "job_pf", TenantID: tenantA, JobType: "artifact", Status: "preview_ready", PreviewAssetIds: []string{"asset_preview"}}
+
+	rec := sendJSON(t, newDeliveryRouter(repo, newStubSigner(), lookup), http.MethodGet, "/v1/jobs/job_pf/assets", tenantA, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	resp := decode[map[string]any](t, rec)
+	list, _ := resp["assets"].([]any)
+	if len(list) != 1 || list[0].(map[string]any)["id"] != "asset_preview" {
+		t.Fatalf("preview_ready job must deliver the preview asset, got %v", resp["assets"])
+	}
+	if list[0].(map[string]any)["status"] != "preview_ready" {
+		t.Fatalf("delivered preview must be status=preview_ready, got %v", list[0].(map[string]any)["status"])
+	}
+}
+
+// Phase 7B: a completed two-phase job (both preview and final present) delivers
+// the FINAL asset — final_asset_ids takes precedence over preview_asset_ids.
+func TestJobAssetsCompletedPrefersFinalOverPreview(t *testing.T) {
+	repo := newStubAssetsRepo()
+	repo.byID["asset_preview"] = assets.VisualAsset{ID: "asset_preview", TenantID: tenantA, AssetType: "artifact", VariantKey: "default", Version: 1, Status: "preview_ready"}
+	repo.byID["asset_final"] = assets.VisualAsset{ID: "asset_final", TenantID: tenantA, AssetType: "artifact", VariantKey: "default", Version: 1, Status: "ready"}
+
+	lookup := newStubJobAssetsLookup()
+	lookup.jobsByID["job_done"] = jobs.Job{ID: "job_done", TenantID: tenantA, JobType: "artifact", Status: "completed", PreviewAssetIds: []string{"asset_preview"}, FinalAssetIds: []string{"asset_final"}}
+
+	rec := sendJSON(t, newDeliveryRouter(repo, newStubSigner(), lookup), http.MethodGet, "/v1/jobs/job_done/assets", tenantA, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	resp := decode[map[string]any](t, rec)
+	list, _ := resp["assets"].([]any)
+	if len(list) != 1 || list[0].(map[string]any)["id"] != "asset_final" {
+		t.Fatalf("completed job must deliver the final asset, got %v", resp["assets"])
+	}
+}
+
+// Phase 7B: a failed-after-preview job (preview present, final empty) still
+// delivers the preview asset — it is the last useful output, not superseded.
+func TestJobAssetsFailedAfterPreviewReturnsPreview(t *testing.T) {
+	repo := newStubAssetsRepo()
+	repo.byID["asset_preview"] = assets.VisualAsset{ID: "asset_preview", TenantID: tenantA, AssetType: "artifact", VariantKey: "default", Version: 1, Status: "preview_ready"}
+
+	lookup := newStubJobAssetsLookup()
+	lookup.jobsByID["job_failed"] = jobs.Job{ID: "job_failed", TenantID: tenantA, JobType: "artifact", Status: "failed", PreviewAssetIds: []string{"asset_preview"}}
+
+	rec := sendJSON(t, newDeliveryRouter(repo, newStubSigner(), lookup), http.MethodGet, "/v1/jobs/job_failed/assets", tenantA, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	resp := decode[map[string]any](t, rec)
+	list, _ := resp["assets"].([]any)
+	if len(list) != 1 || list[0].(map[string]any)["id"] != "asset_preview" {
+		t.Fatalf("failed two-phase job must still deliver the preview, got %v", resp["assets"])
+	}
+}
+
 func TestJobAssetsEmptyForJobWithNoAssets(t *testing.T) {
 	lookup := newStubJobAssetsLookup()
 	lookup.jobsByID["job_empty"] = jobs.Job{ID: "job_empty", TenantID: tenantA, JobType: "artifact", Status: "queued"}

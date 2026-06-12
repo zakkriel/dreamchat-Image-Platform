@@ -23,6 +23,7 @@ type fakeJobsRepo struct {
 	costEvents       []CostEventInsertParams
 	markRunningCalls int
 	markCompleted    []string
+	markPreviewReady []string
 	markFailed       []string
 
 	// Pack fan-out tracking (Phase 5A).
@@ -163,6 +164,20 @@ func (r *fakeJobsRepo) MarkCompleted(_ context.Context, id, tenantID string, fin
 	job.FinalAssetIds = finalAssetIDs
 	r.jobs[id] = job
 	r.markCompleted = append(r.markCompleted, id)
+	return job, nil
+}
+
+func (r *fakeJobsRepo) MarkPreviewReady(_ context.Context, id, tenantID string, previewAssetIDs []string) (Job, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	job, ok := r.jobs[id]
+	if !ok || job.TenantID != tenantID {
+		return Job{}, ErrNotFound
+	}
+	job.Status = "preview_ready"
+	job.PreviewAssetIds = previewAssetIDs
+	r.jobs[id] = job
+	r.markPreviewReady = append(r.markPreviewReady, id)
 	return job, nil
 }
 
@@ -332,8 +347,9 @@ func (r *fakeJobsRepo) lastPackStatus(packID string) string {
 }
 
 type fakeAssetsRepo struct {
-	mu     sync.Mutex
-	stored []assets.InsertParams
+	mu            sync.Mutex
+	stored        []assets.InsertParams
+	previewStored []assets.InsertParams
 
 	// Phase 6A4 supersede modeling. table is an in-memory visual_assets so the
 	// supersede path can faithfully archive prior ready rows and version the new
@@ -373,6 +389,19 @@ func (r *fakeAssetsRepo) Insert(_ context.Context, params assets.InsertParams) (
 	defer r.mu.Unlock()
 	r.stored = append(r.stored, params)
 	asset := assetFromParams(params, 1)
+	r.table = append(r.table, asset)
+	return asset, nil
+}
+
+// InsertPreview models the Phase 7B preview-tier write: the asset lands
+// status='preview_ready' (not 'ready') and is recorded separately so tests can
+// distinguish the preview row from the final row.
+func (r *fakeAssetsRepo) InsertPreview(_ context.Context, params assets.InsertParams) (assets.VisualAsset, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.previewStored = append(r.previewStored, params)
+	asset := assetFromParams(params, 1)
+	asset.Status = "preview_ready"
 	r.table = append(r.table, asset)
 	return asset, nil
 }

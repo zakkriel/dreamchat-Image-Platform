@@ -75,6 +75,10 @@ func (h *StylePreviewHandler) GeneratePreview(w http.ResponseWriter, r *http.Req
 		httperr.Write(w, r, http.StatusBadRequest, httperr.CodeInvalidRequest, "quality_tier must be one of draft, standard, high")
 		return
 	}
+	if req.DeliveryMode != nil && !validDeliveryMode(*req.DeliveryMode) {
+		httperr.Write(w, r, http.StatusBadRequest, httperr.CodeInvalidRequest, "delivery_mode must be one of final_only, preview_first")
+		return
+	}
 
 	style, err := h.Styles.GetByIDForTenant(r.Context(), styleID, principal.TenantID)
 	if err != nil {
@@ -111,6 +115,10 @@ func (h *StylePreviewHandler) GeneratePreview(w http.ResponseWriter, r *http.Req
 		QualityTier:    qualityTier,
 	})
 
+	// Phase 7B: delivery_mode=preview_first opts the style-preview sample into
+	// two-phase preview-first delivery (hard true_preview routing requirement).
+	previewFirst := req.DeliveryMode != nil && *req.DeliveryMode == apigen.PreviewFirst
+
 	payload := map[string]any{
 		"artifact_id":      stylePreviewArtifactID(styleID),
 		"world_id":         req.WorldId,
@@ -121,6 +129,9 @@ func (h *StylePreviewHandler) GeneratePreview(w http.ResponseWriter, r *http.Req
 		"prompt_hash":      renderHash,
 		// Provenance marker so the produced asset is identifiable as a preview.
 		"preview_kind": "style_preview",
+	}
+	if previewFirst {
+		payload["delivery_mode"] = string(apigen.PreviewFirst)
 	}
 
 	idemKey := r.Header.Get(idempotency.HeaderKey)
@@ -134,13 +145,20 @@ func (h *StylePreviewHandler) GeneratePreview(w http.ResponseWriter, r *http.Req
 	}
 
 	// Resolve the provider route once, before reserving cost.
-	resolved, err := h.Resolver.Resolve(r.Context(), routing.ResolveRequest{
+	resolveReq := routing.ResolveRequest{
 		TenantID:           principal.TenantID,
 		OperationType:      artifactOperationType,
 		QualityTier:        qualityTier,
 		RequiredCapability: capabilitySceneCapable,
 		ProviderPreference: h.ProviderPreference,
-	})
+	}
+	// Phase 7B: preview_first is a HARD true_preview requirement → 422
+	// unsupported_capability before cost reservation when no true_preview route
+	// exists. No downgrade, no derived_preview fallback.
+	if previewFirst {
+		resolveReq.RequiredPreviewCapability = previewCapabilityTruePreview
+	}
+	resolved, err := h.Resolver.Resolve(r.Context(), resolveReq)
 	if err != nil {
 		writeRouteError(w, r, err)
 		return

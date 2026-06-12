@@ -31,6 +31,18 @@ const (
 	// imaging.PreviewShortEdge and imaging.ThumbnailShortEdge so the three
 	// delivery tiers come out at distinct sizes.
 	deliveryRenderEdge = 1024
+
+	// previewRenderEdge is the square edge (px) the worker asks the provider to
+	// produce for the Phase 7B preview tier. It is deliberately smaller than
+	// deliveryRenderEdge so the preview asset is genuinely lighter than the final
+	// asset (smaller source → smaller delivered bytes where the provider honors
+	// dimensions, e.g. mock). The preview is not a downscale of the final — it is
+	// a separate, lower-resolution provider render.
+	previewRenderEdge = 512
+
+	// deliveryModePreviewFirst is the payload value (persisted by the handler at
+	// job-creation time) that opts a job into two-phase preview-first delivery.
+	deliveryModePreviewFirst = "preview_first"
 )
 
 // ProviderRegistry resolves a provider_id to its adapter (Phase 7A). The worker
@@ -161,6 +173,15 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 		return w.failTerminal(ctx, job, errorCodeProviderUnavailable, msg)
 	}
 
+	// Phase 7B two-phase preview-first generation applies only when the request
+	// opted in (payload.delivery_mode == preview_first) AND the resolved route is
+	// a true_preview route (preview_capability persisted on the payload at
+	// creation time, from the route the handler resolved — the worker never
+	// re-resolves). Any other job takes the unchanged Phase 7A single-phase path.
+	if w.isPreviewFirst(job) {
+		return w.processPreviewFirst(ctx, job, provider, resolved, attemptNumber, finalAttempt)
+	}
+
 	if _, err := w.Jobs.MarkRunning(ctx, job.ID, job.TenantID); err != nil {
 		w.log().Error("worker: mark running", "job_id", jobID, "error", err)
 		return err
@@ -209,6 +230,281 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 		return err
 	}
 
+	// Phase 7A provenance: stamp the resolved provider/model/route (the same the
+	// handler priced and persisted) so the stored asset records exactly which
+	// route produced it. The shared builder also carries the request's render
+	// hash (prompt_hash), quality tier, style provenance, and the provider hash
+	// in metadata.
+	insertParams := w.buildArtifactInsertParams(job, resolved, assetID, urls, result, worldID)
+
+	// Phase 6A4 forced regeneration: a forced job (force_regenerate carried on
+	// the payload) supersedes its slot — in one transaction, under a slot lock,
+	// it inserts the new asset as the single ready row (version = prior_max + 1)
+	// and archives every prior ready row of the EXACT artifact slot, linking them
+	// forward. The exact slot is the FindReadyArtifactByPromptHash predicate, so a
+	// regenerate never archives a compatible/preview neighbor. A non-forced job
+	// takes the byte-for-byte unchanged single insert (version defaults to 1).
+	var asset assets.VisualAsset
+	if payloadBool(job.InputPayload, "force_regenerate") {
+		asset, err = w.Assets.SupersedeAndInsertArtifact(ctx, insertParams, artifactSlotFor(job, insertParams))
+	} else {
+		asset, err = w.Assets.Insert(ctx, insertParams)
+	}
+	if err != nil {
+		w.recordFailure(ctx, job, attempt.ID, attempt.ProviderID, fmt.Errorf("insert asset: %w", err), latency, finalAttempt)
+		return err
+	}
+
+	if _, err := w.Jobs.MarkCompleted(ctx, job.ID, job.TenantID, []string{asset.ID}); err != nil {
+		w.log().Error("worker: mark completed", "job_id", jobID, "error", err)
+		return err
+	}
+
+	if err := w.Jobs.MarkProviderAttemptSucceeded(ctx, attempt.ID, int32(latency)); err != nil {
+		w.log().Warn("worker: mark attempt succeeded", "attempt_id", attempt.ID, "error", err)
+	}
+
+	latencyInt := int32(latency)
+	tokenID := job.RequestedByTokenID
+	providerID := resolved.providerID
+	if err := w.Jobs.InsertCostEvent(ctx, CostEventInsertParams{
+		ID:                ids.NewCostEventID(),
+		TenantID:          job.TenantID,
+		JobID:             &job.ID,
+		AssetID:           &asset.ID,
+		TokenID:           tokenID,
+		ProviderID:        &providerID,
+		ProviderAttemptID: &attempt.ID,
+		Operation:         string(providers.OperationTextToImage),
+		DurationMs:        &latencyInt,
+		Status:            "completed",
+	}); err != nil {
+		w.log().Warn("worker: insert cost event", "job_id", jobID, "error", err)
+	}
+
+	// Commit the cost reservation: reserved → committed, move the held
+	// estimate from reserved to spent, stamp actual_cost on the job + event.
+	// Idempotent — safe if a later retry re-enters after a partial failure.
+	if w.Finalizer != nil {
+		if err := w.Finalizer.Commit(ctx, job.ID); err != nil {
+			w.log().Error("worker: commit cost reservation", "job_id", jobID, "error", err)
+			return err
+		}
+	}
+
+	return nil
+}
+
+// isPreviewFirst reports whether a job takes the Phase 7B two-phase path. Both
+// must hold: the request opted in (payload.delivery_mode == preview_first) and
+// the resolved route is a true_preview route (preview_capability persisted on
+// the payload at creation time). The resolver guarantees a preview_first request
+// only resolves a true_preview route — the second check is a belt-and-suspenders
+// guard so a payload missing the preview capability never silently two-phases.
+func (w *Worker) isPreviewFirst(job Job) bool {
+	return payloadString(job.InputPayload, "delivery_mode") == deliveryModePreviewFirst &&
+		payloadString(job.InputPayload, "preview_capability") == string(providers.PreviewCapabilityTrue)
+}
+
+// processPreviewFirst runs the Phase 7B two-phase lifecycle for one job:
+//
+//	Phase A (preview): generate a lighter preview render, upload its tiers,
+//	  insert a visual_asset with status=preview_ready + the preview_safe tag,
+//	  then commit the job to preview_ready with preview_asset_ids. This is
+//	  committed in its own DB transactions BEFORE final generation begins, so
+//	  the preview is externally observable (job read + job-assets read) before
+//	  the final asset exists.
+//	Phase B (final): generate the full-resolution render, upload its tiers,
+//	  insert a visual_asset with status=ready, complete the job with
+//	  final_asset_ids, and commit the cost reservation ONCE.
+//
+// Retry safety: the preview phase is skipped entirely when preview_asset_ids
+// already exists (a prior attempt committed it), so a retry of a preview_ready
+// job resumes at final without duplicating the preview or re-reserving cost. A
+// failure in either phase routes through recordFailure: on the terminal attempt
+// the job is marked failed and the reservation released. A final-phase failure
+// after the preview was delivered leaves the preview asset readable and
+// final_asset_ids empty (the preview is not superseded — it is the last useful
+// output of the failed two-phase job).
+func (w *Worker) processPreviewFirst(ctx context.Context, job Job, provider providers.ImageProvider, resolved resolvedRoute, attemptNumber int32, finalAttempt bool) error {
+	worldID := ""
+	if job.WorldID != nil {
+		worldID = *job.WorldID
+	}
+	description, _ := job.InputPayload["description"].(string)
+
+	// --- Phase A: preview ---------------------------------------------------
+	// Resume safety: a non-empty preview_asset_ids means a prior attempt already
+	// generated and committed the preview. Skip straight to final so a retry
+	// never regenerates the preview and never recharges.
+	if len(job.PreviewAssetIds) == 0 {
+		if _, err := w.Jobs.MarkRunning(ctx, job.ID, job.TenantID); err != nil {
+			w.log().Error("worker: mark running (preview)", "job_id", job.ID, "error", err)
+			return err
+		}
+		attempt, err := w.Jobs.InsertProviderAttempt(ctx, ProviderAttemptInsertParams{
+			ID:              ids.NewProviderAttemptID(),
+			GenerationJobID: job.ID,
+			ProviderID:      resolved.providerID,
+			AttemptNumber:   attemptNumber,
+		})
+		if err != nil {
+			w.log().Error("worker: insert attempt (preview)", "job_id", job.ID, "error", err)
+			return err
+		}
+
+		start := time.Now()
+		result, providerErr := provider.Generate(ctx, providers.ProviderGenerateRequest{
+			JobID:     job.ID,
+			Operation: providers.OperationTextToImage,
+			Prompt:    description,
+			Width:     previewRenderEdge,
+			Height:    previewRenderEdge,
+			Metadata: map[string]any{
+				"world_id": worldID,
+				"job_type": job.JobType,
+				"tier":     "preview",
+			},
+		})
+		latency := time.Since(start).Milliseconds()
+		if providerErr != nil {
+			// Preview-phase failure: no preview asset is created. On the terminal
+			// attempt recordFailure marks the job failed and releases the reservation.
+			w.recordFailure(ctx, job, attempt.ID, attempt.ProviderID, providerErr, latency, finalAttempt)
+			return providerErr
+		}
+
+		previewAssetID := ids.NewVisualAssetID()
+		urls, err := w.uploadImages(ctx, previewAssetID, result.Images)
+		if err != nil {
+			w.recordFailure(ctx, job, attempt.ID, attempt.ProviderID, err, latency, finalAttempt)
+			return err
+		}
+
+		previewParams := w.buildArtifactInsertParams(job, resolved, previewAssetID, urls, result, worldID)
+		// The preview tier is tagged preview_safe and lands status=preview_ready
+		// via InsertPreview; it is never a reuse target.
+		previewParams.CompatibilityTags = []string{assets.TagPreviewSafe}
+		if _, err := w.Assets.InsertPreview(ctx, previewParams); err != nil {
+			w.recordFailure(ctx, job, attempt.ID, attempt.ProviderID, fmt.Errorf("insert preview asset: %w", err), latency, finalAttempt)
+			return err
+		}
+		if err := w.Jobs.MarkProviderAttemptSucceeded(ctx, attempt.ID, int32(latency)); err != nil {
+			w.log().Warn("worker: mark attempt succeeded (preview)", "attempt_id", attempt.ID, "error", err)
+		}
+
+		// Commit preview_ready + preview_asset_ids BEFORE final generation begins.
+		// This is a distinct DB transaction from both the preview asset insert
+		// above and the final persistence below, so another process can observe
+		// the preview state through the job read and job-assets read before the
+		// final asset lands.
+		if _, err := w.Jobs.MarkPreviewReady(ctx, job.ID, job.TenantID, []string{previewAssetID}); err != nil {
+			w.log().Error("worker: mark preview ready", "job_id", job.ID, "error", err)
+			return err
+		}
+	}
+
+	// --- Phase B: final -----------------------------------------------------
+	attempt, err := w.Jobs.InsertProviderAttempt(ctx, ProviderAttemptInsertParams{
+		ID:              ids.NewProviderAttemptID(),
+		GenerationJobID: job.ID,
+		ProviderID:      resolved.providerID,
+		AttemptNumber:   attemptNumber,
+	})
+	if err != nil {
+		w.log().Error("worker: insert attempt (final)", "job_id", job.ID, "error", err)
+		return err
+	}
+
+	start := time.Now()
+	result, providerErr := provider.Generate(ctx, providers.ProviderGenerateRequest{
+		JobID:     job.ID,
+		Operation: providers.OperationTextToImage,
+		Prompt:    description,
+		Width:     deliveryRenderEdge,
+		Height:    deliveryRenderEdge,
+		Metadata: map[string]any{
+			"world_id": worldID,
+			"job_type": job.JobType,
+			"tier":     "final",
+		},
+	})
+	latency := time.Since(start).Milliseconds()
+	if providerErr != nil {
+		// Final-phase failure AFTER the preview was delivered: on the terminal
+		// attempt the job is marked failed and the reservation released. The
+		// preview asset stays preview_ready and final_asset_ids stays empty.
+		w.recordFailure(ctx, job, attempt.ID, attempt.ProviderID, providerErr, latency, finalAttempt)
+		return providerErr
+	}
+
+	finalAssetID := ids.NewVisualAssetID()
+	urls, err := w.uploadImages(ctx, finalAssetID, result.Images)
+	if err != nil {
+		w.recordFailure(ctx, job, attempt.ID, attempt.ProviderID, err, latency, finalAttempt)
+		return err
+	}
+
+	finalParams := w.buildArtifactInsertParams(job, resolved, finalAssetID, urls, result, worldID)
+	// The final tier supersedes prior ready finals exactly like the single-phase
+	// path when forced (Phase 6A4); the preview asset is a different status and
+	// is never superseded.
+	var asset assets.VisualAsset
+	if payloadBool(job.InputPayload, "force_regenerate") {
+		asset, err = w.Assets.SupersedeAndInsertArtifact(ctx, finalParams, artifactSlotFor(job, finalParams))
+	} else {
+		asset, err = w.Assets.Insert(ctx, finalParams)
+	}
+	if err != nil {
+		w.recordFailure(ctx, job, attempt.ID, attempt.ProviderID, fmt.Errorf("insert asset: %w", err), latency, finalAttempt)
+		return err
+	}
+
+	if _, err := w.Jobs.MarkCompleted(ctx, job.ID, job.TenantID, []string{asset.ID}); err != nil {
+		w.log().Error("worker: mark completed (preview-first)", "job_id", job.ID, "error", err)
+		return err
+	}
+	if err := w.Jobs.MarkProviderAttemptSucceeded(ctx, attempt.ID, int32(latency)); err != nil {
+		w.log().Warn("worker: mark attempt succeeded (final)", "attempt_id", attempt.ID, "error", err)
+	}
+
+	latencyInt := int32(latency)
+	providerID := resolved.providerID
+	if err := w.Jobs.InsertCostEvent(ctx, CostEventInsertParams{
+		ID:                ids.NewCostEventID(),
+		TenantID:          job.TenantID,
+		JobID:             &job.ID,
+		AssetID:           &asset.ID,
+		TokenID:           job.RequestedByTokenID,
+		ProviderID:        &providerID,
+		ProviderAttemptID: &attempt.ID,
+		Operation:         string(providers.OperationTextToImage),
+		DurationMs:        &latencyInt,
+		Status:            "completed",
+	}); err != nil {
+		w.log().Warn("worker: insert cost event (final)", "job_id", job.ID, "error", err)
+	}
+
+	// Commit the cost reservation ONCE, only after final success. There is no
+	// separate preview charge. Idempotent — a retry that re-enters after the job
+	// is completed re-commits via the terminal short-circuit in Process.
+	if w.Finalizer != nil {
+		if err := w.Finalizer.Commit(ctx, job.ID); err != nil {
+			w.log().Error("worker: commit cost reservation (preview-first)", "job_id", job.ID, "error", err)
+			return err
+		}
+	}
+
+	return nil
+}
+
+// buildArtifactInsertParams assembles the visual_assets InsertParams shared by
+// the single-phase write and both tiers of the two-phase write: provenance from
+// the resolved route, the request's render hash (prompt_hash) and quality tier,
+// style provenance, and the provider hash in metadata. Callers set
+// status-specific fields (e.g. the preview tier's compatibility tags) and choose
+// Insert vs InsertPreview.
+func (w *Worker) buildArtifactInsertParams(job Job, resolved resolvedRoute, assetID string, urls uploadedURLs, result providers.ProviderGenerateResult, worldID string) assets.InsertParams {
 	providerID := resolved.providerID
 	modelID := resolved.modelID
 	routeID := resolved.routeID
@@ -217,10 +513,9 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 
 	// Phase 6A2: the asset's prompt_hash is the deterministic artifact render
 	// hash the handler computed and carried in the payload — the same key the
-	// reuse lookup matches on, so this asset is found by an identical repeat
-	// request. The provider's own hash (if any) is provenance, not the cache
-	// key, so it goes in metadata.provider_prompt_hash. Fall back to the
-	// provider hash only if the payload has no render hash (pre-6A2 jobs).
+	// reuse lookup matches on. The provider's own hash (if any) is provenance,
+	// not the cache key, so it goes in metadata.provider_prompt_hash. Fall back
+	// to the provider hash only if the payload has no render hash (pre-6A2 jobs).
 	promptHash := payloadString(job.InputPayload, "prompt_hash")
 	if promptHash == "" {
 		promptHash = result.PromptHash
@@ -238,10 +533,7 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 		qualityTier = "standard"
 	}
 
-	// Phase 7A provenance: stamp the resolved provider/model/route (the same the
-	// handler priced and persisted) so the stored asset records exactly which
-	// route produced it.
-	insertParams := assets.InsertParams{
+	return assets.InsertParams{
 		ID:         assetID,
 		TenantID:   job.TenantID,
 		WorldID:    worldID,
@@ -264,69 +556,24 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 		Seed:                strPtr(seed),
 		GenerationJobID:     &jobIDRef,
 	}
+}
 
-	// Phase 6A4 forced regeneration: a forced job (force_regenerate carried on
-	// the payload) supersedes its slot — in one transaction, under a slot lock,
-	// it inserts the new asset as the single ready row (version = prior_max + 1)
-	// and archives every prior ready row of the EXACT artifact slot, linking them
-	// forward. The exact slot is the FindReadyArtifactByPromptHash predicate, so a
-	// regenerate never archives a compatible/preview neighbor. A non-forced job
-	// takes the byte-for-byte unchanged single insert (version defaults to 1).
-	var asset assets.VisualAsset
-	if payloadBool(job.InputPayload, "force_regenerate") {
-		asset, err = w.Assets.SupersedeAndInsertArtifact(ctx, insertParams, assets.ArtifactSlot{
-			TenantID:       job.TenantID,
-			WorldID:        worldID,
-			StyleProfileID: payloadString(job.InputPayload, "style_profile_id"),
-			QualityTier:    qualityTier,
-			PromptHash:     promptHash,
-		})
-	} else {
-		asset, err = w.Assets.Insert(ctx, insertParams)
+// artifactSlotFor builds the Phase 6A4 forced-regeneration supersede slot from
+// the asset insert params — the exact FindReadyArtifactByPromptHash predicate
+// (owner + style + quality + render hash). Shared by the single-phase and
+// two-phase final writes.
+func artifactSlotFor(job Job, p assets.InsertParams) assets.ArtifactSlot {
+	promptHash := ""
+	if p.PromptHash != nil {
+		promptHash = *p.PromptHash
 	}
-	if err != nil {
-		w.recordFailure(ctx, job, attempt.ID, attempt.ProviderID, fmt.Errorf("insert asset: %w", err), latency, finalAttempt)
-		return err
+	return assets.ArtifactSlot{
+		TenantID:       job.TenantID,
+		WorldID:        p.WorldID,
+		StyleProfileID: payloadString(job.InputPayload, "style_profile_id"),
+		QualityTier:    p.QualityTier,
+		PromptHash:     promptHash,
 	}
-
-	if _, err := w.Jobs.MarkCompleted(ctx, job.ID, job.TenantID, []string{asset.ID}); err != nil {
-		w.log().Error("worker: mark completed", "job_id", jobID, "error", err)
-		return err
-	}
-
-	if err := w.Jobs.MarkProviderAttemptSucceeded(ctx, attempt.ID, int32(latency)); err != nil {
-		w.log().Warn("worker: mark attempt succeeded", "attempt_id", attempt.ID, "error", err)
-	}
-
-	latencyInt := int32(latency)
-	tokenID := job.RequestedByTokenID
-	providerIDPtr := &providerID
-	if err := w.Jobs.InsertCostEvent(ctx, CostEventInsertParams{
-		ID:                ids.NewCostEventID(),
-		TenantID:          job.TenantID,
-		JobID:             &job.ID,
-		AssetID:           &asset.ID,
-		TokenID:           tokenID,
-		ProviderID:        providerIDPtr,
-		ProviderAttemptID: &attempt.ID,
-		Operation:         string(providers.OperationTextToImage),
-		DurationMs:        &latencyInt,
-		Status:            "completed",
-	}); err != nil {
-		w.log().Warn("worker: insert cost event", "job_id", jobID, "error", err)
-	}
-
-	// Commit the cost reservation: reserved → committed, move the held
-	// estimate from reserved to spent, stamp actual_cost on the job + event.
-	// Idempotent — safe if a later retry re-enters after a partial failure.
-	if w.Finalizer != nil {
-		if err := w.Finalizer.Commit(ctx, job.ID); err != nil {
-			w.log().Error("worker: commit cost reservation", "job_id", jobID, "error", err)
-			return err
-		}
-	}
-
-	return nil
 }
 
 type uploadedURLs struct {

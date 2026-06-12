@@ -112,6 +112,12 @@ type Repository interface {
 	GetByIDForTenant(ctx context.Context, id, tenantID string) (Job, error)
 	GetByID(ctx context.Context, id string) (Job, error)
 	MarkRunning(ctx context.Context, id, tenantID string) (Job, error)
+	// MarkPreviewReady is the Phase 7B two-phase intermediate transition: flip
+	// the job to preview_ready and record preview_asset_ids. The worker commits
+	// it BEFORE final generation begins (a separate DB transaction from final
+	// persistence) so the preview state is externally observable before the
+	// final asset exists.
+	MarkPreviewReady(ctx context.Context, id, tenantID string, previewAssetIDs []string) (Job, error)
 	MarkCompleted(ctx context.Context, id, tenantID string, finalAssetIDs []string) (Job, error)
 	MarkFailed(ctx context.Context, id, tenantID, errorCode, errorMessage string, retryable bool) (Job, error)
 	InsertProviderAttempt(ctx context.Context, params ProviderAttemptInsertParams) (ProviderAttempt, error)
@@ -202,6 +208,24 @@ func (r *pgRepository) MarkRunning(ctx context.Context, id, tenantID string) (Jo
 	row, err := r.q.MarkGenerationJobRunning(ctx, dbgen.MarkGenerationJobRunningParams{
 		ID:       id,
 		TenantID: tenantID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Job{}, ErrNotFound
+		}
+		return Job{}, err
+	}
+	return rowToJob(row), nil
+}
+
+func (r *pgRepository) MarkPreviewReady(ctx context.Context, id, tenantID string, previewAssetIDs []string) (Job, error) {
+	if previewAssetIDs == nil {
+		previewAssetIDs = []string{}
+	}
+	row, err := r.q.MarkGenerationJobPreviewReady(ctx, dbgen.MarkGenerationJobPreviewReadyParams{
+		ID:              id,
+		TenantID:        tenantID,
+		PreviewAssetIds: previewAssetIDs,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

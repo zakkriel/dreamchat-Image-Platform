@@ -97,6 +97,13 @@ type Repository interface {
 	GetByIDForTenant(ctx context.Context, id, tenantID string) (VisualAsset, error)
 	Insert(ctx context.Context, params InsertParams) (VisualAsset, error)
 
+	// InsertPreview is the Phase 7B two-phase preview-tier write: identical to
+	// Insert but the new asset lands status='preview_ready' (not 'ready'). It is
+	// the lighter, earlier output of a preview_first job — committed and readable
+	// before final generation runs — and is never a reuse target (the artifact
+	// reuse lookup matches status='ready' only).
+	InsertPreview(ctx context.Context, params InsertParams) (VisualAsset, error)
+
 	// SupersedeAndInsertArtifact is the Phase 6A4 forced-regeneration artifact
 	// write: in one transaction, under a slot advisory lock, it inserts the new
 	// asset as the single ready row for the artifact slot (version =
@@ -140,6 +147,10 @@ func (r *pgRepository) Insert(ctx context.Context, params InsertParams) (VisualA
 	return InsertWithQueries(ctx, r.q, params)
 }
 
+func (r *pgRepository) InsertPreview(ctx context.Context, params InsertParams) (VisualAsset, error) {
+	return InsertPreviewWithQueries(ctx, r.q, params)
+}
+
 // InsertWithQueries runs the visual_assets insert against the supplied
 // queries object, so callers that need the insert inside their own
 // transaction (e.g. the pack worker's atomic asset + pack-item write) can
@@ -162,6 +173,55 @@ func InsertWithQueries(ctx context.Context, q *dbgen.Queries, params InsertParam
 		version = 1
 	}
 	row, err := q.InsertVisualAsset(ctx, dbgen.InsertVisualAssetParams{
+		ID:                  params.ID,
+		TenantID:            params.TenantID,
+		WorldID:             params.WorldID,
+		Version:             version,
+		VisualIdentityID:    params.VisualIdentityID,
+		AssetType:           params.AssetType,
+		VariantKey:          params.VariantKey,
+		VariantFamily:       params.VariantFamily,
+		CompatibilityTags:   tags,
+		FallbackAllowed:     params.FallbackAllowed,
+		FallbackRank:        params.FallbackRank,
+		StyleProfileID:      params.StyleProfileID,
+		StyleProfileVersion: params.StyleProfileVersion,
+		QualityTier:         params.QualityTier,
+		LowResUrl:           params.LowResUrl,
+		HighResUrl:          params.HighResUrl,
+		ThumbnailUrl:        params.ThumbnailUrl,
+		ProviderID:          params.ProviderID,
+		ModelID:             params.ModelID,
+		ProviderRouteID:     params.ProviderRouteID,
+		PromptHash:          params.PromptHash,
+		Seed:                params.Seed,
+		GenerationJobID:     params.GenerationJobID,
+		Metadata:            metadata,
+	})
+	if err != nil {
+		return VisualAsset{}, err
+	}
+	return fromRow(row), nil
+}
+
+// InsertPreviewWithQueries is the Phase 7B preview-tier analogue of
+// InsertWithQueries: same column mapping, but it routes to InsertPreviewVisualAsset
+// so the row lands status='preview_ready'. Exposed for callers that need the
+// insert inside their own transaction.
+func InsertPreviewWithQueries(ctx context.Context, q *dbgen.Queries, params InsertParams) (VisualAsset, error) {
+	tags := params.CompatibilityTags
+	if tags == nil {
+		tags = []string{}
+	}
+	metadata, err := marshalMetadata(params.Metadata)
+	if err != nil {
+		return VisualAsset{}, err
+	}
+	version := params.Version
+	if version == 0 {
+		version = 1
+	}
+	row, err := q.InsertPreviewVisualAsset(ctx, dbgen.InsertPreviewVisualAssetParams{
 		ID:                  params.ID,
 		TenantID:            params.TenantID,
 		WorldID:             params.WorldID,

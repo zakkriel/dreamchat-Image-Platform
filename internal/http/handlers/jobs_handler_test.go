@@ -42,6 +42,9 @@ func (s *stubJobsRepo) GetByID(_ context.Context, id string) (jobs.Job, error) {
 func (s *stubJobsRepo) MarkRunning(context.Context, string, string) (jobs.Job, error) {
 	return jobs.Job{}, nil
 }
+func (s *stubJobsRepo) MarkPreviewReady(context.Context, string, string, []string) (jobs.Job, error) {
+	return jobs.Job{}, nil
+}
 func (s *stubJobsRepo) MarkCompleted(context.Context, string, string, []string) (jobs.Job, error) {
 	return jobs.Job{}, nil
 }

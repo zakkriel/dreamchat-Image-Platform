@@ -163,6 +163,18 @@ func (h *AssetsHandler) JobAssets(w http.ResponseWriter, r *http.Request) {
 // deliveryOrder returns the job's delivered asset ids in deterministic
 // delivery order. For a pack job it follows asset_pack_items.sort_order; for
 // an artifact job it follows generation_jobs.final_asset_ids.
+//
+// Phase 7B two-phase delivery: when an artifact job has no final assets yet but
+// does have preview assets, the preview assets are returned. This is what makes
+// a preview observable through this endpoint before final completion:
+//   - preview_ready job (final empty, preview present) → preview asset(s)
+//   - completed job (final present)                    → final asset(s)
+//   - failed-after-preview (final empty, preview present) → preview asset(s)
+//
+// final_asset_ids takes precedence over preview_asset_ids, so a completed job
+// returns its final asset (the preview is not appended — the final supersedes it
+// for delivery). A final_only job is unaffected: its final_asset_ids drives the
+// response exactly as before.
 func (h *AssetsHandler) deliveryOrder(ctx context.Context, job jobs.Job) ([]string, error) {
 	if job.AssetPackID != nil && *job.AssetPackID != "" {
 		items, err := h.Jobs.ListAssetPackItems(ctx, *job.AssetPackID)
@@ -174,6 +186,9 @@ func (h *AssetsHandler) deliveryOrder(ctx context.Context, job jobs.Job) ([]stri
 			ids = append(ids, item.VisualAssetID)
 		}
 		return ids, nil
+	}
+	if len(job.FinalAssetIds) == 0 && len(job.PreviewAssetIds) > 0 {
+		return job.PreviewAssetIds, nil
 	}
 	return job.FinalAssetIds, nil
 }

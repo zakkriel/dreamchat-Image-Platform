@@ -22,6 +22,12 @@ const (
 	// produce an identity-consistent multi-role pack. Mock advertises it; BFL
 	// (conservative floor) does not, so BFL cannot serve packs in 7A.
 	capabilityPackCapable = "pack_capable"
+	// previewCapabilityTruePreview is the hard preview requirement a
+	// delivery_mode=preview_first request imposes on route resolution (Phase 7B):
+	// only a route whose preview_capability is true_preview can serve it. Mock
+	// advertises true_preview; BFL advertises no_preview, so BFL is excluded from
+	// preview-first. There is no derived_preview fallback in 7B.
+	previewCapabilityTruePreview = "true_preview"
 )
 
 // RouteResolver is the handler-facing view of the provider route resolver
@@ -122,4 +128,11 @@ func applyResolvedRoute(params *jobs.CreateAndEnqueueParams, payload map[string]
 	payload["provider_id"] = resolved.ProviderID
 	payload["model_id"] = resolved.ProviderModelID
 	payload["provider_route_id"] = resolved.ProviderRouteID
+	// Phase 7B: persist the resolved route's preview capability as provenance so
+	// the worker can confirm a preview_first job resolved a true_preview route
+	// without re-resolving. Harmless for final-only/pack jobs (the worker only
+	// two-phases when delivery_mode == preview_first AND this == true_preview).
+	if resolved.PreviewCapability != "" {
+		payload["preview_capability"] = resolved.PreviewCapability
+	}
 }

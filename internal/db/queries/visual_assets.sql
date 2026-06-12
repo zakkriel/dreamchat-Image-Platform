@@ -172,6 +172,40 @@ RETURNING id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
           generation_job_id, metadata, generated_at,
           created_at, updated_at, superseded_by_asset_id;
 
+-- name: InsertPreviewVisualAsset :one
+-- Phase 7B two-phase preview tier. Identical column mapping to InsertVisualAsset
+-- but the asset always lands status='preview_ready' (not 'ready'): it is the
+-- lighter, earlier output of a preview_first job, committed and observable
+-- before the final asset is generated. It is never a reuse target (the artifact
+-- reuse lookup matches status='ready' only), so a preview row never satisfies a
+-- later request. version is supplied by the caller (the preview path passes 1).
+INSERT INTO visual_assets (
+    id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
+    variant_family, compatibility_tags, fallback_allowed, fallback_rank,
+    style_profile_id, style_profile_version,
+    quality_tier, status, version,
+    low_res_url, high_res_url, thumbnail_url,
+    provider_id, model_id, provider_route_id, prompt_hash, seed,
+    generation_job_id, metadata, generated_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6,
+    $7, $8, $9, $10,
+    $11, $12,
+    $13, 'preview_ready', sqlc.arg('version'),
+    $14, $15, $16,
+    $17, $18, $19, $20, $21,
+    $22, $23, now()
+)
+RETURNING id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
+          variant_family, version, state_version, style_profile_id,
+          style_profile_version, quality_tier, status,
+          compatibility_tags, fallback_allowed, fallback_rank, is_identity_anchor,
+          low_res_url, high_res_url, thumbnail_url,
+          provider_id, model_id, provider_route_id,
+          prompt_hash, seed, reference_asset_ids,
+          generation_job_id, metadata, generated_at,
+          created_at, updated_at, superseded_by_asset_id;
+
 -- name: AcquireSupersedeLock :exec
 -- Phase 6A4 supersede concurrency control: a transaction-scoped advisory lock
 -- keyed on the exact regeneration slot. Two concurrent forced regenerations of

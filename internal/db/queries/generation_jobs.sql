@@ -142,6 +142,28 @@ RETURNING id, tenant_id, world_id, job_type, status,
           queue_duration_ms, generation_duration_ms,
           created_at, updated_at, started_at, completed_at;
 
+-- name: MarkGenerationJobPreviewReady :one
+-- Phase 7B two-phase generation: the preview tier landed. Flip the job to
+-- preview_ready and record preview_asset_ids. This is committed BEFORE final
+-- generation begins (a separate transaction from final persistence) so the
+-- preview state is externally observable through the job read and the
+-- job-assets read before the final asset exists. final_asset_ids stays empty
+-- until MarkGenerationJobCompleted runs after final success.
+UPDATE generation_jobs
+SET status = 'preview_ready',
+    preview_asset_ids = $3,
+    updated_at = now()
+WHERE id = $1
+  AND tenant_id = $2
+RETURNING id, tenant_id, world_id, job_type, status,
+          requested_by_token_id, visual_identity_id, asset_pack_id,
+          input_payload, requested_outputs, fallback_policy, cache_result,
+          preview_asset_ids, final_asset_ids,
+          error_code, error_message, retryable,
+          cost_reservation_id, cost_estimate_usd, actual_cost_usd,
+          queue_duration_ms, generation_duration_ms,
+          created_at, updated_at, started_at, completed_at;
+
 -- name: MarkGenerationJobFailed :one
 UPDATE generation_jobs
 SET status = 'failed',
