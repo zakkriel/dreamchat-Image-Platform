@@ -116,29 +116,50 @@ type ImageProvider interface {
 
 ## Deferred to later phases (explicit)
 
-These are **not** Phase 0–7 scope. They are tracked here so nobody
-accidentally pulls them in.
+These were tracked here so nobody accidentally pulls them in. Two of them
+(RLS and webhooks) were **later, deliberately** pulled forward into Phase 7C
+as production-control hardening — see the **scope-move note** at the end of
+this section. The rest remain deferred / non-MVP.
 
-- `POST /v1/admin/audit-events` endpoint — runbooks reference it for
-  manual audit entries during the **MANUAL** fallback period. Add it
-  when admin tooling lands (Phase 7).
-- Token-pepper rotation runbook — design noted in ADR-005, no runbook
-  written. Defer past Phase 3.
+- `POST /v1/admin/audit-events` (and `GET /v1/admin/audit-events`) endpoint —
+  **non-MVP / planned, not implemented.** The `audit_events` table exists and
+  is written **internally** (in-transaction) by the served admin write
+  endpoints. There is **no** public/manual admin audit-events endpoint today;
+  runbooks must not imply one exists (manual incident actions are recorded in
+  the incident ticket, and the automatic `audit_events` rows are the durable
+  trail). Build the manual endpoint only if/when a dedicated admin-audit need
+  is confirmed.
+- Token-pepper rotation runbook — rotating `API_TOKEN_PEPPER`; design noted in
+  ADR-005, **no runbook written**. Still deferred. (The existing
+  `docs/runbooks/token-rotation.md` covers *API-token* rotation, not pepper
+  rotation.)
 - LLM-judge → 1–5 score mapping for the benchmark runner. Human review
   is the only scoring method until then.
 - Configurable safety margin on cost reservations
-  (`reserved_amount = estimated_amount × (1 + margin)`). Pick a default
-  before enabling enforcement, not before code starts.
+  (`reserved_amount = estimated_amount × (1 + margin)`). **Not needed for
+  MVP** — reservations equal the estimate. Revisit only when provider-reported
+  cost reconciliation exists.
 - UTC vs. tenant-local midnight for budget period reset. UTC for MVP;
   revisit when serving customers across timezones.
-- Provider-reported cost reconciliation worker. Reservations stay in
-  `committed` with `actual_amount = estimated_amount` until a future
-  reconciliation job overwrites with real reported cost.
-- Row-level security (RLS) policies. Tenant isolation in the
-  application layer for MVP; RLS is a future hardening pass.
-- Webhooks (`generation_job.preview_ready`, `.completed`, `.failed`).
-  Clients poll for MVP; webhooks land alongside web-app integration in
-  Phase 6 if needed.
+- Provider-reported cost reconciliation worker — **not implemented.**
+  Reservations stay `committed` with `actual_amount = estimated_amount` until a
+  future reconciliation job overwrites with real reported cost.
+- ~~Row-level security (RLS) policies.~~ **Pulled into Phase 7C-3** (see
+  scope-move note) — RLS is now ENABLEd + FORCEd as defense-in-depth, with the
+  app-level tenant predicates retained.
+- ~~Webhooks (`generation_job.preview_ready`, `.completed`, `.failed`).~~
+  **Pulled into Phase 7C-4** (see scope-move note) — MVP-tight outbound
+  webhooks: one signed endpoint per tenant, the three job-lifecycle events,
+  at-least-once delivery. Polling remains supported.
+
+**Scope-move note (RLS + webhooks).** RLS and webhooks were *originally*
+deferred above. They were **intentionally** pulled into Phase 7C as
+production-control hardening (RLS → 7C-3, webhooks → 7C-4). This was a
+**deliberate scope move**, not accidental drift and not an expansion of product
+scope; both shipped MVP-tight. Their post-7C residue (worker BYPASSRLS pool,
+broad API-role grants, webhook at-least-once / no-DLQ / no-replay / no-rotation
+/ single-endpoint limits) is catalogued in `IMPLEMENTATION_STATUS.md` under
+"Post-7C known residue / explicit non-MVP."
 
 ## Phase 0 acceptance
 

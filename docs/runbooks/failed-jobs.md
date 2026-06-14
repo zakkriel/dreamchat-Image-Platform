@@ -134,7 +134,14 @@ If §2 shows a single provider is the source of most failures:
 |---|---|---|
 | §4 retry | `admin.job.retried` (one per job) | Endpoint emits |
 | §5 cancel | `admin.job.cancelled` (one per job) | Endpoint emits |
-| Any **MANUAL** action | Written by hand via planned `POST /v1/admin/audit-events` | Operator |
+| Any **MANUAL** action | Record in the incident ticket | Operator |
+
+> **Note (audit trail).** The served admin job endpoints
+> (`POST /v1/admin/jobs/{job_id}/retry|cancel`) write `audit_events` rows
+> automatically. There is **no** `POST /v1/admin/audit-events` /
+> `GET /v1/admin/audit-events` endpoint — those are **non-MVP / planned**. For
+> **MANUAL** actions, record them in the incident ticket; to review the
+> automatic trail, query the `audit_events` table directly (read-only SQL).
 
 ## 9. Follow-up
 

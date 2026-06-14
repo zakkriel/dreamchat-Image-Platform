@@ -207,7 +207,10 @@ func (rt *Retriever) bestMatch(q RetrievalQuery, requested ClassifiedVariant, ca
 		if !outcomeAllowedByPolicy(verdict.Outcome, q.FallbackPolicy) {
 			continue
 		}
-		// Matrix §2 product-safety override (stubbed in 6A1).
+		// Matrix §2 world-state safety OVERRIDE (deliberate stub; see func
+		// doc). Matrix safety itself — invalid_match exclusion above and the
+		// outcome/policy gating — is already active; this override is the only
+		// deferred part.
 		if !passesWorldStateSafetyFilter(q, c, requested, candidate) {
 			continue
 		}
@@ -345,11 +348,17 @@ func fallbackReason(entityType string, requested, candidate ClassifiedVariant, o
 
 // passesWorldStateSafetyFilter is the matrix §2 product-safety gate: a
 // candidate that would visually contradict known world state must be rejected
-// even when the matrix says "compatible". Real world-state safety filtering is
-// DEFERRED — it depends on world-state hints (scene_mood, recent canonical
-// events) that the retrieval call does not yet carry. For Phase 6A1 this is a
-// deliberate stub that always returns true. Do not wire generation decisions
-// to it as if it were enforcing anything yet.
+// even when the matrix says "compatible".
+//
+// This is the WORLD-STATE-AWARE override specifically, and it is DEFERRED, not a
+// silent no-op of the whole safety system. Matrix safety is active and
+// conservative today: invalid_match candidates are excluded, and reuse is gated
+// by outcome + fallback policy before this function is consulted. Only the
+// world-state override is deferred — it depends on world-state hints (scene_mood,
+// recent canonical events) that the retrieval call does not yet carry, so for now
+// this is a deliberate, documented stub that always returns true. Do not wire new
+// generation decisions to it as if it were enforcing world-state contradictions
+// yet. Tracked under "Post-7C known residue" in IMPLEMENTATION_STATUS.md.
 func passesWorldStateSafetyFilter(_ RetrievalQuery, _ VisualAsset, _ ClassifiedVariant, _ ClassifiedVariant) bool {
 	return true
 }

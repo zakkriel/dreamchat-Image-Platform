@@ -223,9 +223,14 @@ After the incident:
 | §4b route disable | `admin.route.disabled` | Endpoint emits |
 | §4c create budget | `admin.cost_budget.created` | Endpoint emits |
 | §6 price-book update | `admin.price_book.created` (new entry) and `admin.price_book.updated` (previous entry's `effective_to` set) | Endpoints emit |
-| Any **MANUAL** action | Written by hand via planned `POST /v1/admin/audit-events` | Operator |
+| Any **MANUAL** action | Record in the incident ticket | Operator |
 
-Verify in `GET /v1/admin/audit-events` (planned).
+> **Note (audit trail).** The served admin cost endpoints (price-book and
+> cost-budget writes) write `audit_events` rows automatically, in the same
+> transaction as the change. There is **no** `POST /v1/admin/audit-events` /
+> `GET /v1/admin/audit-events` endpoint — those are **non-MVP / planned**. For
+> **MANUAL** actions, record them in the incident ticket; to review the
+> automatic trail, query the `audit_events` table directly (read-only SQL).
 
 ---
 

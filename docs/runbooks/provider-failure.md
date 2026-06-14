@@ -141,13 +141,20 @@ The following audit_events should be written during this runbook:
 
 | When | event_type | Source |
 |---|---|---|
-| §4 disable | `admin.provider.disabled` or `admin.route.disabled` | Endpoint emits |
-| §6 retry | `admin.job.retried` (one per retried job) | Endpoint emits |
-| §7 enable | `admin.provider.enabled` or `admin.route.enabled` | Endpoint emits |
-| Any **MANUAL** action | Written by hand via `POST /v1/admin/audit-events` (planned) | Operator |
+| §4 disable | `admin.provider.disabled` or `admin.route.disabled` | Endpoint emits (planned endpoint) |
+| §6 retry | `admin.job.retried` (one per retried job) | Endpoint emits (planned endpoint) |
+| §7 enable | `admin.provider.enabled` or `admin.route.enabled` | Endpoint emits (planned endpoint) |
+| Any **MANUAL** action | Record in the incident ticket | Operator |
 
-Verify in `GET /v1/admin/audit-events` (planned, scope `admin:tokens` for
-now until a dedicated `admin:audit` scope is introduced).
+> **Note (audit trail).** Served admin write endpoints write `audit_events`
+> rows automatically, in the same transaction as the change. There is **no**
+> `POST /v1/admin/audit-events` or `GET /v1/admin/audit-events` endpoint —
+> those are **non-MVP / planned**. For **MANUAL** actions, record what you did
+> in the incident ticket; do not assume an endpoint will capture it. To review
+> the automatic trail, query the `audit_events` table directly (read-only SQL).
+> The provider/route disable/enable rows above appear only once those admin
+> endpoints are implemented (still **planned** — see
+> `docs/architecture/admin-control-surface.md`).
 
 ## 9. Follow-up
 
