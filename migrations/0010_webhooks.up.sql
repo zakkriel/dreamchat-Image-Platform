@@ -85,9 +85,13 @@ CREATE INDEX idx_webhook_deliveries_job ON webhook_deliveries(generation_job_id)
 --     exactly like the rest of the worker under 7C-3 — it bypasses the policy
 --     but still scopes by explicit tenant_id / by-id predicates.
 --
--- DML grants need no statement here: migration 0009 set ALTER DEFAULT
--- PRIVILEGES for image_platform_api / image_platform_system, so tables created
--- by this later migration inherit the SELECT/INSERT/UPDATE/DELETE grants.
+-- DML grants are made EXPLICIT below rather than relying only on the
+-- ALTER DEFAULT PRIVILEGES that migration 0009 set for image_platform_api /
+-- image_platform_system. Default privileges only apply to objects created by
+-- the SAME role that ran the ALTER DEFAULT PRIVILEGES; in production the
+-- migration owner may differ from the role that ran 0009, in which case these
+-- tables would silently lack grants. Explicit grants make this production-
+-- control PR robust to migration ownership.
 -- ---------------------------------------------------------------------------
 DO $$
 DECLARE
@@ -105,3 +109,13 @@ BEGIN
     $f$, t);
   END LOOP;
 END $$;
+
+-- Explicit table privileges for both roles (see the note above). This does NOT
+-- weaken RLS: image_platform_api still has no BYPASSRLS, so it remains fully
+-- subject to the tenant_isolation policy above; the grant only gives it the DML
+-- privilege the policy then scopes. image_platform_system (BYPASSRLS) needs the
+-- grant so the worker can emit/deliver webhooks (BYPASSRLS bypasses POLICIES,
+-- not GRANTS).
+GRANT SELECT, INSERT, UPDATE, DELETE
+ON webhook_endpoints, webhook_deliveries
+TO image_platform_api, image_platform_system;
