@@ -10,6 +10,14 @@ before this is production-ready.**
 ## Done
 
 - **Phase 0** — skeleton: health, config, docker, migrations.
+- **Phase 1** — auth + docs surface (status correction; this line was
+  previously missing from the Done list even though the work shipped in
+  `092059f` / `d2dc4e2`). Bearer-token authentication (ADR-004), store-only
+  hashed tokens with `API_TOKEN_PEPPER` (ADR-005), the scope-enforcement
+  middleware (`images:*`, `jobs:*`, `styles:*`, `models:*`, `admin:*`), DB
+  wiring, and the OpenAPI docs surface (ADR-015): `GET /openapi.json` +
+  `GET /docs`, gated by `OPENAPI_DOCS_ENABLED` (served unauthenticated in
+  dev/test; default-off in live, and bearer-gated when enabled in live).
 - **Phase 2** — visual-identity CRUD + style profiles.
 - **Phase 3** — generation pipeline: artifact generate, jobs, worker,
   idempotency, S3 writes.
@@ -426,13 +434,84 @@ before this is production-ready.**
 
 ## Remaining
 
-- **None for the Phase 7 implementation track** — Phase 7C-4 closes Phase 7C and
-  the planned phase sequence. Post-7C reconciliation (Phase 1 status correction,
-  the known-residue / explicit-non-MVP list, the deferred-scope note for
-  RLS/webhooks, and the admin audit-events / cost-margin / product-safety-filter
-  decisions) is tracked as a separate closure pass, **not** a phase.
+- **None for the Phase 7 implementation track.** Phase 7C-3 (RLS / tenant
+  isolation) is **Done**, Phase 7C-4 (provider fallback chains + outbound
+  webhooks) is **Done**, and there is **no remaining Phase 7 implementation
+  work**. Phase 7C-4 closes Phase 7C and the planned phase sequence. The items
+  below are documentation/closure reconciliation, **not** a new phase and not new
+  product scope.
+
+## Scope move — RLS and webhooks were deliberately pulled into Phase 7C
+
+`DECISIONS.md` originally listed **row-level security (RLS)** and **outbound
+webhooks** under "Deferred to later phases." During Phase 7C they were
+**intentionally pulled forward** as production-control hardening: RLS landed in
+7C-3 (defense-in-depth tenant isolation under FORCE RLS) and webhooks in 7C-4
+(MVP-tight, one signed endpoint per tenant). This was a **deliberate scope move**
+made because they are production controls, **not accidental drift** and **not**
+an expansion of product scope. The stale "deferred" wording in `DECISIONS.md`
+has been annotated to reflect this.
+
+## Post-7C known residue / explicit non-MVP
+
+Everything below is **known and intentional**. None of it is a Phase 7
+implementation blocker; none of it is silently broken. These are the honest
+edges of the MVP.
+
+- **Product-safety retrieval filter.** Matrix safety (the §2 rule that an
+  `invalid_match` candidate is never reused; the exact → compatible → preview
+  gating) **is active and conservative** today. The *world-state-aware override*
+  (`passesWorldStateSafetyFilter`) is **intentionally deferred** — it would
+  reject a matrix-compatible candidate that contradicts known world state, but
+  it depends on world-state hints the retrieval call does not yet carry. It is a
+  deliberate, documented placeholder that returns `true`; matrix safety is **not**
+  a silent no-op.
+- **Cost reservation margin.** The configurable safety margin
+  (`reserved_amount = estimated_amount × (1 + margin)`) is **not needed for
+  MVP** — reservations equal the estimate. Revisit only when provider-reported
+  cost reconciliation exists (there is no reconciliation worker today; committed
+  reservations keep `actual = estimated`).
+- **Admin audit-events endpoint.** The `audit_events` **table exists** and is
+  written **internally** in-transaction by the served admin write endpoints
+  (price-book / cost-budget changes, etc.). There is **no** public/manual admin
+  audit-events endpoint — `POST /v1/admin/audit-events` and
+  `GET /v1/admin/audit-events` are **non-MVP / planned**. Docs and runbooks must
+  not imply that endpoint exists today. (This PR does **not** implement it.)
+- **Worker RLS residual.** The worker runs on the **system / BYPASSRLS** pool.
+  Worker tenant safety is therefore **app-level predicates** (explicit
+  `tenant_id` scoping in queries), **not** RLS enforcement. RLS enforcement
+  covers the tenant request path (the `image_platform_api` role); the worker is
+  trusted by construction.
+- **API-role grant hardening.** The `image_platform_api` role's grants on
+  **global / config tables** (e.g. provider reference tables) are **broader than
+  ideal**. Future hardening can tighten API-role grants to **read-only** where
+  appropriate. Not an MVP blocker.
+- **Same-price fallback limitation.** Provider fallback (7C-4) only fires when
+  **at least two same-priced routes exist** for an operation (option A: no
+  re-reservation, so every alternate must match the primary's unit price). The
+  **default seed data may not provide such parity routes**, so fallback can be a
+  no-op on a fresh seed. This is **intended under option A and not a bug**.
+- **Webhook MVP limitations.** Outbound webhooks are deliberately minimal:
+  **at-least-once** delivery (not exactly-once); **no** dead-letter queue; **no**
+  replay UI; **no** signature-rotation endpoint; **no** multiple endpoints per
+  tenant; **no** event-subscription management. Receivers **should dedupe**
+  events (by `job_id` + event type / `occurred_at`).
+- **Webhook delivery residue.** If a `webhook_deliveries` row is inserted but the
+  asynq enqueue fails, there is **no sweeper** to re-drive it yet. Documented as
+  **future hardening**, not a Phase 7 blocker.
+- **Webhook-table RLS test residue.** `webhook_endpoints` / `webhook_deliveries`
+  have the **same** ENABLE + FORCE RLS + deny-by-default policy/migration shape
+  as the 7C-3 tables (migration `0010`). There is **not yet a dedicated DB
+  integration test** proving `webhook_endpoints` / `webhook_deliveries` tenant
+  isolation specifically; the policy shape is identical to the 7C-3 tables that
+  are covered. (Optional future add: a tiny isolation test that touches no
+  runtime behavior.)
+- **Token-pepper rotation.** Rotating `API_TOKEN_PEPPER` is noted in ADR-005 and
+  remains deferred — there is **no pepper-rotation runbook**. (The existing
+  `docs/runbooks/token-rotation.md` covers *API-token* rotation/revocation
+  accurately; it does **not** cover pepper rotation.)
 
 ## Notes
 
 - Phase numbers here are the **only** authoritative sequencing.
-- Each remaining phase is a separate PR. Do not compress 5/6 into one.
+- Each phase is a separate PR. Do not compress phases into one.

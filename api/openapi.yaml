@@ -487,15 +487,22 @@ paths:
           $ref: '#/components/responses/ErrorResponse'
 
   # ==========================================================================
-  # Admin Control Surface — PLANNED
+  # Admin Control Surface — PARTIALLY IMPLEMENTED
   #
-  # All endpoints under /v1/admin/ are the required admin surface for
-  # implementation, referenced by the operational runbooks. NONE of them
-  # are served by the running service today. Marked with `**PLANNED**` in
-  # every description until implemented.
+  # Endpoints under /v1/admin/ are the admin surface referenced by the
+  # operational runbooks. Some are now served; the rest remain planned.
+  #   Served today: the cost surface (price-book, cost-budgets,
+  #   cost-reservations/cost-events — Phase 4B), admin job control
+  #   (jobs/{id}/cancel|retry — Phase 7C-1), and webhook-endpoint config
+  #   (PUT/GET /v1/admin/webhook-endpoint — Phase 7C-4).
+  #   Still planned (NOT served): provider controls, route controls, the
+  #   admin job LIST endpoint. These keep the `**PLANNED**` marker in their
+  #   description until implemented.
+  # There is NO /v1/admin/audit-events endpoint (planned / non-MVP); the
+  # audit_events table is written internally by the served admin endpoints.
   #
-  # See docs/architecture/admin-control-surface.md for design rationale,
-  # implementation order, and audit-event expectations.
+  # See docs/architecture/admin-control-surface.md for design rationale and
+  # implementation order.
   # ==========================================================================
   /v1/admin/providers:
     get:
@@ -2488,8 +2495,10 @@ components:
 #   + Variant matching is now deterministic and product-safe.
 #   − `canonical_visual_traits` and VisualAsset.metadata remain free-form
 #     `object` (intentional — PRDs 03 and 04 define shape loosely).
-#   − Admin endpoints are spec-only; until implementation, runbooks
-#     reference them via PLANNED markers and manual fallbacks.
-#   − Product-safety filter (matrix §2) is a stub at MVP — grows as the
-#     product surfaces more world-state hints to the retrieval call.
+#   − Admin endpoints are partially implemented: the cost surface, admin
+#     job cancel/retry, and webhook-endpoint config are served; the rest
+#     keep PLANNED markers and the runbooks use manual fallbacks for them.
+#   − The product-safety world-state override (matrix §2) is a deliberate
+#     stub at MVP (matrix safety itself is active) — the override grows as
+#     the product surfaces more world-state hints to the retrieval call.
 # ----------------------------------------------------------------------------

@@ -1,12 +1,23 @@
-# Admin Control Surface (planned)
+# Admin Control Surface (partially implemented)
 
-> **Status: required admin surface for implementation. Not yet served.**
+> **Status: required admin surface for the operational runbooks. Partially
+> implemented — some endpoints are served, the rest are still planned.**
 >
 > Endpoints described here are referenced by the operational runbooks
 > (`docs/runbooks/provider-failure.md`, `docs/runbooks/failed-jobs.md`,
 > `docs/runbooks/cost-spike.md`). They are defined in `docs/api/openapi.yaml`
-> under the `Admin` tag with explicit `**PLANNED**` markers. None of this
-> tooling exists in code yet — this document is the specification for it.
+> under the `Admin` tag; endpoints **not yet served** carry explicit
+> `**PLANNED**` markers there.
+>
+> **Served today:** the cost surface (price-book CRUD, cost-budget CRUD,
+> cost-reservations / cost-events list — Phase 4B, scope `admin:costs`), admin
+> job control (`POST /v1/admin/jobs/{job_id}/cancel|retry` — Phase 7C-1, scope
+> `admin:jobs`), and the webhook-endpoint config (`PUT`/`GET
+> /v1/admin/webhook-endpoint` — Phase 7C-4, scope `admin:jobs`).
+>
+> **Still planned (not served):** provider controls, route controls, the admin
+> job **list** endpoint, and `POST`/`GET /v1/admin/audit-events`. These remain
+> the specification for future work.
 
 ## Purpose
 
@@ -140,8 +151,14 @@ yet. Such steps must:
 
 - be explicitly marked `**MANUAL**`,
 - describe exactly what the operator does (SQL query, queue command, etc.),
-- name the audit_event that must be written by hand afterwards (using the
-  `POST /v1/admin/audit-events` endpoint, when that lands).
+- be recorded in the incident ticket afterwards.
+
+There is **no** `POST /v1/admin/audit-events` endpoint for writing manual audit
+entries — that endpoint is **non-MVP / planned** and may never be built. The
+`audit_events` table is written **automatically** by the served admin write
+endpoints; **MANUAL** actions are not captured there, so record them in the
+incident ticket instead. To review the automatic trail, query the
+`audit_events` table directly (read-only SQL).
 
 Manual actions are a temporary bridge between "we know this needs to happen"
 and "we've built the endpoint for it."
