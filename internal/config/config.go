@@ -30,9 +30,16 @@ type Config struct {
 	LogLevel          string
 	WorkerConcurrency int
 
-	PostgresDSN   string
-	RedisAddr     string
-	RedisPassword string
+	PostgresDSN string
+	// PostgresSystemDSN is the DSN for the system / BYPASSRLS role
+	// (image_platform_system), used for pre-tenant auth lookups, the worker, the
+	// system cost lifecycle, and explicit admin cross-tenant operations
+	// (Phase 7C-3). When empty it falls back to PostgresDSN — acceptable for
+	// local/dev/CI, where the configured role already bypasses RLS (superuser),
+	// but production must set both DSNs to distinct roles. See SystemDSN().
+	PostgresSystemDSN string
+	RedisAddr         string
+	RedisPassword     string
 
 	S3Bucket          string
 	S3Region          string
@@ -59,9 +66,10 @@ func Load() (*Config, error) {
 		LogLevel:          getEnv("LOG_LEVEL", "info"),
 		WorkerConcurrency: getEnvInt("WORKER_CONCURRENCY", 4),
 
-		PostgresDSN:   getEnv("POSTGRES_DSN", ""),
-		RedisAddr:     getEnv("REDIS_ADDR", ""),
-		RedisPassword: getEnv("REDIS_PASSWORD", ""),
+		PostgresDSN:       getEnv("POSTGRES_DSN", ""),
+		PostgresSystemDSN: getEnv("POSTGRES_SYSTEM_DSN", ""),
+		RedisAddr:         getEnv("REDIS_ADDR", ""),
+		RedisPassword:     getEnv("REDIS_PASSWORD", ""),
 
 		S3Bucket:          getEnv("S3_BUCKET", ""),
 		S3Region:          getEnv("S3_REGION", ""),
@@ -102,6 +110,19 @@ func (c *Config) AvailableProviders() map[string]bool {
 		available[string(ProviderBFL)] = true
 	}
 	return available
+}
+
+// SystemDSN resolves the DSN for the system / BYPASSRLS role. It returns
+// PostgresSystemDSN when set, otherwise falls back to PostgresDSN. The fallback
+// keeps local/dev/CI working when only POSTGRES_DSN is configured (the role
+// there bypasses RLS already); production deployments must set
+// POSTGRES_SYSTEM_DSN to a dedicated BYPASSRLS role distinct from the
+// RLS-enforced API role.
+func (c *Config) SystemDSN() string {
+	if c.PostgresSystemDSN != "" {
+		return c.PostgresSystemDSN
+	}
+	return c.PostgresDSN
 }
 
 func (c *Config) validate() error {

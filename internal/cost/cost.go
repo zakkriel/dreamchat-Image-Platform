@@ -355,8 +355,21 @@ type Finalizer interface {
 	Release(ctx context.Context, jobID string) error
 }
 
-// Lifecycle is the Postgres-backed Finalizer. It owns its own pool because the
-// worker runs outside any request transaction.
+// Lifecycle is the Postgres-backed Finalizer. It is dual-context and
+// executor-agnostic (Phase 7C-3):
+//
+//   - From the worker (system / BYPASSRLS) the standalone Commit/Release open a
+//     transaction on the pool the Lifecycle was constructed with — that pool is
+//     the system pool, so RLS is bypassed and the worker (which knows only a
+//     job id) can finalize without a tenant GUC.
+//   - From the request-path admin cancel/retry it is invoked via CommitInTx /
+//     ReleaseInTx on the caller's transaction, which is tenant-local: the admin
+//     service set app.current_tenant inside that transaction, so the same code
+//     runs correctly under RLS without choosing its own pool or hardcoding the
+//     system executor.
+//
+// It must never select a pool for itself beyond the one it was handed at
+// construction, and the in-tx methods must operate purely on the caller's tx.
 type Lifecycle struct {
 	pool   *pgxpool.Pool
 	logger *slog.Logger
@@ -403,6 +416,17 @@ func (l *Lifecycle) finalize(ctx context.Context, jobID, target string) error {
 	}
 	committed = true
 	return nil
+}
+
+// CommitInTx commits a job's reservation within the caller's transaction
+// (reserved → committed, moving each held amount from reserved to spent and
+// stamping the job's actual cost), without committing the transaction. It is
+// the executor-agnostic counterpart to ReleaseInTx: the caller owns the tx and
+// is responsible for the tenant GUC (a request-path admin tx that set
+// app.current_tenant, or a system/bypass tx). Like Commit it is a no-op when
+// the reservation is not in `reserved`.
+func (l *Lifecycle) CommitInTx(ctx context.Context, tx pgx.Tx, jobID string) error {
+	return l.finalizeInTx(ctx, tx, jobID, statusCommitted)
 }
 
 // ReleaseInTx releases a job's reservation within the caller's transaction

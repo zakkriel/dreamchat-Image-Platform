@@ -18,6 +18,7 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/auth"
 	"github.com/zakkriel/drchat-image-platform/internal/config"
 	"github.com/zakkriel/drchat-image-platform/internal/cost"
+	appdb "github.com/zakkriel/drchat-image-platform/internal/db"
 	apphttp "github.com/zakkriel/drchat-image-platform/internal/http"
 	"github.com/zakkriel/drchat-image-platform/internal/identities"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
@@ -42,12 +43,28 @@ func main() {
 		"image_provider", string(cfg.ImageProvider),
 	)
 
-	pool, err := openPool(cfg.PostgresDSN)
+	// Phase 7C-3: two pools. The tenant pool connects as the RLS-enforced API
+	// role (POSTGRES_DSN / image_platform_api) and backs every normal tenant
+	// request handler + the jobs/admin-job services (which set app.current_tenant
+	// inside their own transactions). The system pool connects as the BYPASSRLS
+	// role (POSTGRES_SYSTEM_DSN / image_platform_system) and backs only the
+	// explicit system / pre-tenant / admin-cross-tenant paths: auth token lookup,
+	// the async last-used touch, the route resolver (global reference data), and
+	// the admin cost surface.
+	tenantPool, err := openPool(cfg.PostgresDSN)
 	if err != nil {
-		logger.Error("postgres connect failed", "error", err)
+		logger.Error("postgres connect failed (tenant pool)", "error", err)
 		os.Exit(1)
 	}
-	defer pool.Close()
+	defer tenantPool.Close()
+
+	systemPool, err := openPool(cfg.SystemDSN())
+	if err != nil {
+		logger.Error("postgres connect failed (system pool)", "error", err)
+		os.Exit(1)
+	}
+	defer systemPool.Close()
+	systemDB := appdb.NewSystemDB(systemPool)
 
 	enqueuer := jobs.NewEnqueuer(cfg.RedisAddr, cfg.RedisPassword)
 	defer func() { _ = enqueuer.Close() }()
@@ -60,7 +77,10 @@ func main() {
 	defer func() { _ = redisClient.Close() }()
 	rateLimiter := ratelimit.New(ratelimit.NewRedisStore(redisClient), logger)
 
-	finalizer := cost.NewLifecycle(pool, logger)
+	// The finalizer is invoked from request-path services (jobs create enqueue
+	// failure, admin cancel/retry) only via its executor-agnostic in-tx methods,
+	// composed into tenant-scoped transactions on the tenant pool.
+	finalizer := cost.NewLifecycle(tenantPool, logger)
 
 	// Phase 6B: the API needs the object-storage read side so asset/job-assets
 	// reads can mint presigned per-tier download URLs (the worker already has
@@ -81,22 +101,35 @@ func main() {
 	// Phase 7A: data-driven provider route resolver. It reads provider_routes /
 	// provider_models and only selects routes to providers configured in this
 	// process (cfg.AvailableProviders): mock always; bfl only with a key.
-	resolver := routing.NewResolver(routing.NewDBRouteSource(pool), cfg.AvailableProviders())
+	// Route resolution reads global reference tables (provider_routes /
+	// provider_models), which carry no tenant_id and are NOT RLS-protected, so it
+	// runs on the system pool.
+	resolver := routing.NewResolver(routing.NewDBRouteSource(systemDB.Pool()), cfg.AvailableProviders())
 
 	deps := apphttp.Deps{
-		Logger:         logger,
-		Config:         cfg,
-		AuthRepo:       auth.NewRepository(pool),
-		StylesRepo:     styles.NewRepository(pool),
-		IdentitiesRepo: identities.NewRepository(pool),
-		AssetsRepo:     assets.NewRepository(pool),
-		JobsRepo:       jobs.NewRepository(pool),
-		JobsService:    jobs.NewService(pool, enqueuer, cost.NewService(logger)).WithFinalizer(finalizer),
-		AdminCost:      admincost.NewService(pool, logger),
-		AdminJobs:      adminjobs.NewService(pool, cost.NewService(logger), finalizer, enqueuer, logger),
-		Storage:        store,
-		Resolver:       resolver,
-		RateLimiter:    rateLimiter,
+		Logger: logger,
+		Config: cfg,
+		// Auth resolves api_tokens BEFORE a tenant is known, and the async
+		// last-used touch runs around auth too — both go through the system
+		// (BYPASSRLS) pool. The api_tokens RLS policy is NOT weakened to allow a
+		// pre-tenant prefix lookup; the system executor is the seam.
+		AuthRepo:       auth.NewRepository(systemDB.Pool()),
+		StylesRepo:     styles.NewRepository(tenantPool),
+		IdentitiesRepo: identities.NewRepository(tenantPool),
+		AssetsRepo:     assets.NewRepository(tenantPool),
+		JobsRepo:       jobs.NewRepository(tenantPool),
+		JobsService:    jobs.NewService(tenantPool, enqueuer, cost.NewService(logger)).WithFinalizer(finalizer),
+		// Admin cost is an explicit admin-cross-tenant surface (guarded by the
+		// admin:costs scope in the router): it lists/maintains cost data across
+		// tenants and global price-book rows, so it uses the system executor.
+		AdminCost: admincost.NewService(systemDB.Pool(), logger),
+		// Admin job control is tenant-local (tenant from the principal), so it
+		// runs on the tenant pool and sets app.current_tenant inside its own
+		// cancel/retry transactions.
+		AdminJobs:   adminjobs.NewService(tenantPool, cost.NewService(logger), finalizer, enqueuer, logger),
+		Storage:     store,
+		Resolver:    resolver,
+		RateLimiter: rateLimiter,
 	}
 
 	router := apphttp.NewRouter(deps)

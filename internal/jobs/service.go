@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/zakkriel/drchat-image-platform/internal/cost"
+	appdb "github.com/zakkriel/drchat-image-platform/internal/db"
 	"github.com/zakkriel/drchat-image-platform/internal/db/dbgen"
 	"github.com/zakkriel/drchat-image-platform/internal/ids"
 )
@@ -238,6 +239,12 @@ type CreatePackReuseParams struct {
 // returns the existing job without re-resolving a route, re-reserving cost, or
 // re-enqueuing.
 type ReplayLookup struct {
+	// TenantID scopes the replay read under RLS (Phase 7C-3): the idempotency_keys
+	// and generation_jobs rows it touches are tenant-owned, so the lookup runs in
+	// a tenant executor with app.current_tenant set. Empty is tolerated only by
+	// callers/tests on a BYPASSRLS pool; request handlers always set it from the
+	// principal.
+	TenantID    string
 	TokenID     string
 	Key         string
 	Endpoint    string
@@ -265,13 +272,24 @@ type Creator interface {
 	CreateCompletedPackReuseJob(ctx context.Context, params CreatePackReuseParams) (CreateResult, error)
 }
 
+// ReservationReleaser is the cost-reservation release surface the create path
+// needs on an enqueue failure (Phase 7C-3). It releases within the caller's
+// transaction so the release runs under the same tenant GUC the cleanup
+// transaction sets — *cost.Lifecycle satisfies it. The service composes it into
+// a tenant executor rather than letting it open its own pool, keeping the
+// reservation release subject to RLS on the request path (never the system
+// executor).
+type ReservationReleaser interface {
+	ReleaseInTx(ctx context.Context, tx pgx.Tx, jobID string) error
+}
+
 // Service implements Creator against Postgres + the asynq Enqueuer, running
 // the cost-control pre-flight inside the create transaction.
 type Service struct {
 	pool      *pgxpool.Pool
 	enqueuer  Enqueuer
 	reserver  cost.Reserver
-	finalizer cost.Finalizer
+	finalizer ReservationReleaser
 	ttl       time.Duration
 	now       func() time.Time
 }
@@ -290,7 +308,7 @@ func NewService(pool *pgxpool.Pool, enqueuer Enqueuer, reserver cost.Reserver) *
 // (which marks the just-committed job failed) also releases its budget hold
 // instead of leaving it stuck in `reserved`. Optional; nil in tests that don't
 // exercise the lifecycle.
-func (s *Service) WithFinalizer(f cost.Finalizer) *Service {
+func (s *Service) WithFinalizer(f ReservationReleaser) *Service {
 	s.finalizer = f
 	return s
 }
@@ -337,6 +355,14 @@ func (s *Service) CreateAndEnqueue(ctx context.Context, params CreateAndEnqueueP
 			_ = tx.Rollback(ctx)
 		}
 	}()
+
+	// Phase 7C-3: scope this service-owned transaction to the tenant so every
+	// tenant-owned row it writes (job, reservation, budget holds, pack, pack
+	// items, idempotency key) satisfies RLS. SET LOCAL means the GUC is discarded
+	// when the transaction ends, so it never leaks across pooled connections.
+	if err := appdb.SetTenantLocal(ctx, tx, params.TenantID); err != nil {
+		return CreateResult{}, fmt.Errorf("set tenant: %w", err)
+	}
 	q := dbgen.New(tx)
 
 	// 0. Phase 7C-2 hard concurrent-job cap. This block runs FIRST, before any
@@ -568,6 +594,10 @@ func (s *Service) CreateCompletedCacheHitJob(ctx context.Context, params CreateC
 			_ = tx.Rollback(ctx)
 		}
 	}()
+	// Phase 7C-3: tenant-scope this service-owned transaction for RLS.
+	if err := appdb.SetTenantLocal(ctx, tx, params.TenantID); err != nil {
+		return CreateResult{}, fmt.Errorf("set tenant: %w", err)
+	}
 	q := dbgen.New(tx)
 
 	worldID := params.WorldID
@@ -675,6 +705,10 @@ func (s *Service) CreateCompletedPackReuseJob(ctx context.Context, params Create
 			_ = tx.Rollback(ctx)
 		}
 	}()
+	// Phase 7C-3: tenant-scope this service-owned transaction for RLS.
+	if err := appdb.SetTenantLocal(ctx, tx, params.TenantID); err != nil {
+		return CreateResult{}, fmt.Errorf("set tenant: %w", err)
+	}
 	q := dbgen.New(tx)
 
 	worldID := params.WorldID
@@ -811,31 +845,67 @@ func failureError(reason string) error {
 // request — and otherwise the existing job's result (or a sentinel: a 422 for a
 // previously-denied job, ErrIdempotencyConflict on endpoint/body mismatch).
 func (s *Service) LookupReplay(ctx context.Context, in ReplayLookup) (CreateResult, bool, error) {
-	q := dbgen.New(s.pool)
-	existing, err := q.GetIdempotencyKey(ctx, dbgen.GetIdempotencyKeyParams{
-		TokenID: in.TokenID,
-		Key:     in.Key,
+	var (
+		result   CreateResult
+		found    bool
+		sentinel error
+	)
+	err := s.withTenantQueries(ctx, in.TenantID, func(ctx context.Context, q *dbgen.Queries) error {
+		existing, lerr := q.GetIdempotencyKey(ctx, dbgen.GetIdempotencyKeyParams{
+			TokenID: in.TokenID,
+			Key:     in.Key,
+		})
+		if errors.Is(lerr, pgx.ErrNoRows) {
+			return nil // not found; found stays false
+		}
+		if lerr != nil {
+			return fmt.Errorf("load idempotency record: %w", lerr)
+		}
+		found = true
+		result, sentinel = s.replayResult(ctx, q, existing, in.Endpoint, in.RequestHash)
+		return nil
 	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return CreateResult{}, false, nil
-	}
 	if err != nil {
-		return CreateResult{}, false, fmt.Errorf("load idempotency record: %w", err)
+		return CreateResult{}, false, err
 	}
-	result, sentinel := s.replayResult(ctx, q, existing, in.Endpoint, in.RequestHash)
-	return result, true, sentinel
+	return result, found, sentinel
 }
 
 func (s *Service) replayExisting(ctx context.Context, params CreateAndEnqueueParams) (CreateResult, error) {
-	q := dbgen.New(s.pool)
-	existing, err := q.GetIdempotencyKey(ctx, dbgen.GetIdempotencyKeyParams{
-		TokenID: params.RequestedByTokenID,
-		Key:     params.IdempotencyKey,
+	var (
+		result   CreateResult
+		sentinel error
+	)
+	err := s.withTenantQueries(ctx, params.TenantID, func(ctx context.Context, q *dbgen.Queries) error {
+		existing, lerr := q.GetIdempotencyKey(ctx, dbgen.GetIdempotencyKeyParams{
+			TokenID: params.RequestedByTokenID,
+			Key:     params.IdempotencyKey,
+		})
+		if lerr != nil {
+			return fmt.Errorf("load idempotency record: %w", lerr)
+		}
+		result, sentinel = s.replayResult(ctx, q, existing, params.Endpoint, params.RequestHash)
+		return nil
 	})
 	if err != nil {
-		return CreateResult{}, fmt.Errorf("load idempotency record: %w", err)
+		return CreateResult{}, err
 	}
-	return s.replayResult(ctx, q, existing, params.Endpoint, params.RequestHash)
+	return result, sentinel
+}
+
+// withTenantQueries runs fn with a *dbgen.Queries scoped to the tenant under
+// RLS. When tenantID is set it opens a WithTenant transaction (the GUC is set,
+// the read is RLS-scoped, and the tx is committed/rolled back automatically);
+// when tenantID is empty — callers/tests on a BYPASSRLS pool — it falls back to
+// the bare pool. The replay reads (idempotency_keys + generation_jobs) are
+// read-only, so this commits an empty transaction on success.
+func (s *Service) withTenantQueries(ctx context.Context, tenantID string, fn func(ctx context.Context, q *dbgen.Queries) error) error {
+	if tenantID == "" {
+		return fn(ctx, dbgen.New(s.pool))
+	}
+	return appdb.WithTenant(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		return fn(ctx, dbgen.New(tx))
+	})
 }
 
 // replayResult validates an idempotency record against the request's endpoint +
@@ -1024,10 +1094,22 @@ func (s *Service) enqueue(ctx context.Context, jobID, tenantID, packID string) e
 	if packID != "" {
 		enqueueFn = s.enqueuer.EnqueueGeneratePack
 	}
-	if err := enqueueFn(ctx, jobID); err != nil {
-		q := dbgen.New(s.pool)
+	enqErr := enqueueFn(ctx, jobID)
+	if enqErr == nil {
+		return nil
+	}
+
+	// Enqueue failed after the create transaction committed. Run all cleanup
+	// (mark job failed, mark pack failed, release the reservation) in ONE
+	// tenant-scoped transaction (Phase 7C-3): a fresh WithTenant tx sets
+	// app.current_tenant so every tenant-owned row is visible/writable under RLS,
+	// and the reservation release composes into the same tx via the
+	// executor-agnostic ReleaseInTx — never the system executor.
+	var cleanupErr error
+	if err := appdb.WithTenant(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		q := dbgen.New(tx)
 		ec := "enqueue_failed"
-		em := err.Error()
+		em := enqErr.Error()
 		rb := false
 		if _, markErr := q.MarkGenerationJobFailed(ctx, dbgen.MarkGenerationJobFailedParams{
 			ID:           jobID,
@@ -1036,29 +1118,32 @@ func (s *Service) enqueue(ctx context.Context, jobID, tenantID, packID string) e
 			ErrorMessage: &em,
 			Retryable:    &rb,
 		}); markErr != nil {
-			// Caller still gets ErrEnqueueFailed; the markFailed failure
-			// is logged through the wrapped error so it doesn't get lost.
-			return fmt.Errorf("%w (also mark-failed: %v): %v", ErrEnqueueFailed, markErr, err)
+			cleanupErr = fmt.Errorf("mark-failed: %v", markErr)
+			return cleanupErr
 		}
 		if packID != "" {
 			if packErr := q.UpdateAssetPackStatus(ctx, dbgen.UpdateAssetPackStatusParams{
 				ID:     packID,
 				Status: "failed",
 			}); packErr != nil {
-				return fmt.Errorf("%w (also mark-pack-failed: %v): %v", ErrEnqueueFailed, packErr, err)
+				cleanupErr = fmt.Errorf("mark-pack-failed: %v", packErr)
+				return cleanupErr
 			}
 		}
-		// Enqueue failure after a successful reservation is a terminal failure
-		// for this job: release the budget hold so it doesn't sit reserved
-		// forever. Best-effort — the request already failed.
 		if s.finalizer != nil {
-			if relErr := s.finalizer.Release(ctx, jobID); relErr != nil {
-				return fmt.Errorf("%w (also release-reservation: %v): %v", ErrEnqueueFailed, relErr, err)
+			if relErr := s.finalizer.ReleaseInTx(ctx, tx, jobID); relErr != nil {
+				cleanupErr = fmt.Errorf("release-reservation: %v", relErr)
+				return cleanupErr
 			}
 		}
-		return fmt.Errorf("%w: %v", ErrEnqueueFailed, err)
+		return nil
+	}); err != nil {
+		if cleanupErr != nil {
+			return fmt.Errorf("%w (also %v): %v", ErrEnqueueFailed, cleanupErr, enqErr)
+		}
+		return fmt.Errorf("%w (cleanup tx: %v): %v", ErrEnqueueFailed, err, enqErr)
 	}
-	return nil
+	return fmt.Errorf("%w: %v", ErrEnqueueFailed, enqErr)
 }
 
 // HashRequestBody hashes a request body for the idempotency comparison.
