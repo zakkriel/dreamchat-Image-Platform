@@ -26,6 +26,7 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/storage"
 	"github.com/zakkriel/drchat-image-platform/internal/styles"
 	"github.com/zakkriel/drchat-image-platform/internal/telemetry"
+	"github.com/zakkriel/drchat-image-platform/internal/webhooks"
 )
 
 func main() {
@@ -94,6 +95,11 @@ func main() {
 		JobsService:    jobs.NewService(pool, enqueuer, cost.NewService(logger)).WithFinalizer(finalizer),
 		AdminCost:      admincost.NewService(pool, logger),
 		AdminJobs:      adminjobs.NewService(pool, cost.NewService(logger), finalizer, enqueuer, logger),
+		// Phase 7C-4: the API serves the webhook endpoint config surface (it
+		// generates the signing secret and persists the per-tenant endpoint). The
+		// API process does NOT emit events or enqueue deliveries — that is the
+		// worker's job.
+		WebhooksConfig: webhooks.NewConfigService(webhooks.NewRepository(pool)),
 		Storage:        store,
 		Resolver:       resolver,
 		RateLimiter:    rateLimiter,

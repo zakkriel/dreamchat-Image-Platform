@@ -326,3 +326,28 @@ type VisualIdentityVersion struct {
 	AnchorAssetIds          []string           `json:"anchor_asset_ids"`
 	CreatedAt               pgtype.Timestamptz `json:"created_at"`
 }
+
+type WebhookDelivery struct {
+	ID                string             `json:"id"`
+	TenantID          string             `json:"tenant_id"`
+	WebhookEndpointID string             `json:"webhook_endpoint_id"`
+	EventType         string             `json:"event_type"`
+	GenerationJobID   *string            `json:"generation_job_id"`
+	Payload           []byte             `json:"payload"`
+	Status            string             `json:"status"`
+	AttemptCount      int32              `json:"attempt_count"`
+	LastHttpStatus    *int32             `json:"last_http_status"`
+	LastError         *string            `json:"last_error"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+}
+
+type WebhookEndpoint struct {
+	ID        string             `json:"id"`
+	TenantID  string             `json:"tenant_id"`
+	Url       string             `json:"url"`
+	Secret    string             `json:"secret"`
+	IsActive  bool               `json:"is_active"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}

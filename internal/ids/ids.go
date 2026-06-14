@@ -23,6 +23,8 @@ const (
 	PrefixAuditEvent      = "audit"
 	PrefixAssetPack       = "pack"
 	PrefixAssetPackItem   = "pki"
+	PrefixWebhookEndpoint = "whe"
+	PrefixWebhookDelivery = "whd"
 )
 
 // New returns an opaque ID of the form "<prefix>_<16 hex chars>".
@@ -44,6 +46,8 @@ func NewCostBudgetID() string      { return New(PrefixCostBudget) }
 func NewAuditEventID() string      { return New(PrefixAuditEvent) }
 func NewAssetPackID() string       { return New(PrefixAssetPack) }
 func NewAssetPackItemID() string   { return New(PrefixAssetPackItem) }
+func NewWebhookEndpointID() string { return New(PrefixWebhookEndpoint) }
+func NewWebhookDeliveryID() string { return New(PrefixWebhookDelivery) }
 
 func randomHex(byteLen int) string {
 	b := make([]byte, byteLen)

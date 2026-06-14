@@ -1052,6 +1052,29 @@ type VisualIdentity struct {
 // VisualIdentityStatus defines model for VisualIdentity.Status.
 type VisualIdentityStatus string
 
+// WebhookEndpoint defines model for WebhookEndpoint.
+type WebhookEndpoint struct {
+	Id       string `json:"id"`
+	IsActive bool   `json:"is_active"`
+	Url      string `json:"url"`
+}
+
+// WebhookEndpointRequest defines model for WebhookEndpointRequest.
+type WebhookEndpointRequest struct {
+	// Url Absolute http(s) URL events are POSTed to.
+	Url string `json:"url"`
+}
+
+// WebhookEndpointWithSecret The PUT response. Carries the HMAC-SHA256 signing secret so the caller
+// can verify the `X-DreamChat-Signature` header on delivered events. The
+// GET read never returns the secret.
+type WebhookEndpointWithSecret struct {
+	Id       string `json:"id"`
+	IsActive bool   `json:"is_active"`
+	Secret   string `json:"secret"`
+	Url      string `json:"url"`
+}
+
 // ArtifactId defines model for ArtifactId.
 type ArtifactId = string
 
@@ -1252,6 +1275,9 @@ type PostV1AdminRoutesRouteIdDisableJSONRequestBody = AdminReasonBody
 
 // PostV1AdminRoutesRouteIdEnableJSONRequestBody defines body for PostV1AdminRoutesRouteIdEnable for application/json ContentType.
 type PostV1AdminRoutesRouteIdEnableJSONRequestBody = AdminReasonBody
+
+// PutV1AdminWebhookEndpointJSONRequestBody defines body for PutV1AdminWebhookEndpoint for application/json ContentType.
+type PutV1AdminWebhookEndpointJSONRequestBody = WebhookEndpointRequest
 
 // PostV1ArtifactsArtifactIdGenerateJSONRequestBody defines body for PostV1ArtifactsArtifactIdGenerate for application/json ContentType.
 type PostV1ArtifactsArtifactIdGenerateJSONRequestBody = GenerateArtifactRequest

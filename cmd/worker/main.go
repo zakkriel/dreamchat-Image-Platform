@@ -19,6 +19,7 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/providers/mock"
 	"github.com/zakkriel/drchat-image-platform/internal/storage"
 	"github.com/zakkriel/drchat-image-platform/internal/telemetry"
+	"github.com/zakkriel/drchat-image-platform/internal/webhooks"
 )
 
 func main() {
@@ -57,6 +58,21 @@ func main() {
 
 	registry := buildRegistry(cfg, logger)
 
+	// Phase 7C-4: outbound webhooks. The worker owns the emitter (it emits at
+	// durable job-lifecycle transitions) and the deliverer (it runs the
+	// webhook:deliver asynq task). Both share the webhooks repository over the
+	// pool; the emitter enqueues deliver tasks via its own asynq client to the
+	// same Redis (closed on shutdown).
+	webhooksRepo := webhooks.NewRepository(pool)
+	webhookEnqueuer := webhooks.NewEnqueuer(cfg.RedisAddr, cfg.RedisPassword)
+	defer func() { _ = webhookEnqueuer.Close() }()
+	webhookEmitter := &webhooks.Emitter{
+		Repo:     webhooksRepo,
+		Enqueuer: webhookEnqueuer,
+		Logger:   logger,
+	}
+	webhookDeliverer := webhooks.NewDeliverer(webhooksRepo, nil, logger)
+
 	worker := &jobs.Worker{
 		Jobs:      jobs.NewRepository(pool),
 		Assets:    assets.NewRepository(pool),
@@ -64,6 +80,7 @@ func main() {
 		Providers: registry,
 		Logger:    logger,
 		Finalizer: cost.NewLifecycle(pool, logger),
+		Webhooks:  webhookEmitter,
 	}
 
 	redisOpt := asynq.RedisClientOpt{
@@ -78,6 +95,7 @@ func main() {
 	mux := asynq.NewServeMux()
 	mux.HandleFunc(jobs.TaskGenerateArtifact, worker.NewHandlerFunc())
 	mux.HandleFunc(jobs.TaskGeneratePack, worker.NewPackHandlerFunc())
+	mux.HandleFunc(webhooks.TaskDeliver, webhookDeliverer.NewHandlerFunc())
 
 	errCh := make(chan error, 1)
 	go func() {

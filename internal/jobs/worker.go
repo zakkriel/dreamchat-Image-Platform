@@ -16,6 +16,7 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/imaging"
 	"github.com/zakkriel/drchat-image-platform/internal/providers"
 	"github.com/zakkriel/drchat-image-platform/internal/storage"
+	"github.com/zakkriel/drchat-image-platform/internal/webhooks"
 )
 
 const (
@@ -53,6 +54,18 @@ type ProviderRegistry interface {
 	Get(providerID string) (providers.ImageProvider, bool)
 }
 
+// WebhookEmitter emits job-lifecycle webhook events (Phase 7C-4). The worker
+// depends on this narrow interface rather than the concrete *webhooks.Emitter
+// so it stays unit-testable (nil in tests; *webhooks.Emitter in production).
+//
+// MVP limitation: events are emitted ONLY at the worker's durable lifecycle
+// transitions below (preview committed, completed+committed, terminal failure).
+// They are NOT emitted for admin cancel, a preflight denial at job creation, or
+// an enqueue failure — those paths never reach these emit points.
+type WebhookEmitter interface {
+	Emit(ctx context.Context, in webhooks.EmitInput) error
+}
+
 // Worker holds the dependencies the asynq handler resolves a job against.
 // Each task call re-reads the generation_jobs row from Postgres; the queue
 // payload only carries the job_id.
@@ -67,6 +80,28 @@ type Worker struct {
 	// terminal failure (docs/architecture/cost-control.md §3 steps 9–10).
 	// Optional: nil in unit tests that don't exercise the cost lifecycle.
 	Finalizer cost.Finalizer
+
+	// Webhooks emits job-lifecycle webhook events (Phase 7C-4). Optional/nil-safe:
+	// nil in unit tests and when no emitter is wired. Emission is best-effort and
+	// never fails the job.
+	Webhooks WebhookEmitter
+}
+
+// emit best-effort emits one job-lifecycle webhook event. It no-ops when no
+// emitter is wired (Webhooks == nil) and logs — never fails the job — on an
+// emission error. Called only AFTER the relevant job state is durably committed.
+func (w *Worker) emit(ctx context.Context, tenantID, eventType, jobID string, data map[string]any) {
+	if w.Webhooks == nil {
+		return
+	}
+	if err := w.Webhooks.Emit(ctx, webhooks.EmitInput{
+		TenantID:  tenantID,
+		EventType: eventType,
+		JobID:     jobID,
+		Data:      data,
+	}); err != nil {
+		w.log().Warn("worker: emit webhook", "job_id", jobID, "event", eventType, "error", err)
+	}
 }
 
 // resolvedRoute is the provider/model/route the handler resolved at job-creation
@@ -349,6 +384,12 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 		}
 	}
 
+	// Phase 7C-4: the job is completed and cost committed — emit completed AFTER
+	// the durable commit. Best-effort; never fails the job.
+	w.emit(ctx, job.TenantID, webhooks.EventCompleted, job.ID, map[string]any{
+		"final_asset_ids": []string{asset.ID},
+	})
+
 	return nil
 }
 
@@ -470,6 +511,12 @@ func (w *Worker) processPreviewFirst(ctx context.Context, job Job, resolved reso
 		if err := w.Jobs.MarkProviderAttemptSucceeded(ctx, out.attemptID, int32(latency)); err != nil {
 			w.log().Warn("worker: mark attempt succeeded (preview)", "attempt_id", out.attemptID, "error", err)
 		}
+
+		// Phase 7C-4: the preview is durably committed (preview_ready) and not
+		// cancelled — emit preview_ready AFTER the commit. Best-effort.
+		w.emit(ctx, job.TenantID, webhooks.EventPreviewReady, job.ID, map[string]any{
+			"preview_asset_ids": []string{previewAssetID},
+		})
 	}
 
 	// --- Phase B: final -----------------------------------------------------
@@ -553,6 +600,12 @@ func (w *Worker) processPreviewFirst(ctx context.Context, job Job, resolved reso
 			return err
 		}
 	}
+
+	// Phase 7C-4: the two-phase job is completed and cost committed — emit
+	// completed AFTER the durable commit. Best-effort.
+	w.emit(ctx, job.TenantID, webhooks.EventCompleted, job.ID, map[string]any{
+		"final_asset_ids": []string{asset.ID},
+	})
 
 	return nil
 }
@@ -779,8 +832,10 @@ func (w *Worker) failJobOnFinalAttempt(ctx context.Context, job Job, callErr err
 		return
 	}
 	errMsg := callErr.Error()
+	markedFailed := true
 	if _, err := w.Jobs.MarkFailed(ctx, job.ID, job.TenantID, errorCodeFor(callErr), errMsg, false); err != nil {
 		w.log().Error("worker: mark job failed", "job_id", job.ID, "error", err)
+		markedFailed = false
 	}
 	// Terminal failure: release the cost reservation (reserved → released,
 	// return the held estimate to the budget; spent untouched). Idempotent.
@@ -788,6 +843,15 @@ func (w *Worker) failJobOnFinalAttempt(ctx context.Context, job Job, callErr err
 		if err := w.Finalizer.Release(ctx, job.ID); err != nil {
 			w.log().Error("worker: release cost reservation", "job_id", job.ID, "error", err)
 		}
+	}
+	// Phase 7C-4: emit failed AFTER MarkFailed durably recorded the terminal
+	// state (skipped when the mark itself failed). This centralizes ALL terminal
+	// failures (chain exhaustion + post-generate failures) since every terminal
+	// fail routes through here. Best-effort; never changes the control flow above.
+	if markedFailed {
+		w.emit(ctx, job.TenantID, webhooks.EventFailed, job.ID, map[string]any{
+			"error_code": errorCodeFor(callErr),
+		})
 	}
 }
 

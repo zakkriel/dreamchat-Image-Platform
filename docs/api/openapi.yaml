@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: DreamChat Image Platform API
-  version: 0.10.0
+  version: 0.11.0
   description: |
     Standalone API for generating, storing, retrieving, and versioning persistent visual assets for DreamChat worlds.
 
@@ -1123,6 +1123,57 @@ paths:
                       $ref: '#/components/schemas/CostEvent'
         default:
           $ref: '#/components/responses/ErrorResponse'
+  /v1/admin/webhook-endpoint:
+    put:
+      tags: [Admin]
+      summary: Create or update the tenant's webhook endpoint
+      description: |
+        Phase 7C-4 outbound webhooks (MVP): one active webhook endpoint per
+        tenant. Upserts the tenant's endpoint — creates it (generating a signing
+        secret) or updates its URL (preserving the existing secret). The signing
+        secret is server-generated and returned here so the caller can verify
+        the `X-DreamChat-Signature` header on delivered events; it is never
+        returned by the GET read.
+
+        Tenant is taken from the authenticated token, never the body. Scope:
+        `admin:jobs` (webhooks carry job-lifecycle events).
+      security:
+        - BearerAuth: [admin:jobs]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookEndpointRequest'
+      responses:
+        '200':
+          description: The upserted endpoint, including the signing secret.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEndpointWithSecret'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+    get:
+      tags: [Admin]
+      summary: Read the tenant's webhook endpoint
+      description: |
+        Phase 7C-4 outbound webhooks (MVP). Returns the tenant's active webhook
+        endpoint WITHOUT the signing secret, or 404 when none is configured.
+        Scope: `admin:jobs`.
+      security:
+        - BearerAuth: [admin:jobs]
+      responses:
+        '200':
+          description: The tenant's active webhook endpoint (no secret).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEndpoint'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
 components:
   securitySchemes:
     BearerAuth:
@@ -2239,6 +2290,35 @@ components:
         duration_ms: { type: integer }
         status: { type: string }
         created_at: { type: string, format: date-time }
+
+    # Phase 7C-4 outbound webhooks (MVP): one signed endpoint config per tenant.
+    WebhookEndpointRequest:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+          format: uri
+          description: Absolute http(s) URL events are POSTed to.
+    WebhookEndpoint:
+      type: object
+      required: [id, url, is_active]
+      properties:
+        id: { type: string }
+        url: { type: string, format: uri }
+        is_active: { type: boolean }
+    WebhookEndpointWithSecret:
+      type: object
+      required: [id, url, is_active, secret]
+      description: |
+        The PUT response. Carries the HMAC-SHA256 signing secret so the caller
+        can verify the `X-DreamChat-Signature` header on delivered events. The
+        GET read never returns the secret.
+      properties:
+        id: { type: string }
+        url: { type: string, format: uri }
+        is_active: { type: boolean }
+        secret: { type: string }
 
 # ----------------------------------------------------------------------------
 # Confidence to Implement

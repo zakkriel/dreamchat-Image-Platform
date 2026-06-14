@@ -34,6 +34,11 @@ type Deps struct {
 	AdminCost      handlers.AdminCostService
 	AdminJobs      handlers.AdminJobsService
 
+	// WebhooksConfig backs the Phase 7C-4 webhook endpoint config surface
+	// (PUT/GET /v1/admin/webhook-endpoint). Nil-safe: the routes are skipped
+	// when unwired.
+	WebhooksConfig handlers.WebhooksConfigService
+
 	// Resolver is the Phase 7A provider route resolver. The artifact, pack, and
 	// style-preview handlers resolve a route per request before reserving cost.
 	// Required to mount those generate endpoints.
@@ -152,6 +157,7 @@ func mountV1(r chi.Router, deps Deps) {
 		mountJobs(v1, deps)
 		mountAdminCost(v1, deps)
 		mountAdminJobs(v1, deps)
+		mountWebhooksConfig(v1, deps)
 		v1.Handle("/*", http.HandlerFunc(notFound))
 	})
 }
@@ -280,4 +286,19 @@ func mountAdminJobs(v1 chi.Router, deps Deps) {
 		a.Post("/{job_id}/cancel", h.Cancel)
 		a.Post("/{job_id}/retry", h.Retry)
 	})
+}
+
+// mountWebhooksConfig wires the Phase 7C-4 webhook endpoint config surface
+// (one config per tenant; tenant taken from the principal). It reuses the
+// admin:jobs scope rather than inventing a new one: webhooks emit job-lifecycle
+// events, so the job-control admin is the natural owner of the destination
+// config, and admin:jobs is an actively-served scope (the only served admin
+// scopes are admin:read, admin:costs, admin:jobs).
+func mountWebhooksConfig(v1 chi.Router, deps Deps) {
+	if deps.WebhooksConfig == nil {
+		return
+	}
+	h := handlers.NewWebhooksHandler(deps.WebhooksConfig)
+	v1.With(auth.RequireScopes(scopeAdminJobs)).Put("/admin/webhook-endpoint", h.Put)
+	v1.With(auth.RequireScopes(scopeAdminJobs)).Get("/admin/webhook-endpoint", h.Get)
 }
