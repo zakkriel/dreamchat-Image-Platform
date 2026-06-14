@@ -386,10 +386,51 @@ before this is production-ready.**
   client-visible change** — cross-tenant access still behaves like `404
   not_found`; OpenAPI is byte-for-byte unchanged (`0.10.0`).
 
+- **Phase 7C-4 — Provider fallback chains + outbound webhooks** (Done): the
+  **final slice 4 of 4** of Phase 7C, completing the production-controls track.
+  (1) **Provider fallback chains (same-price class)** — the handler resolves an
+  ordered fallback chain at job creation (`routing.Resolver.ResolveChain`, which
+  shares the exact Stage 1–5 filters with `Resolve` via a private `candidates`
+  helper, so `ResolveChain[0]` is always `Resolve`'s pick), then the jobs service
+  filters the alternates to the **same-price class** — routes whose active unit
+  price `(price_per_unit, unit_type, currency)` exactly equals the primary's
+  (`LookupActiveUnitPrice`) — and persists the survivors as `fallback_routes` on
+  `input_payload`. The worker (`generateWithFallback`) walks `[primary,
+  …fallbacks]` on a provider failure, records a `provider_attempts` row per route,
+  skips a route whose adapter is not registered in this process, and stamps the
+  **winning** route as the asset/cost-event provenance. This preserves both
+  invariants: route resolution happens **once at creation, never in the worker**,
+  and because every fallback is same-price the **single existing cost reservation
+  stays valid — there is no re-reservation**. **No migration** (fallbacks ride on
+  the existing payload + tables). (2) **Outbound webhooks (MVP-tight)** — one
+  signed endpoint per tenant (`webhook_endpoints`), HMAC-SHA256 request signing,
+  three job-lifecycle events (`generation_job.preview_ready|completed|failed`),
+  an asynq-backed deliverer with bounded retry/backoff (`asynq.MaxRetry(5)`,
+  exponential), and a per-event delivery-attempt log (`webhook_deliveries`). The
+  worker emits **after** each durable transition (single-phase completed; two-
+  phase preview_ready + completed; all terminal failures via
+  `failJobOnFinalAttempt`) — best-effort, never failing the job; not emitted for
+  admin cancel / preflight-deny / enqueue-failure (documented MVP limit). The
+  config surface is `PUT`/`GET /v1/admin/webhook-endpoint` (admin:jobs scope;
+  tenant from the principal; server-generated secret returned on PUT). Event
+  body: `{event, job_id, tenant_id, data, occurred_at}`; headers
+  `X-DreamChat-Event` + `X-DreamChat-Signature: sha256=…`. (3) **RLS continuity
+  (7C-3)** — the two new tables are directly tenant-scoped and get the SAME
+  ENABLE + FORCE RLS + canonical deny-by-default `tenant_isolation` policy as the
+  7C-3 tables (migration `0010`); the config path runs on the RLS-enforced tenant
+  pool via `db.WithTenant`, while the worker emitter/deliverer run on the
+  BYPASSRLS system pool like the rest of the worker. **Table count 18 → 20** (the
+  first deliberate table growth since 6A3 — webhooks genuinely need persistent
+  endpoint config + a delivery log). OpenAPI `0.10.0 → 0.11.0` (strictly
+  additive, api + docs mirrored).
+
 ## Remaining
 
-- **Phase 7C-4 — Provider fallback chains + webhooks**: multi-provider fallback
-  on failure and outbound webhooks for job lifecycle events.
+- **None for the Phase 7 implementation track** — Phase 7C-4 closes Phase 7C and
+  the planned phase sequence. Post-7C reconciliation (Phase 1 status correction,
+  the known-residue / explicit-non-MVP list, the deferred-scope note for
+  RLS/webhooks, and the admin audit-events / cost-margin / product-safety-filter
+  decisions) is tracked as a separate closure pass, **not** a phase.
 
 ## Notes
 
