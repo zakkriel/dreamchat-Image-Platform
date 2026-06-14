@@ -75,6 +75,28 @@ func (q *Queries) CancelGenerationJob(ctx context.Context, arg CancelGenerationJ
 	return i, err
 }
 
+const countLiveGenerationJobsByToken = `-- name: CountLiveGenerationJobsByToken :one
+SELECT count(*)
+FROM generation_jobs
+WHERE requested_by_token_id = $1::text
+  AND status IN ('queued', 'running', 'preview_ready')
+`
+
+// Phase 7C-2: the hard concurrent-job cap counts a token's live generation
+// jobs — those still occupying provider/queue capacity. preview_ready is
+// deliberately included: a preview-ready job is NOT terminal (it may still need
+// final generation), so it still consumes a concurrent slot. completed, failed,
+// and cancelled are terminal and free the slot, so they are excluded. Runs
+// inside the create transaction under the per-token advisory lock so concurrent
+// creates for the same token serialize before counting. Backed by
+// idx_generation_jobs_token_status.
+func (q *Queries) CountLiveGenerationJobsByToken(ctx context.Context, tokenID string) (int64, error) {
+	row := q.db.QueryRow(ctx, countLiveGenerationJobsByToken, tokenID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const getGenerationJobByID = `-- name: GetGenerationJobByID :one
 SELECT id, tenant_id, world_id, job_type, status,
        requested_by_token_id, visual_identity_id, asset_pack_id,

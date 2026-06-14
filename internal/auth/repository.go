@@ -21,6 +21,12 @@ type Token struct {
 	Environment string
 	Status      string
 	ExpiresAt   *time.Time
+
+	// Per-token limit overrides (Phase 7C-2). Nil means "use the platform
+	// default" for that dimension.
+	RateLimitRPM      *int32
+	RateLimitRPH      *int32
+	MaxConcurrentJobs *int32
 }
 
 type Repository interface {
@@ -45,12 +51,15 @@ func (r *pgRepository) GetActiveAPITokenByPrefix(ctx context.Context, prefix str
 		return Token{}, err
 	}
 	t := Token{
-		ID:          row.ID,
-		TenantID:    row.TenantID,
-		TokenHash:   row.TokenHash,
-		Scopes:      row.Scopes,
-		Environment: row.Environment,
-		Status:      row.Status,
+		ID:                row.ID,
+		TenantID:          row.TenantID,
+		TokenHash:         row.TokenHash,
+		Scopes:            row.Scopes,
+		Environment:       row.Environment,
+		Status:            row.Status,
+		RateLimitRPM:      row.RateLimitRpm,
+		RateLimitRPH:      row.RateLimitRph,
+		MaxConcurrentJobs: row.MaxConcurrentJobs,
 	}
 	if row.ExpiresAt.Valid {
 		expires := row.ExpiresAt.Time

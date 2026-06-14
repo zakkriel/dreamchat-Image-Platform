@@ -4,12 +4,37 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/zakkriel/drchat-image-platform/internal/http/apigen"
 	"github.com/zakkriel/drchat-image-platform/internal/httperr"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
 	"github.com/zakkriel/drchat-image-platform/internal/providers/routing"
 )
+
+// Concurrent-job rate-limit headers (Phase 7C-2). Emitted on generation-create
+// responses and concurrent-job denials. No Retry-After accompanies the
+// concurrent cap: capacity clears when a job reaches a terminal state, not at a
+// predictable time window.
+const (
+	headerConcurrentJobs          = "X-RateLimit-Concurrent-Jobs"
+	headerConcurrentJobsRemaining = "X-RateLimit-Concurrent-Jobs-Remaining"
+)
+
+// setConcurrentHeaders stamps the concurrent-job cap headers. limit is the
+// effective per-token cap; used is the token's live-job count. Remaining is
+// clamped at zero.
+func setConcurrentHeaders(w http.ResponseWriter, limit, used int) {
+	if limit <= 0 {
+		return
+	}
+	remaining := limit - used
+	if remaining < 0 {
+		remaining = 0
+	}
+	w.Header().Set(headerConcurrentJobs, strconv.Itoa(limit))
+	w.Header().Set(headerConcurrentJobsRemaining, strconv.Itoa(remaining))
+}
 
 // Capability requirements each generation path imposes on route resolution
 // (Phase 7A). These select the provider-route `required_capability` the resolver
@@ -108,6 +133,7 @@ func writeJobAccepted(w http.ResponseWriter, result jobs.CreateResult) {
 		pid := result.AssetPackID
 		resp.AssetPackId = &pid
 	}
+	setConcurrentHeaders(w, result.ConcurrentJobsLimit, result.ConcurrentJobsUsed)
 	writeJSON(w, http.StatusAccepted, resp)
 }
 

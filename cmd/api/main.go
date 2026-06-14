@@ -22,6 +22,7 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/identities"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
 	"github.com/zakkriel/drchat-image-platform/internal/providers/routing"
+	"github.com/zakkriel/drchat-image-platform/internal/ratelimit"
 	"github.com/zakkriel/drchat-image-platform/internal/storage"
 	"github.com/zakkriel/drchat-image-platform/internal/styles"
 	"github.com/zakkriel/drchat-image-platform/internal/telemetry"
@@ -50,6 +51,14 @@ func main() {
 
 	enqueuer := jobs.NewEnqueuer(cfg.RedisAddr, cfg.RedisPassword)
 	defer func() { _ = enqueuer.Close() }()
+
+	// Phase 7C-2: reusable Redis client for per-token request-rate limiting,
+	// wired from the same RedisAddr/RedisPassword as asynq. Closed on shutdown.
+	// The limiter fails open on Redis errors, so a Redis outage degrades
+	// request-rate limiting only — the Postgres-backed concurrent cap still holds.
+	redisClient := ratelimit.NewRedisClient(cfg.RedisAddr, cfg.RedisPassword)
+	defer func() { _ = redisClient.Close() }()
+	rateLimiter := ratelimit.New(ratelimit.NewRedisStore(redisClient), logger)
 
 	finalizer := cost.NewLifecycle(pool, logger)
 
@@ -87,6 +96,7 @@ func main() {
 		AdminJobs:      adminjobs.NewService(pool, cost.NewService(logger), finalizer, enqueuer, logger),
 		Storage:        store,
 		Resolver:       resolver,
+		RateLimiter:    rateLimiter,
 	}
 
 	router := apphttp.NewRouter(deps)

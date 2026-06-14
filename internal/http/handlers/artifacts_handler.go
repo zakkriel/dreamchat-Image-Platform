@@ -262,6 +262,7 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		FallbackPolicy:     fallback,
 		CacheResult:        "generated_required",
 		Units:              artifactUnits,
+		MaxConcurrentJobs:  principal.Limits.MaxConcurrentJobs,
 	}
 	applyResolvedRoute(&params, payload, resolved)
 	if idemKey != "" {
@@ -272,6 +273,9 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.Service.CreateAndEnqueue(r.Context(), params)
 	if err != nil {
+		if errors.Is(err, jobs.ErrConcurrentJobsExceeded) {
+			setConcurrentHeaders(w, params.MaxConcurrentJobs, params.MaxConcurrentJobs)
+		}
 		h.writeServiceError(w, r, err)
 		return
 	}
@@ -329,6 +333,8 @@ func (h *ArtifactsHandler) writeServiceError(w http.ResponseWriter, r *http.Requ
 // Shared by the artifact generate and style-preview paths.
 func writeJobServiceError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case errors.Is(err, jobs.ErrConcurrentJobsExceeded):
+		httperr.Write(w, r, http.StatusTooManyRequests, httperr.CodeConcurrentJobsExceeded, "too many concurrent generation jobs for this token")
 	case errors.Is(err, jobs.ErrNoPriceEntry):
 		httperr.Write(w, r, http.StatusUnprocessableEntity, httperr.CodeNoPriceEntry, "no active price entry for the selected provider/model/operation")
 	case errors.Is(err, jobs.ErrBudgetExceeded):

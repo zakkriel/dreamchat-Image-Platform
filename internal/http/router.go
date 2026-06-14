@@ -14,6 +14,7 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/httperr"
 	"github.com/zakkriel/drchat-image-platform/internal/identities"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
+	"github.com/zakkriel/drchat-image-platform/internal/ratelimit"
 	"github.com/zakkriel/drchat-image-platform/internal/storage"
 	"github.com/zakkriel/drchat-image-platform/internal/styles"
 )
@@ -42,6 +43,12 @@ type Deps struct {
 	// job-assets reads mint presigned per-tier download URLs; when nil those
 	// responses omit the URL fields (the pre-6B behavior).
 	Storage storage.Storage
+
+	// RateLimiter is the Phase 7C-2 per-token request-rate limiter. Mounted under
+	// /v1 after auth so it can read the authenticated principal's effective
+	// limits. Nil-safe: a nil or store-less limiter passes every request through
+	// (dev/test without Redis), so existing tests need no Redis.
+	RateLimiter *ratelimit.Limiter
 }
 
 type HealthResponse struct {
@@ -132,6 +139,11 @@ func mountV1(r chi.Router, deps Deps) {
 	}
 	r.Route("/v1", func(v1 chi.Router) {
 		v1.Use(auth.Middleware(deps.AuthRepo, deps.Config.APITokenPepper, string(deps.Config.Environment)))
+		// Phase 7C-2: per-token request-rate limiting runs AFTER auth (it needs
+		// the principal) and BEFORE the route handlers / scope gates. Every
+		// authenticated /v1 request is counted, including reads and admin
+		// endpoints. Nil-safe: a disabled limiter is a pass-through.
+		v1.Use(ratelimit.Middleware(deps.RateLimiter))
 		mountStyles(v1, deps)
 		mountIdentities(v1, deps)
 		mountAssets(v1, deps)
