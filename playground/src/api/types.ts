@@ -50,6 +50,20 @@ export interface StyleProfile {
   status?: string
 }
 
+export interface VisualIdentity {
+  id: string
+  world_id: string
+  owner_type: OwnerType
+  owner_id: string
+  display_name: string
+  canonical_visual_traits?: Record<string, unknown>
+  style_profile_id: string
+  consistency_key?: string
+  anchor_asset_ids?: string[]
+  current_version: number
+  status: string
+}
+
 export interface GenerationJobAccepted {
   job_id: string
   status: string

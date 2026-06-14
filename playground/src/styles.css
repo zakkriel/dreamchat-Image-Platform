@@ -128,6 +128,23 @@ select:focus {
   border-color: var(--accent);
 }
 
+.textarea {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 9px;
+  font-size: 12px;
+  font-family: var(--mono);
+  width: 100%;
+  resize: vertical;
+}
+
+.textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 .row {
   display: flex;
   flex-wrap: wrap;

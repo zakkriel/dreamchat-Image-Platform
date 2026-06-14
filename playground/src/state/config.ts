@@ -8,6 +8,12 @@ export interface PlaygroundConfig {
   token: string
   adminToken: string
   activeStyleId: string
+  // Last visual identity created/fetched in the Visual Identity panel, reused
+  // by the Pack generation and Asset search panels.
+  activeVisualIdentityId: string
+  activeVisualIdentityOwnerType: '' | 'character' | 'place'
+  activeVisualIdentityOwnerId: string
+  activeVisualIdentityWorldId: string
 }
 
 const STORAGE_KEY = 'image-platform-playground.config'
@@ -20,6 +26,10 @@ const DEFAULT_CONFIG: PlaygroundConfig = {
   token: '',
   adminToken: '',
   activeStyleId: '',
+  activeVisualIdentityId: '',
+  activeVisualIdentityOwnerType: '',
+  activeVisualIdentityOwnerId: '',
+  activeVisualIdentityWorldId: '',
 }
 
 function load(): PlaygroundConfig {

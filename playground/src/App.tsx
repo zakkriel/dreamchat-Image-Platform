@@ -1,5 +1,6 @@
 import { ConnectionPanel } from './components/ConnectionPanel'
 import { StylePanel } from './components/StylePanel'
+import { VisualIdentityPanel } from './components/VisualIdentityPanel'
 import { ArtifactPanel } from './components/ArtifactPanel'
 import { PackPanel } from './components/PackPanel'
 import { JobMonitorPanel } from './components/JobMonitorPanel'
@@ -21,6 +22,7 @@ export default function App() {
       <main className="panels">
         <ConnectionPanel />
         <StylePanel />
+        <VisualIdentityPanel />
         <ArtifactPanel />
         <PackPanel />
         <JobMonitorPanel />

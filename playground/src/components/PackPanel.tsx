@@ -9,9 +9,14 @@ interface PackFormProps {
   defaultEntityId: string
   defaultTemplate: string
   activeStyleId: string
+  activeVI: {
+    ownerType: '' | 'character' | 'place'
+    ownerId: string
+    worldId: string
+  }
 }
 
-function PackForm({ kind, defaultEntityId, defaultTemplate, activeStyleId }: PackFormProps) {
+function PackForm({ kind, defaultEntityId, defaultTemplate, activeStyleId, activeVI }: PackFormProps) {
   const [entityId, setEntityId] = useState(defaultEntityId)
   const [worldId, setWorldId] = useState('world_dev')
   const [styleProfileId, setStyleProfileId] = useState('')
@@ -22,6 +27,12 @@ function PackForm({ kind, defaultEntityId, defaultTemplate, activeStyleId }: Pac
 
   const effectiveStyle = styleProfileId || activeStyleId
   const idLabel = kind === 'character' ? 'character_id' : 'place_id'
+  const canUseActiveVI = activeVI.ownerType === kind && activeVI.ownerId !== ''
+
+  function useActiveVI() {
+    setEntityId(activeVI.ownerId)
+    if (activeVI.worldId) setWorldId(activeVI.worldId)
+  }
 
   async function submit() {
     const body: Record<string, unknown> = {
@@ -42,9 +53,15 @@ function PackForm({ kind, defaultEntityId, defaultTemplate, activeStyleId }: Pac
 
   return (
     <div className="subpanel">
-      <h3>{kind === 'character' ? 'Character pack' : 'Place pack'}</h3>
+      <div className="row">
+        <h3>{kind === 'character' ? 'Character pack' : 'Place pack'}</h3>
+        <Button variant="secondary" onClick={useActiveVI} disabled={!canUseActiveVI}>
+          Use active visual identity
+        </Button>
+        {canUseActiveVI && <span className="muted">→ {activeVI.ownerId}</span>}
+      </div>
       <div className="grid">
-        <Field label={idLabel}>
+        <Field label={`${idLabel} (must have a visual identity)`}>
           <TextInput value={entityId} onChange={setEntityId} />
         </Field>
         <Field label="world_id">
@@ -74,20 +91,38 @@ function PackForm({ kind, defaultEntityId, defaultTemplate, activeStyleId }: Pac
 
 export function PackPanel() {
   const cfg = useConfig()
+  const activeVI = {
+    ownerType: cfg.activeVisualIdentityOwnerType,
+    ownerId: cfg.activeVisualIdentityOwnerId,
+    worldId: cfg.activeVisualIdentityWorldId,
+  }
   return (
-    <Panel title="4 · Pack generation" subtitle="Existing generate-pack endpoints for characters and places.">
+    <Panel title="5 · Pack generation" subtitle="Existing generate-pack endpoints for characters and places.">
+      <p className="muted note">
+        Packs require an <strong>existing visual identity</strong> for the owner — create one in panel 3
+        first, then "Use active visual identity" to fill the id/world below. The{' '}
+        <code>{idLabel(cfg.activeVisualIdentityOwnerType)}</code> must match an identity you created, or
+        generation will fail to resolve the owner.
+      </p>
       <PackForm
         kind="character"
         defaultEntityId="character_play_1"
         defaultTemplate="character_minimal_portrait_pack"
         activeStyleId={cfg.activeStyleId}
+        activeVI={activeVI}
       />
       <PackForm
         kind="place"
         defaultEntityId="place_play_1"
         defaultTemplate="place_minimal_scene_pack"
         activeStyleId={cfg.activeStyleId}
+        activeVI={activeVI}
       />
     </Panel>
   )
+}
+
+function idLabel(ownerType: '' | 'character' | 'place'): string {
+  if (ownerType === 'place') return 'place_id'
+  return 'character_id'
 }

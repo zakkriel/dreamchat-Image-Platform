@@ -7,7 +7,7 @@ export function RequestLogPanel() {
 
   return (
     <Panel
-      title="9 · Request log"
+      title="10 · Request log"
       subtitle="Every request the playground makes, newest first. Copy the curl equivalent to replay from a shell."
     >
       <div className="row">

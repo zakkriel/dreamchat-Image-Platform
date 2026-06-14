@@ -63,7 +63,7 @@ export function JobMonitorPanel() {
   )
 
   return (
-    <Panel title="5 · Job monitor" subtitle="Poll a job to completion, then fetch and preview its delivered assets.">
+    <Panel title="6 · Job monitor" subtitle="Poll a job to completion, then fetch and preview its delivered assets.">
       <div className="grid">
         <Field label="job_id">
           <TextInput value={jobId} onChange={setJobId} placeholder="job_..." />

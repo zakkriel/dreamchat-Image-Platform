@@ -30,7 +30,7 @@ export function AdminJobPanel() {
 
   return (
     <Panel
-      title="8 · Admin job controls"
+      title="9 · Admin job controls"
       subtitle="Admin token required. Retry a failed job or cancel a queued/running/preview_ready job."
     >
       <div className="grid">

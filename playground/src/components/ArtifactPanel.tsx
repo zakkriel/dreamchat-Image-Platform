@@ -49,7 +49,7 @@ export function ArtifactPanel() {
 
   return (
     <Panel
-      title="3 · Artifact generation"
+      title="4 · Artifact generation"
       subtitle="POST /v1/artifacts/{artifact_id}/generate — uses the active style unless overridden below."
     >
       <div className="grid">

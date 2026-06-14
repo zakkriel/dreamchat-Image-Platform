@@ -40,21 +40,56 @@ make dev                      # stack must be up
 ./scripts/seed_visual_fixtures.sh
 ```
 
-This inserts four `visual_assets` rows for `tenant_dev` / `world_dev` and
-uploads a tiny PNG to each asset's deterministic object keys in MinIO.
+This seeds a self-consistent graph for `tenant_dev` / `world_dev`: one style
+profile, two visual identities, and four `visual_assets` rows **attached to
+those identities**, then uploads a tiny PNG to each asset's deterministic
+object keys in MinIO. The assets are attached to identities precisely so the
+asset-search exact-match predicate (which keys on `visual_identity_id` +
+`variant_key` + `state_version` + `style_profile_id`) can find them.
 
-| asset_id          | asset_type          | variant_key   |
-| ----------------- | ------------------- | ------------- |
-| `asset_fix_blue`  | `character_portrait`| `neutral`     |
-| `asset_fix_green` | `place_scene`       | `establishing`|
-| `asset_fix_amber` | `artifact`          | `artifact`    |
-| `asset_fix_violet`| `expression`        | `smiling`     |
+Seeded objects:
 
-Then, in the playground:
+| id                | kind            | details                                   |
+| ----------------- | --------------- | ----------------------------------------- |
+| `style_fixture`   | style profile   | `open_prompt`                             |
+| `vi_fix_character`| visual identity | `owner_type=character`, `owner_id=character_fix_1` |
+| `vi_fix_place`    | visual identity | `owner_type=place`, `owner_id=place_fix_1`|
 
-- **Asset search** panel → set `world_id=world_dev`, optionally an
-  `asset_type`, and search. Returned assets render their presigned image URLs.
-- Or call `GET /v1/assets/asset_fix_blue` directly.
+| asset_id                 | visual_identity_id | asset_type           | variant_key    |
+| ------------------------ | ------------------ | -------------------- | -------------- |
+| `asset_fix_char_neutral` | `vi_fix_character` | `character_portrait` | `neutral`      |
+| `asset_fix_char_smiling` | `vi_fix_character` | `expression`         | `smiling`      |
+| `asset_fix_place_estab`  | `vi_fix_place`     | `place_scene`        | `establishing` |
+| `asset_fix_place_night`  | `vi_fix_place`     | `place_scene`        | `night`        |
+
+#### Exact Asset Search inputs that work
+
+In the playground **Asset search** panel (panel 7), these inputs return an
+`exact_match` with a rendered image:
+
+```
+world_id           = world_dev
+owner_type         = character
+visual_identity_id = vi_fix_character
+variant_key        = neutral          # or: smiling
+style_profile_id   = style_fixture
+state_version      = 1
+```
+
+```
+world_id           = world_dev
+owner_type         = place
+visual_identity_id = vi_fix_place
+variant_key        = establishing     # or: night
+style_profile_id   = style_fixture
+state_version      = 1
+```
+
+You can also read an asset directly: `GET /v1/assets/asset_fix_char_neutral`.
+
+> `POST /v1/assets/search` rejects `owner_type=artifact` (`400`,
+> "owner_type must be character or place"). Artifact retrieval is out of scope
+> for search; only character/place identities are retrievable.
 
 #### Why it works (what the script relies on)
 
@@ -77,19 +112,21 @@ canonical URLs.
 
 Override defaults with environment variables:
 
-| Env var                 | Default      | Notes                                              |
-| ----------------------- | ------------ | -------------------------------------------------- |
-| `SEED_TENANT_ID`        | `tenant_dev` | Must match the token you use in the playground.    |
-| `SEED_WORLD_ID`         | `world_dev`  | Assets are world-scoped.                           |
-| `SEED_STYLE_PROFILE_ID` | _(unset)_    | Set to a real style id for style-filtered search.  |
-| `S3_BUCKET`             | `image-platform` | Bucket name (matches docker-compose).          |
+| Env var          | Default          | Notes                                           |
+| ---------------- | ---------------- | ----------------------------------------------- |
+| `SEED_TENANT_ID` | `tenant_dev`     | Must match the token you use in the playground. |
+| `SEED_WORLD_ID`  | `world_dev`      | Assets and identities are world-scoped.         |
+| `S3_BUCKET`      | `image-platform` | Bucket name (matches docker-compose).           |
+
+The style profile id (`style_fixture`) and identity ids (`vi_fix_character`,
+`vi_fix_place`) are fixed so the search inputs above stay stable.
 
 #### Limitations (by design)
 
-- Fixtures are **not** linked to a `visual_identity`, so asset searches that
-  filter strictly by `owner_type`/`owner_id` may not match them. Search by
-  `world_id` + `asset_type` + `variant_key` to find them.
-- Re-running the script upserts the same rows (idempotent on `asset_id`).
+- Only **character** and **place** identities are seeded, because
+  `/v1/assets/search` only retrieves those owner types.
+- Re-running the script is idempotent: identities/style use
+  `ON CONFLICT DO NOTHING` and assets upsert on `asset_id`.
 - `make down` (which runs `docker compose down -v`) wipes the volumes and the
   fixtures with them; re-run the script after bringing the stack back up.
 

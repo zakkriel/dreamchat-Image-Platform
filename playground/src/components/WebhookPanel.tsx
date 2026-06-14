@@ -33,7 +33,7 @@ export function WebhookPanel() {
 
   return (
     <Panel
-      title="7 · Webhook endpoint"
+      title="8 · Webhook endpoint"
       subtitle="Admin token required. Configure the tenant's one signed webhook endpoint."
     >
       <p className="muted note">

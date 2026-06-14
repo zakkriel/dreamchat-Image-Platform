@@ -18,21 +18,31 @@ A single page with stacked panels:
 1. **Connection** — base URL + tenant/admin bearer tokens (saved to
    localStorage), `GET /health`, and the OpenAPI version from `GET /openapi.json`.
 2. **Styles** — `POST /v1/styles`, `GET /v1/styles`, and an "active style"
-   selector reused by the generation panels.
-3. **Artifact generation** — `POST /v1/artifacts/{artifact_id}/generate`.
-4. **Pack generation** — `POST /v1/characters/{id}/generate-pack` and
-   `POST /v1/places/{id}/generate-pack`.
-5. **Job monitor** — polls `GET /v1/jobs/{job_id}`, shows a status timeline and
+   selector reused by the other panels.
+3. **Visual identity** — `POST`/`GET /v1/characters/{id}/visual-identity` and
+   `.../places/{id}/visual-identity`. Captures world_id, owner_type, owner_id,
+   display_name, `canonical_visual_traits` (JSON), style_profile_id, and an
+   optional consistency_key. The created identity becomes the "active visual
+   identity" reused by the Pack-generation and Asset-search panels.
+4. **Artifact generation** — `POST /v1/artifacts/{artifact_id}/generate`.
+5. **Pack generation** — `POST /v1/characters/{id}/generate-pack` and
+   `POST /v1/places/{id}/generate-pack`. Packs require an **existing visual
+   identity** for the owner (panel 3); a "Use active visual identity" button
+   fills the id/world.
+6. **Job monitor** — polls `GET /v1/jobs/{job_id}`, shows a status timeline and
    error fields, fetches `GET /v1/jobs/{job_id}/assets`, and renders the
    returned thumbnail/preview/final URLs in a gallery.
-6. **Asset search** — `POST /v1/assets/search` with match type, compatibility
-   score, generation-recommended flag, and an image gallery.
-7. **Webhook endpoint** — `PUT`/`GET /v1/admin/webhook-endpoint` (admin token);
+7. **Asset search** — `POST /v1/assets/search`. The backend requires world_id,
+   visual_identity_id, owner_type (**character or place** — artifact is
+   rejected), variant_key, style_profile_id, and state_version (default 1).
+   Shows match type, compatibility score, generation-recommended flag, and an
+   image gallery.
+8. **Webhook endpoint** — `PUT`/`GET /v1/admin/webhook-endpoint` (admin token);
    shows the signing secret only when PUT returns it.
-8. **Admin job controls** — `POST /v1/admin/jobs/{job_id}/retry` and
+9. **Admin job controls** — `POST /v1/admin/jobs/{job_id}/retry` and
    `.../cancel` (admin token).
-9. **Request log** — every request the playground made (method, URL, status,
-   duration, request/response JSON) with a **copy-as-curl** button.
+10. **Request log** — every request the playground made (method, URL, status,
+    duration, request/response JSON) with a **copy-as-curl** button.
 
 ## Prerequisites
 
@@ -80,16 +90,24 @@ npm run lint      # eslint .
 1. **Connection** → paste tenant + admin tokens → `GET /health` (expect
    `200 {"status":"ok"}`) → `GET /openapi.json` (shows the version).
 2. **Styles** → create a style → it becomes the active style.
-3. **Artifact generation** → submit → copy the returned `job_id`.
-4. **Job monitor** → paste the `job_id` → **Poll (2s)** until `completed` →
+3. **Visual identity** → create a character (or place) identity → it becomes
+   the active visual identity. **Do this before generating a pack** — packs
+   resolve an existing identity for the owner.
+4. **Artifact generation** → submit → copy the returned `job_id`. (Artifacts do
+   not need a visual identity.)
+5. **Job monitor** → paste the `job_id` → **Poll (2s)** until `completed` →
    **GET .../assets** to render the image tiers.
-5. **Pack generation** → generate a character or place pack → monitor its job.
-6. **Asset search** → search the world you generated into.
-7. **Webhook endpoint** → set a `webhook.site` URL (admin token) → note the
+6. **Pack generation** → **Use active visual identity** to fill the id/world →
+   generate a character or place pack → monitor its job.
+7. **Asset search** → **Use active visual identity**, set `variant_key` and
+   `state_version` (default 1), then search. All of world_id,
+   visual_identity_id, owner_type (character|place), variant_key,
+   style_profile_id and state_version are required by the backend.
+8. **Webhook endpoint** → set a `webhook.site` URL (admin token) → note the
    one-time signing secret.
-8. **Admin job controls** → retry a failed job or cancel a live one (admin
+9. **Admin job controls** → retry a failed job or cancel a live one (admin
    token).
-9. **Request log** → expand any call and **Copy curl** to replay from a shell.
+10. **Request log** → expand any call and **Copy curl** to replay from a shell.
 
 ## Sample assets without generating
 
