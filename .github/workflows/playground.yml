@@ -1,0 +1,42 @@
+name: playground
+
+# Dev-only Image Platform Playground frontend checks. Runs only when files
+# under playground/** change, so it never affects backend PRs. The backend CI
+# (.github/workflows/ci.yml) is intentionally left unchanged.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "playground/**"
+      - ".github/workflows/playground.yml"
+  pull_request:
+    paths:
+      - "playground/**"
+      - ".github/workflows/playground.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  playground:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: playground
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: playground/package-lock.json
+
+      - name: npm ci
+        run: npm ci
+
+      - name: build (typecheck + bundle)
+        run: npm run build
+
+      - name: lint
+        run: npm run lint
