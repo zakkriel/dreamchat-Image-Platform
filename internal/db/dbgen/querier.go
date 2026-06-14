@@ -43,6 +43,15 @@ type Querier interface {
 	// budget. actual_amount = estimated_amount (Phase 4B: no provider-reported
 	// reconciliation).
 	CommitReservationForJob(ctx context.Context, generationJobID string) (CommitReservationForJobRow, error)
+	// Phase 7C-2: the hard concurrent-job cap counts a token's live generation
+	// jobs — those still occupying provider/queue capacity. preview_ready is
+	// deliberately included: a preview-ready job is NOT terminal (it may still need
+	// final generation), so it still consumes a concurrent slot. completed, failed,
+	// and cancelled are terminal and free the slot, so they are excluded. Runs
+	// inside the create transaction under the per-token advisory lock so concurrent
+	// creates for the same token serialize before counting. Backed by
+	// idx_generation_jobs_token_status.
+	CountLiveGenerationJobsByToken(ctx context.Context, tokenID string) (int64, error)
 	CountProviderAttemptsForJob(ctx context.Context, generationJobID string) (int32, error)
 	CreateStyleProfile(ctx context.Context, arg CreateStyleProfileParams) (StyleProfile, error)
 	DeleteExpiredIdempotencyKeys(ctx context.Context) error

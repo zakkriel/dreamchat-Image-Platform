@@ -155,6 +155,8 @@ jobs:
                -v ON_ERROR_STOP=1 -f migrations/0006_bfl_provider_seed.up.sql
           psql -h localhost -U image_platform -d image_platform \
                -v ON_ERROR_STOP=1 -f migrations/0007_budget_period_reset.up.sql
+          psql -h localhost -U image_platform -d image_platform \
+               -v ON_ERROR_STOP=1 -f migrations/0008_rate_limits.up.sql
 
       - name: assert all expected tables exist
         env:
@@ -167,6 +169,7 @@ jobs:
           # 0004 (Phase 6A3) and 0005 (Phase 6A4) only ADD columns — no new table.
           # 0006 (Phase 7A) is seed-only DML (BFL provider/route/price) — no new table.
           # 0007 (Phase 7C-1c) only ADDs cost_budgets.period_start — no new table.
+          # 0008 (Phase 7C-2) only ADDs api_tokens limit columns + an index — no new table.
           test "$count" = "18"
 
       - name: assert budget period_start column exists
@@ -205,6 +208,24 @@ jobs:
         run: |
           exists=$(psql -h localhost -U image_platform -d image_platform -tAc \
             "SELECT 1 FROM information_schema.tables WHERE table_name = 'cost_reservation_budget_holds'")
+          test "$exists" = "1"
+
+      - name: assert api_tokens rate-limit columns exist (Phase 7C-2)
+        env:
+          PGPASSWORD: image_platform
+        run: |
+          cols=$(psql -h localhost -U image_platform -d image_platform -tAc \
+            "SELECT count(*) FROM information_schema.columns
+             WHERE table_name = 'api_tokens'
+               AND column_name IN ('rate_limit_rpm', 'rate_limit_rph', 'max_concurrent_jobs')")
+          test "$cols" = "3"
+
+      - name: assert concurrent-job index exists (Phase 7C-2)
+        env:
+          PGPASSWORD: image_platform
+        run: |
+          exists=$(psql -h localhost -U image_platform -d image_platform -tAc \
+            "SELECT 1 FROM pg_indexes WHERE indexname = 'idx_generation_jobs_token_status'")
           test "$exists" = "1"
 
       - name: assert idempotency expires index exists

@@ -25,6 +25,14 @@ const (
 	// from a status the action does not allow (HTTP 409).
 	CodeInvalidState = "invalid_state"
 
+	// Rate limiting (Phase 7C-2). Both surface as HTTP 429. rate_limit_exceeded
+	// is the per-token request-rate cap (carries Retry-After);
+	// concurrent_jobs_exceeded is the per-token hard cap on live generation jobs
+	// (no Retry-After — concurrency clears at a terminal state, not a fixed
+	// window). Cost-budget denials stay 422 and are NOT moved here.
+	CodeRateLimitExceeded      = "rate_limit_exceeded"
+	CodeConcurrentJobsExceeded = "concurrent_jobs_exceeded"
+
 	// Cost-control pre-flight (docs/architecture/cost-control.md §5). Both
 	// surface as HTTP 422 in Phase 4 (see Phase 4 corrections 1, 2, 6, 7).
 	CodeNoPriceEntry   = "no_price_entry"

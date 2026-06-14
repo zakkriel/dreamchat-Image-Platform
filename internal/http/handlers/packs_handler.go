@@ -410,7 +410,8 @@ func (h *PacksHandler) generate(w http.ResponseWriter, r *http.Request, kind pac
 		},
 		// Misses-only pricing: only the roles with no reusable asset are
 		// generated, so only they are priced. Zero misses never reaches here.
-		Units: int32(len(missing)),
+		Units:             int32(len(missing)),
+		MaxConcurrentJobs: principal.Limits.MaxConcurrentJobs,
 	}
 	applyResolvedRoute(&params, payload, resolved)
 	if idemKey != "" {
@@ -421,6 +422,9 @@ func (h *PacksHandler) generate(w http.ResponseWriter, r *http.Request, kind pac
 
 	result, err := h.Service.CreateAndEnqueue(r.Context(), params)
 	if err != nil {
+		if errors.Is(err, jobs.ErrConcurrentJobsExceeded) {
+			setConcurrentHeaders(w, params.MaxConcurrentJobs, params.MaxConcurrentJobs)
+		}
 		h.writeServiceError(w, r, err)
 		return
 	}
@@ -454,6 +458,7 @@ func (h *PacksHandler) writePackAccepted(w http.ResponseWriter, result jobs.Crea
 		pid := result.AssetPackID
 		resp.AssetPackId = &pid
 	}
+	setConcurrentHeaders(w, result.ConcurrentJobsLimit, result.ConcurrentJobsUsed)
 	writeJSON(w, http.StatusAccepted, resp)
 }
 
@@ -631,6 +636,8 @@ func aggregatePackCacheResult(items []jobs.PackReuseItem) string {
 // writeServiceError maps a jobs.Creator error to the matching HTTP status.
 func (h *PacksHandler) writeServiceError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case errors.Is(err, jobs.ErrConcurrentJobsExceeded):
+		httperr.Write(w, r, http.StatusTooManyRequests, httperr.CodeConcurrentJobsExceeded, "too many concurrent generation jobs for this token")
 	case errors.Is(err, jobs.ErrNoPriceEntry):
 		httperr.Write(w, r, http.StatusUnprocessableEntity, httperr.CodeNoPriceEntry, "no active price entry for the selected provider/model/operation")
 	case errors.Is(err, jobs.ErrBudgetExceeded):

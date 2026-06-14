@@ -9,20 +9,23 @@ import (
 )
 
 type ApiToken struct {
-	ID          string             `json:"id"`
-	TenantID    string             `json:"tenant_id"`
-	TokenPrefix string             `json:"token_prefix"`
-	TokenHash   string             `json:"token_hash"`
-	Name        string             `json:"name"`
-	OwnerType   string             `json:"owner_type"`
-	OwnerID     *string            `json:"owner_id"`
-	Scopes      []string           `json:"scopes"`
-	Environment string             `json:"environment"`
-	Status      string             `json:"status"`
-	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
-	LastUsedAt  pgtype.Timestamptz `json:"last_used_at"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	ID                string             `json:"id"`
+	TenantID          string             `json:"tenant_id"`
+	TokenPrefix       string             `json:"token_prefix"`
+	TokenHash         string             `json:"token_hash"`
+	Name              string             `json:"name"`
+	OwnerType         string             `json:"owner_type"`
+	OwnerID           *string            `json:"owner_id"`
+	Scopes            []string           `json:"scopes"`
+	Environment       string             `json:"environment"`
+	Status            string             `json:"status"`
+	ExpiresAt         pgtype.Timestamptz `json:"expires_at"`
+	LastUsedAt        pgtype.Timestamptz `json:"last_used_at"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	RateLimitRpm      *int32             `json:"rate_limit_rpm"`
+	RateLimitRph      *int32             `json:"rate_limit_rph"`
+	MaxConcurrentJobs *int32             `json:"max_concurrent_jobs"`
 }
 
 type AssetPack struct {

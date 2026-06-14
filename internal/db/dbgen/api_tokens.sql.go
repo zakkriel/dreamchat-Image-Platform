@@ -12,19 +12,23 @@ import (
 )
 
 const getActiveAPITokenByPrefix = `-- name: GetActiveAPITokenByPrefix :one
-SELECT id, tenant_id, token_hash, scopes, environment, status, expires_at
+SELECT id, tenant_id, token_hash, scopes, environment, status, expires_at,
+       rate_limit_rpm, rate_limit_rph, max_concurrent_jobs
 FROM api_tokens
 WHERE token_prefix = $1
 `
 
 type GetActiveAPITokenByPrefixRow struct {
-	ID          string             `json:"id"`
-	TenantID    string             `json:"tenant_id"`
-	TokenHash   string             `json:"token_hash"`
-	Scopes      []string           `json:"scopes"`
-	Environment string             `json:"environment"`
-	Status      string             `json:"status"`
-	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
+	ID                string             `json:"id"`
+	TenantID          string             `json:"tenant_id"`
+	TokenHash         string             `json:"token_hash"`
+	Scopes            []string           `json:"scopes"`
+	Environment       string             `json:"environment"`
+	Status            string             `json:"status"`
+	ExpiresAt         pgtype.Timestamptz `json:"expires_at"`
+	RateLimitRpm      *int32             `json:"rate_limit_rpm"`
+	RateLimitRph      *int32             `json:"rate_limit_rph"`
+	MaxConcurrentJobs *int32             `json:"max_concurrent_jobs"`
 }
 
 func (q *Queries) GetActiveAPITokenByPrefix(ctx context.Context, tokenPrefix string) (GetActiveAPITokenByPrefixRow, error) {
@@ -38,6 +42,9 @@ func (q *Queries) GetActiveAPITokenByPrefix(ctx context.Context, tokenPrefix str
 		&i.Environment,
 		&i.Status,
 		&i.ExpiresAt,
+		&i.RateLimitRpm,
+		&i.RateLimitRph,
+		&i.MaxConcurrentJobs,
 	)
 	return i, err
 }

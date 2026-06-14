@@ -1093,6 +1093,23 @@ type WorldIdQuery = string
 // resolved model has no active price.
 type ErrorResponse = Error
 
+// TooManyRequests Standard error body returned for all non-2xx responses. Served with
+// content type `application/problem+json`. `code` is a stable, lowercase
+// machine-readable identifier (e.g. `unauthorized`, `forbidden`,
+// `internal_error`); `message` is human-readable; `request_id` matches
+// the `X-Request-Id` response header.
+//
+// Generation endpoints (`POST /v1/artifacts/{artifact_id}/generate`, the
+// two generate-pack endpoints, and `POST /v1/styles/{style_id}/preview`)
+// resolve a provider route before reserving cost (Phase 7A). When no
+// active route can serve the request they return `422` with one of:
+// `no_route` (no active route/model for the operation + tier),
+// `unsupported_capability` (no route satisfies a requested capability),
+// or `provider_unavailable_for_route` (the matching route's provider is
+// not configured). `no_price_entry` (422) is still returned when the
+// resolved model has no active price.
+type TooManyRequests = Error
+
 // GetV1AdminCostBudgetsParams defines parameters for GetV1AdminCostBudgets.
 type GetV1AdminCostBudgetsParams struct {
 	TenantId  *string          `form:"tenant_id,omitempty" json:"tenant_id,omitempty"`

@@ -104,7 +104,26 @@ func Verify(ctx context.Context, repo Repository, authorization, pepper, environ
 		TenantID:    token.TenantID,
 		Scopes:      token.Scopes,
 		Environment: token.Environment,
+		Limits:      effectiveLimits(token),
 	}, nil
+}
+
+// effectiveLimits resolves a token's per-token limit overrides (Phase 7C-2)
+// against the platform defaults: a non-nil, positive override wins; otherwise
+// the default applies. A non-positive or NULL override falls back to the
+// default so a misconfigured 0 can never silently block every request.
+func effectiveLimits(t Token) Limits {
+	l := DefaultLimits()
+	if t.RateLimitRPM != nil && *t.RateLimitRPM > 0 {
+		l.RequestsPerMinute = int(*t.RateLimitRPM)
+	}
+	if t.RateLimitRPH != nil && *t.RateLimitRPH > 0 {
+		l.RequestsPerHour = int(*t.RateLimitRPH)
+	}
+	if t.MaxConcurrentJobs != nil && *t.MaxConcurrentJobs > 0 {
+		l.MaxConcurrentJobs = int(*t.MaxConcurrentJobs)
+	}
+	return l
 }
 
 // Middleware returns a chi-compatible middleware that authenticates incoming

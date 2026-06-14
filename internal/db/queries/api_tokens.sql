@@ -1,5 +1,6 @@
 -- name: GetActiveAPITokenByPrefix :one
-SELECT id, tenant_id, token_hash, scopes, environment, status, expires_at
+SELECT id, tenant_id, token_hash, scopes, environment, status, expires_at,
+       rate_limit_rpm, rate_limit_rph, max_concurrent_jobs
 FROM api_tokens
 WHERE token_prefix = $1;
 

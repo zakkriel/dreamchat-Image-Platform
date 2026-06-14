@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: DreamChat Image Platform API
-  version: 0.9.0
+  version: 0.10.0
   description: |
     Standalone API for generating, storing, retrieving, and versioning persistent visual assets for DreamChat worlds.
 
@@ -153,10 +153,21 @@ paths:
       responses:
         '202':
           description: Generation job accepted
+          headers:
+            X-RateLimit-Requests-Per-Minute: { $ref: '#/components/headers/RateLimitRequestsPerMinute' }
+            X-RateLimit-Requests-Per-Minute-Remaining: { $ref: '#/components/headers/RateLimitRequestsPerMinuteRemaining' }
+            X-RateLimit-Requests-Per-Minute-Reset: { $ref: '#/components/headers/RateLimitRequestsPerMinuteReset' }
+            X-RateLimit-Requests-Per-Hour: { $ref: '#/components/headers/RateLimitRequestsPerHour' }
+            X-RateLimit-Requests-Per-Hour-Remaining: { $ref: '#/components/headers/RateLimitRequestsPerHourRemaining' }
+            X-RateLimit-Requests-Per-Hour-Reset: { $ref: '#/components/headers/RateLimitRequestsPerHourReset' }
+            X-RateLimit-Concurrent-Jobs: { $ref: '#/components/headers/RateLimitConcurrentJobs' }
+            X-RateLimit-Concurrent-Jobs-Remaining: { $ref: '#/components/headers/RateLimitConcurrentJobsRemaining' }
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/GenerationJobAccepted'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
         default:
           $ref: '#/components/responses/ErrorResponse'
   /v1/places/{place_id}/visual-identity:
@@ -218,10 +229,21 @@ paths:
       responses:
         '202':
           description: Generation job accepted
+          headers:
+            X-RateLimit-Requests-Per-Minute: { $ref: '#/components/headers/RateLimitRequestsPerMinute' }
+            X-RateLimit-Requests-Per-Minute-Remaining: { $ref: '#/components/headers/RateLimitRequestsPerMinuteRemaining' }
+            X-RateLimit-Requests-Per-Minute-Reset: { $ref: '#/components/headers/RateLimitRequestsPerMinuteReset' }
+            X-RateLimit-Requests-Per-Hour: { $ref: '#/components/headers/RateLimitRequestsPerHour' }
+            X-RateLimit-Requests-Per-Hour-Remaining: { $ref: '#/components/headers/RateLimitRequestsPerHourRemaining' }
+            X-RateLimit-Requests-Per-Hour-Reset: { $ref: '#/components/headers/RateLimitRequestsPerHourReset' }
+            X-RateLimit-Concurrent-Jobs: { $ref: '#/components/headers/RateLimitConcurrentJobs' }
+            X-RateLimit-Concurrent-Jobs-Remaining: { $ref: '#/components/headers/RateLimitConcurrentJobsRemaining' }
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/GenerationJobAccepted'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
         default:
           $ref: '#/components/responses/ErrorResponse'
   /v1/artifacts/{artifact_id}/generate:
@@ -242,10 +264,21 @@ paths:
       responses:
         '202':
           description: Generation job accepted
+          headers:
+            X-RateLimit-Requests-Per-Minute: { $ref: '#/components/headers/RateLimitRequestsPerMinute' }
+            X-RateLimit-Requests-Per-Minute-Remaining: { $ref: '#/components/headers/RateLimitRequestsPerMinuteRemaining' }
+            X-RateLimit-Requests-Per-Minute-Reset: { $ref: '#/components/headers/RateLimitRequestsPerMinuteReset' }
+            X-RateLimit-Requests-Per-Hour: { $ref: '#/components/headers/RateLimitRequestsPerHour' }
+            X-RateLimit-Requests-Per-Hour-Remaining: { $ref: '#/components/headers/RateLimitRequestsPerHourRemaining' }
+            X-RateLimit-Requests-Per-Hour-Reset: { $ref: '#/components/headers/RateLimitRequestsPerHourReset' }
+            X-RateLimit-Concurrent-Jobs: { $ref: '#/components/headers/RateLimitConcurrentJobs' }
+            X-RateLimit-Concurrent-Jobs-Remaining: { $ref: '#/components/headers/RateLimitConcurrentJobsRemaining' }
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/GenerationJobAccepted'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
         default:
           $ref: '#/components/responses/ErrorResponse'
   /v1/assets/search:
@@ -414,10 +447,21 @@ paths:
       responses:
         '202':
           description: Generation job accepted
+          headers:
+            X-RateLimit-Requests-Per-Minute: { $ref: '#/components/headers/RateLimitRequestsPerMinute' }
+            X-RateLimit-Requests-Per-Minute-Remaining: { $ref: '#/components/headers/RateLimitRequestsPerMinuteRemaining' }
+            X-RateLimit-Requests-Per-Minute-Reset: { $ref: '#/components/headers/RateLimitRequestsPerMinuteReset' }
+            X-RateLimit-Requests-Per-Hour: { $ref: '#/components/headers/RateLimitRequestsPerHour' }
+            X-RateLimit-Requests-Per-Hour-Remaining: { $ref: '#/components/headers/RateLimitRequestsPerHourRemaining' }
+            X-RateLimit-Requests-Per-Hour-Reset: { $ref: '#/components/headers/RateLimitRequestsPerHourReset' }
+            X-RateLimit-Concurrent-Jobs: { $ref: '#/components/headers/RateLimitConcurrentJobs' }
+            X-RateLimit-Concurrent-Jobs-Remaining: { $ref: '#/components/headers/RateLimitConcurrentJobsRemaining' }
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/GenerationJobAccepted'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
         default:
           $ref: '#/components/responses/ErrorResponse'
   /v1/models:
@@ -1138,9 +1182,91 @@ components:
       description: |
         World ID used to scope the owner lookup. Visual identities are unique
         by tenant_id + world_id + owner_type + owner_id.
+  headers:
+    # Phase 7C-2 rate-limit headers. The request-rate headers are emitted on
+    # every authenticated /v1 response (allow or 429 rate_limit_exceeded) unless
+    # Redis is unreachable (fail-open omits them). The concurrent-job headers are
+    # emitted on generation-create responses and concurrent_jobs_exceeded
+    # denials. Reset values are Unix timestamps (seconds) at which the current
+    # fixed window resets.
+    RateLimitRequestsPerMinute:
+      description: Per-token requests-per-minute limit for the current window.
+      schema: { type: integer }
+    RateLimitRequestsPerMinuteRemaining:
+      description: Requests remaining in the current minute window.
+      schema: { type: integer }
+    RateLimitRequestsPerMinuteReset:
+      description: Unix timestamp (seconds) when the minute window resets.
+      schema: { type: integer }
+    RateLimitRequestsPerHour:
+      description: Per-token requests-per-hour limit for the current window.
+      schema: { type: integer }
+    RateLimitRequestsPerHourRemaining:
+      description: Requests remaining in the current hour window.
+      schema: { type: integer }
+    RateLimitRequestsPerHourReset:
+      description: Unix timestamp (seconds) when the hour window resets.
+      schema: { type: integer }
+    RateLimitConcurrentJobs:
+      description: Per-token hard cap on live generation jobs (queued|running|preview_ready).
+      schema: { type: integer }
+    RateLimitConcurrentJobsRemaining:
+      description: Live generation-job slots remaining for the token.
+      schema: { type: integer }
+    RetryAfter:
+      description: |
+        Seconds until the request-rate fixed window resets. Emitted ONLY on
+        `rate_limit_exceeded`; never on `concurrent_jobs_exceeded` (concurrency
+        clears at a terminal state, not a predictable time window).
+      schema: { type: integer }
   responses:
     ErrorResponse:
       description: Standard error response. Content type is `application/problem+json`.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    TooManyRequests:
+      description: |
+        Rate limited (HTTP 429, `application/problem+json`). The `code` is one of:
+
+        - `rate_limit_exceeded` — the per-token request-rate cap
+          (requests-per-minute / requests-per-hour). Enforced at the
+          authenticated `/v1` boundary before handler logic, for EVERY request
+          including reads and admin endpoints (admin tokens are mitigated via
+          higher per-token overrides). Carries `Retry-After` and the
+          `X-RateLimit-Requests-Per-*` headers. Request-rate limiting fails OPEN
+          on a Redis outage (request allowed, headers omitted).
+        - `concurrent_jobs_exceeded` — the per-token hard cap on live generation
+          jobs (`queued`, `running`, `preview_ready`). Enforced only on
+          generation-create paths, before any cost reservation or enqueue, so a
+          denial has no side effects. NO `Retry-After` is emitted. Carries
+          `X-RateLimit-Concurrent-Jobs[-Remaining]`. Idempotency replays bypass
+          this cap (they create no new load); instant cache-hit completions are
+          exempt (they occupy no live slot). The cap is Postgres-backed, so it
+          still holds during a Redis outage.
+
+        Cost-budget denials are NOT rate-limit errors: they remain
+        `422 no_price_entry` / `422 budget_exceeded`.
+      headers:
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+        X-RateLimit-Requests-Per-Minute:
+          $ref: '#/components/headers/RateLimitRequestsPerMinute'
+        X-RateLimit-Requests-Per-Minute-Remaining:
+          $ref: '#/components/headers/RateLimitRequestsPerMinuteRemaining'
+        X-RateLimit-Requests-Per-Minute-Reset:
+          $ref: '#/components/headers/RateLimitRequestsPerMinuteReset'
+        X-RateLimit-Requests-Per-Hour:
+          $ref: '#/components/headers/RateLimitRequestsPerHour'
+        X-RateLimit-Requests-Per-Hour-Remaining:
+          $ref: '#/components/headers/RateLimitRequestsPerHourRemaining'
+        X-RateLimit-Requests-Per-Hour-Reset:
+          $ref: '#/components/headers/RateLimitRequestsPerHourReset'
+        X-RateLimit-Concurrent-Jobs:
+          $ref: '#/components/headers/RateLimitConcurrentJobs'
+        X-RateLimit-Concurrent-Jobs-Remaining:
+          $ref: '#/components/headers/RateLimitConcurrentJobsRemaining'
       content:
         application/problem+json:
           schema:
@@ -2118,6 +2244,24 @@ components:
 # Confidence to Implement
 #
 # Score: 94/100 — Very High
+#
+# v0.10.0 — Phase 7C-2 rate limiting + hard concurrent job caps (additive):
+#   * New shared 429 response (components.responses.TooManyRequests) documenting
+#     the two rate-limit problem codes: `rate_limit_exceeded` (per-token
+#     request-rate cap, carries Retry-After + X-RateLimit-Requests-Per-* headers,
+#     fails open on a Redis outage, applies to every authenticated /v1 request
+#     including admin) and `concurrent_jobs_exceeded` (per-token hard cap on live
+#     generation jobs queued|running|preview_ready, no Retry-After, carries
+#     X-RateLimit-Concurrent-Jobs[-Remaining], Postgres-backed so it holds during
+#     a Redis outage). Wired onto the four generation-create endpoints
+#     (artifact generate, both generate-pack, style preview).
+#   * New components.headers for the request-rate + concurrent-job headers,
+#     emitted on generation-create 202s and on the 429.
+#   * Idempotency replays bypass the concurrent cap; instant cache-hit
+#     completions are exempt. Cost-budget denials remain 422 (`no_price_entry` /
+#     `budget_exceeded`) and are NOT moved to 429.
+#   * Backed by api_tokens per-token override columns (rate_limit_rpm,
+#     rate_limit_rph, max_concurrent_jobs) — schema only, not exposed in the API.
 #
 # v0.7.0 — Phase 7A real provider routing + BFL adapter (additive):
 #   * Generation requests now resolve a provider route (data-driven from

@@ -231,9 +231,10 @@ before this is production-ready.**
 - **Phase 7C-1 — Admin job control + budget period reset** (Done): the platform
   can now cancel a non-terminal job (reclaiming its reserved cost), retry a
   failed job (without re-resolving its route), and enforce daily/monthly budgets
-  per actual period instead of as lifetime caps. This is **slice 1 of 3** of
-  Phase 7C; rate limiting + RLS (7C-2) and provider fallback chains + webhooks
-  (7C-3) are **not** in this slice.
+  per actual period instead of as lifetime caps. This is **slice 1 of 4** of
+  Phase 7C; rate limiting + hard concurrent caps (7C-2), RLS / tenant isolation
+  (7C-3), and provider fallback chains + webhooks (7C-4) are **not** in this
+  slice.
   (1) **Admin cancel** — `POST /v1/admin/jobs/{job_id}/cancel` (scope
   `admin:jobs`; tenant from the principal, never the path/body). Allowed from
   `queued | running | preview_ready`; from `completed | failed` returns
@@ -278,11 +279,69 @@ before this is production-ready.**
   `limit_amount`/`status`). **No cron, scheduler, or background worker** — reset
   is purely lazy. OpenAPI `0.8.0 → 0.9.0` (strictly additive, mirrored).
 
+- **Phase 7C-2 — Rate limiting + hard concurrent job caps** (Done): the platform
+  now throttles authenticated `/v1` traffic per token and hard-caps live
+  generation jobs per token, before either can exhaust the API, queue, or
+  provider path. This is **slice 2 of 4** of Phase 7C; RLS / tenant isolation
+  (7C-3) and provider fallback chains + webhooks (7C-4) are **not** in this
+  slice.
+  (1) **Request-rate limiting** — a new `internal/ratelimit` package implements a
+  fixed-window, per-token Redis counter for `requests_per_minute` (default 60)
+  and `requests_per_hour` (default 1000). The counter increment and its TTL are
+  created **atomically** in one Lua script (`INCR` then `PEXPIRE` only on the
+  first increment), so a dropped connection can never leave a key without an
+  expiry. Mounted as middleware on the `/v1` group **after** auth (it needs the
+  principal) and **before** handlers/scope gates, so every authenticated
+  request is counted — reads and admin endpoints included (admin tokens are
+  mitigated via higher per-token overrides, not exemptions). Over-limit returns
+  `429 rate_limit_exceeded` with `Retry-After` and `X-RateLimit-Requests-Per-*`
+  headers (`*-Reset` = Unix seconds at the next window boundary). A denied
+  request still increments the counter (the documented fixed-window trade-off).
+  Redis errors **fail open**: the request is allowed, a warning is logged, and
+  headers are omitted — so a Redis outage degrades request-rate limiting only.
+  The limiter is nil-safe (no Redis configured ⇒ pass-through), so existing
+  tests need no Redis. (2) **Hard concurrent-job cap** — a per-token cap on live
+  generation jobs (`max_concurrent_jobs`, default 5), enforced in
+  `jobs.Service.CreateAndEnqueue` **before** cost reserve / job insert /
+  idempotency insert / enqueue. "Live" = `queued | running | preview_ready`
+  (`preview_ready` counts because it is not terminal); `completed | failed |
+  cancelled` free the slot, so a Phase 7C-1 cancel reclaims capacity. The cap is
+  **hard** under parallel requests: inside the create transaction the service
+  takes a transaction-scoped advisory lock keyed on the token (reusing the Phase
+  6A4 `AcquireSupersedeLock`/`pg_advisory_xact_lock` helper), so concurrent
+  creates for the same token serialize before counting
+  (`idx_generation_jobs_token_status` supports the count). Over the cap returns
+  `429 concurrent_jobs_exceeded` with **no** `Retry-After` (concurrency clears at
+  a terminal state, not a fixed window) plus `X-RateLimit-Concurrent-Jobs[-
+  Remaining]`; the denial has **no side effects**. The effective cap is threaded
+  in via `CreateAndEnqueueParams` — the jobs service never reads the request
+  context. (3) **Idempotency always wins over the cap** — both replay points
+  bypass it: the handler pre-check (`LookupReplay`) returns the existing job
+  before `CreateAndEnqueue`, and an in-transaction same-key conflict is detected
+  under the advisory lock and replayed before the cap is counted. A replay is
+  never denied by the cap, even at the cap, and creates no new load.
+  (4) **Cache-hit exemption** — instant cache-hit completions
+  (`CreateCompletedCacheHitJob`, `CreateCompletedPackReuseJob`) land at
+  `completed` without reserving/enqueuing, occupy no live slot, and are not
+  cap-checked. (5) **Per-token overrides** — `api_tokens` gains nullable
+  `rate_limit_rpm` / `rate_limit_rph` / `max_concurrent_jobs` (migration `0008`,
+  additive columns + `idx_generation_jobs_token_status`, table count stays
+  **18**). `NULL` means platform default; the effective limits are resolved at
+  auth and carried on the `Principal`, so neither the middleware nor the jobs
+  service issues an extra query. (6) **Cost limits are untouched** — budget
+  enforcement remains `422 no_price_entry` / `422 budget_exceeded`; rate limiting
+  owns only the two `429` codes. OpenAPI `0.9.0 → 0.10.0` (strictly additive,
+  mirrored): shared `429` `TooManyRequests` response + rate-limit header
+  components on the four generation-create endpoints.
+
 ## Remaining
 
-- **Phase 7C-2 — Rate limiting + RLS**: per-token/tenant rate limits and
-  row-level security for tenant isolation.
-- **Phase 7C-3 — Provider fallback chains + webhooks**: multi-provider fallback
+- **Phase 7C-3 — RLS / tenant isolation hardening**: row-level security for
+  tenant isolation (`ENABLE/FORCE ROW LEVEL SECURITY`, policies, `app.current_tenant`
+  GUC, connection/session tenant plumbing). Deferred from 7C-2 on purpose — it
+  needs deliberate DB connection/session plumbing and must not be bundled with
+  request throttling.
+- **Phase 7C-4 — Provider fallback chains + webhooks**: multi-provider fallback
   on failure and outbound webhooks for job lifecycle events.
 
 ## Notes

@@ -173,6 +173,7 @@ func (h *StylePreviewHandler) GeneratePreview(w http.ResponseWriter, r *http.Req
 		FallbackPolicy:     "none",
 		CacheResult:        "generated_required",
 		Units:              artifactUnits,
+		MaxConcurrentJobs:  principal.Limits.MaxConcurrentJobs,
 	}
 	applyResolvedRoute(&params, payload, resolved)
 	if idemKey != "" {
@@ -183,6 +184,9 @@ func (h *StylePreviewHandler) GeneratePreview(w http.ResponseWriter, r *http.Req
 
 	result, err := h.Service.CreateAndEnqueue(r.Context(), params)
 	if err != nil {
+		if errors.Is(err, jobs.ErrConcurrentJobsExceeded) {
+			setConcurrentHeaders(w, params.MaxConcurrentJobs, params.MaxConcurrentJobs)
+		}
 		writeJobServiceError(w, r, err)
 		return
 	}

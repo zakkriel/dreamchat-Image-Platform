@@ -265,3 +265,17 @@ RETURNING id, tenant_id, world_id, job_type, status,
           cost_reservation_id, cost_estimate_usd, actual_cost_usd,
           queue_duration_ms, generation_duration_ms,
           created_at, updated_at, started_at, completed_at;
+
+-- name: CountLiveGenerationJobsByToken :one
+-- Phase 7C-2: the hard concurrent-job cap counts a token's live generation
+-- jobs — those still occupying provider/queue capacity. preview_ready is
+-- deliberately included: a preview-ready job is NOT terminal (it may still need
+-- final generation), so it still consumes a concurrent slot. completed, failed,
+-- and cancelled are terminal and free the slot, so they are excluded. Runs
+-- inside the create transaction under the per-token advisory lock so concurrent
+-- creates for the same token serialize before counting. Backed by
+-- idx_generation_jobs_token_status.
+SELECT count(*)
+FROM generation_jobs
+WHERE requested_by_token_id = sqlc.arg('token_id')::text
+  AND status IN ('queued', 'running', 'preview_ready');

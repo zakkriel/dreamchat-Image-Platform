@@ -33,6 +33,15 @@ var (
 	// task. The handler maps this to 500.
 	ErrEnqueueFailed = errors.New("jobs: enqueue failed")
 
+	// ErrConcurrentJobsExceeded is returned by CreateAndEnqueue when the token
+	// already has max_concurrent_jobs live jobs (queued|running|preview_ready).
+	// The handler maps it to 429 concurrent_jobs_exceeded. The denial happens
+	// inside the create transaction, before cost reservation / job insert /
+	// idempotency insert / enqueue, so it has no side effects. It is NEVER
+	// returned for an idempotency replay — a replay returns the existing job
+	// even when the token is at the cap.
+	ErrConcurrentJobsExceeded = errors.New("jobs: concurrent jobs exceeded")
+
 	// ErrNoPriceEntry and ErrBudgetExceeded are re-exported from the cost
 	// package so handlers can map a denied pre-flight to 422 without
 	// importing cost directly. Both wrap the cost sentinels so
@@ -117,6 +126,14 @@ type CreateAndEnqueueParams struct {
 	IdempotencyKey string
 	Endpoint       string
 	RequestHash    string
+
+	// MaxConcurrentJobs is the effective per-token cap on live generation jobs
+	// (Phase 7C-2), threaded in from the principal's resolved limits — the jobs
+	// service does NOT read the request context. <= 0 disables the cap (used by
+	// callers/tests that don't enforce it). When > 0, CreateAndEnqueue counts the
+	// token's live jobs under a per-token advisory lock and returns
+	// ErrConcurrentJobsExceeded before any side effect if at/over the cap.
+	MaxConcurrentJobs int
 }
 
 // CreateResult is the service's return shape. Replayed is true when the
@@ -147,6 +164,14 @@ type CreateResult struct {
 	// lives on the job row and the worker fills final_asset_ids later).
 	CacheResult   string
 	FinalAssetIDs []string
+
+	// Concurrent-job accounting (Phase 7C-2), set on the reserve/enqueue create
+	// path when a cap was enforced (MaxConcurrentJobs > 0). ConcurrentJobsLimit
+	// is the effective cap; ConcurrentJobsUsed is the token's live-job count
+	// after this job lands (the pre-insert count + 1). Handlers surface these as
+	// X-RateLimit-Concurrent-Jobs[-Remaining] headers. Zero when no cap applied.
+	ConcurrentJobsLimit int
+	ConcurrentJobsUsed  int
 }
 
 // CreateCacheHitParams carries what the service needs to land an already-
@@ -314,6 +339,64 @@ func (s *Service) CreateAndEnqueue(ctx context.Context, params CreateAndEnqueueP
 	}()
 	q := dbgen.New(tx)
 
+	// 0. Phase 7C-2 hard concurrent-job cap. This block runs FIRST, before any
+	//    side effect (cost reserve / job insert / idempotency insert / enqueue),
+	//    so a denial leaves nothing behind.
+	//
+	//    a) Take a transaction-scoped advisory lock keyed on the token. Reusing
+	//       the Phase 6A4 helper (pg_advisory_xact_lock(hashtextextended(...)))
+	//       serializes concurrent creates for the SAME token so the count below
+	//       is consistent under parallel requests; the lock auto-releases at
+	//       commit/rollback. (hashtextextended collisions across distinct keys
+	//       only over-serialize — never a correctness issue.)
+	if err := q.AcquireSupersedeLock(ctx, concurrentLockKey(params.RequestedByTokenID)); err != nil {
+		return CreateResult{}, fmt.Errorf("acquire concurrent lock: %w", err)
+	}
+
+	//    b) Idempotency replay ALWAYS wins over the cap. Under the lock, if an
+	//       idempotency row already exists for (token, key), roll back and replay
+	//       the existing job — without evaluating the cap. This closes the
+	//       concurrent same-key duplicate race: a second same-key request blocks
+	//       on the lock until the first commits, then sees the committed row here
+	//       and replays instead of being counted/denied.
+	if params.IdempotencyKey != "" {
+		_, lookupErr := q.GetIdempotencyKey(ctx, dbgen.GetIdempotencyKeyParams{
+			TokenID: params.RequestedByTokenID,
+			Key:     params.IdempotencyKey,
+		})
+		switch {
+		case lookupErr == nil:
+			if err := tx.Rollback(ctx); err != nil {
+				return CreateResult{}, err
+			}
+			rolled = true
+			return s.replayExisting(ctx, params)
+		case errors.Is(lookupErr, pgx.ErrNoRows):
+			// New (token, key): fall through to the cap count.
+		default:
+			return CreateResult{}, fmt.Errorf("lookup idempotency under lock: %w", lookupErr)
+		}
+	}
+
+	//    c) Count the token's live jobs and deny at/over the cap. The count
+	//       excludes the not-yet-inserted job, so the post-create usage is
+	//       liveCount + 1.
+	liveCount := int64(0)
+	if params.MaxConcurrentJobs > 0 {
+		var err error
+		liveCount, err = q.CountLiveGenerationJobsByToken(ctx, params.RequestedByTokenID)
+		if err != nil {
+			return CreateResult{}, fmt.Errorf("count live jobs: %w", err)
+		}
+		if liveCount >= int64(params.MaxConcurrentJobs) {
+			if err := tx.Rollback(ctx); err != nil {
+				return CreateResult{}, err
+			}
+			rolled = true
+			return CreateResult{}, ErrConcurrentJobsExceeded
+		}
+	}
+
 	// 1. Insert the job (queued). The reservation FKs to it, so it must
 	//    exist first.
 	if err := s.insertJob(ctx, q, jobID, params, payload); err != nil {
@@ -432,14 +515,27 @@ func (s *Service) CreateAndEnqueue(ctx context.Context, params CreateAndEnqueueP
 	if err := s.enqueue(ctx, jobID, params.TenantID, packID); err != nil {
 		return CreateResult{JobID: jobID, Status: "failed", AssetPackID: packID}, err
 	}
-	return CreateResult{
+	result := CreateResult{
 		JobID:             jobID,
 		Status:            "queued",
 		EstimatedCostUSD:  res.EstimateUSD,
 		Currency:          res.Currency,
 		CostReservationID: res.ID,
 		AssetPackID:       packID,
-	}, nil
+	}
+	if params.MaxConcurrentJobs > 0 {
+		result.ConcurrentJobsLimit = params.MaxConcurrentJobs
+		result.ConcurrentJobsUsed = int(liveCount) + 1
+	}
+	return result, nil
+}
+
+// concurrentLockKey is the per-token advisory-lock key for the Phase 7C-2
+// concurrent-job cap. Namespaced with a "concurrent:" prefix so it does not
+// alias the Phase 6A4 supersede slot keys (which use other prefixes); even an
+// accidental hash collision would only over-serialize, never mis-count.
+func concurrentLockKey(tokenID string) string {
+	return "concurrent:" + tokenID
 }
 
 // CreateCompletedCacheHitJob lands an already-completed generation job for a

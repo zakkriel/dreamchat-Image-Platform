@@ -12,6 +12,7 @@ require (
 	github.com/hibiken/asynq v0.26.0
 	github.com/jackc/pgx/v5 v5.7.2
 	github.com/oapi-codegen/oapi-codegen/v2 v2.4.1
+	github.com/redis/go-redis/v9 v9.14.1
 	golang.org/x/image v0.42.0
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -45,7 +46,6 @@ require (
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826 // indirect
 	github.com/perimeterx/marshmallow v1.1.5 // indirect
-	github.com/redis/go-redis/v9 v9.14.1 // indirect
 	github.com/robfig/cron/v3 v3.0.1 // indirect
 	github.com/speakeasy-api/openapi-overlay v0.9.0 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
