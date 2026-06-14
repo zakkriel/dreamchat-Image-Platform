@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/zakkriel/drchat-image-platform/internal/assets"
+	appdb "github.com/zakkriel/drchat-image-platform/internal/db"
 	"github.com/zakkriel/drchat-image-platform/internal/db/dbgen"
 )
 
@@ -188,18 +189,32 @@ func (r *pgRepository) Insert(ctx context.Context, params InsertParams) (Job, er
 	return rowToJob(row), nil
 }
 
+// GetByIDForTenant is the request-path job read. It runs inside a tenant
+// executor (Phase 7C-3) so the read is scoped by app.current_tenant under RLS:
+// a job belonging to another tenant is invisible at the DB layer and surfaces
+// as ErrNotFound (→ 404), independent of the app-level tenant predicate that
+// also remains. On a BYPASSRLS/superuser pool the GUC is harmless and the
+// predicate alone still scopes the read.
 func (r *pgRepository) GetByIDForTenant(ctx context.Context, id, tenantID string) (Job, error) {
-	row, err := r.q.GetGenerationJobByID(ctx, dbgen.GetGenerationJobByIDParams{
-		ID:       id,
-		TenantID: tenantID,
+	var job Job
+	err := appdb.WithTenant(ctx, r.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		row, err := dbgen.New(tx).GetGenerationJobByID(ctx, dbgen.GetGenerationJobByIDParams{
+			ID:       id,
+			TenantID: tenantID,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		job = rowToJob(row)
+		return nil
 	})
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return Job{}, ErrNotFound
-		}
 		return Job{}, err
 	}
-	return rowToJob(row), nil
+	return job, nil
 }
 
 func (r *pgRepository) GetByID(ctx context.Context, id string) (Job, error) {

@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/zakkriel/drchat-image-platform/internal/cost"
+	appdb "github.com/zakkriel/drchat-image-platform/internal/db"
 	"github.com/zakkriel/drchat-image-platform/internal/db/dbgen"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
 )
@@ -87,6 +88,13 @@ func (s *Service) CancelJob(ctx context.Context, tenantID, jobID string) (jobs.J
 			_ = tx.Rollback(ctx)
 		}
 	}()
+	// Phase 7C-3: admin cancel is tenant-local (the tenant comes from the
+	// principal, not a cross-tenant filter), so scope this transaction to it.
+	// The job lock + cancel + the cost release composed via ReleaseInTx all run
+	// under app.current_tenant, satisfying RLS without the system executor.
+	if err := appdb.SetTenantLocal(ctx, tx, tenantID); err != nil {
+		return jobs.Job{}, fmt.Errorf("set tenant: %w", err)
+	}
 	q := dbgen.New(tx)
 
 	status, err := q.LockGenerationJobForUpdate(ctx, dbgen.LockGenerationJobForUpdateParams{ID: jobID, TenantID: tenantID})
@@ -156,6 +164,12 @@ func (s *Service) RetryJob(ctx context.Context, tenantID, jobID string) (jobs.Jo
 			_ = tx.Rollback(ctx)
 		}
 	}()
+	// Phase 7C-3: admin retry is tenant-local; scope this transaction to the
+	// principal's tenant so the lock, the cost re-reservation, and the reset all
+	// run under app.current_tenant (RLS-compliant, not the system executor).
+	if err := appdb.SetTenantLocal(ctx, tx, tenantID); err != nil {
+		return jobs.Job{}, fmt.Errorf("set tenant: %w", err)
+	}
 	q := dbgen.New(tx)
 
 	row, err := q.LockGenerationJobRowForUpdate(ctx, dbgen.LockGenerationJobRowForUpdateParams{ID: jobID, TenantID: tenantID})
@@ -218,10 +232,19 @@ func (s *Service) enqueueRetry(ctx context.Context, jobID, tenantID, packID stri
 	if packID != "" {
 		enqueueFn = s.enqueuer.EnqueueGeneratePack
 	}
-	if err := enqueueFn(ctx, jobID); err != nil {
-		q := dbgen.New(s.pool)
+	enqErr := enqueueFn(ctx, jobID)
+	if enqErr == nil {
+		return nil
+	}
+	// Phase 7C-3: run the post-commit cleanup (mark failed, mark pack failed,
+	// release the fresh reservation) in one tenant-scoped transaction so it is
+	// RLS-compliant — the release composes via ReleaseInTx under the same GUC,
+	// never the system executor.
+	var cleanupErr error
+	if err := appdb.WithTenant(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		q := dbgen.New(tx)
 		ec := "enqueue_failed"
-		em := err.Error()
+		em := enqErr.Error()
 		rb := false
 		if _, markErr := q.MarkGenerationJobFailed(ctx, dbgen.MarkGenerationJobFailedParams{
 			ID:           jobID,
@@ -230,19 +253,27 @@ func (s *Service) enqueueRetry(ctx context.Context, jobID, tenantID, packID stri
 			ErrorMessage: &em,
 			Retryable:    &rb,
 		}); markErr != nil {
-			return fmt.Errorf("%w (also mark-failed: %v): %v", jobs.ErrEnqueueFailed, markErr, err)
+			cleanupErr = fmt.Errorf("mark-failed: %v", markErr)
+			return cleanupErr
 		}
 		if packID != "" {
 			if packErr := q.UpdateAssetPackStatus(ctx, dbgen.UpdateAssetPackStatusParams{ID: packID, Status: statusFailed}); packErr != nil {
-				return fmt.Errorf("%w (also mark-pack-failed: %v): %v", jobs.ErrEnqueueFailed, packErr, err)
+				cleanupErr = fmt.Errorf("mark-pack-failed: %v", packErr)
+				return cleanupErr
 			}
 		}
-		if relErr := s.releaser.Release(ctx, jobID); relErr != nil {
-			return fmt.Errorf("%w (also release-reservation: %v): %v", jobs.ErrEnqueueFailed, relErr, err)
+		if relErr := s.releaser.ReleaseInTx(ctx, tx, jobID); relErr != nil {
+			cleanupErr = fmt.Errorf("release-reservation: %v", relErr)
+			return cleanupErr
 		}
-		return fmt.Errorf("%w: %v", jobs.ErrEnqueueFailed, err)
+		return nil
+	}); err != nil {
+		if cleanupErr != nil {
+			return fmt.Errorf("%w (also %v): %v", jobs.ErrEnqueueFailed, cleanupErr, enqErr)
+		}
+		return fmt.Errorf("%w (cleanup tx: %v): %v", jobs.ErrEnqueueFailed, err, enqErr)
 	}
-	return nil
+	return fmt.Errorf("%w: %v", jobs.ErrEnqueueFailed, enqErr)
 }
 
 // reserveInputFromRow builds the retry cost reservation input from the job's

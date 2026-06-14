@@ -35,7 +35,13 @@ func main() {
 		"image_provider", string(cfg.ImageProvider),
 	)
 
-	pool, err := openPool(cfg.PostgresDSN)
+	// Phase 7C-3: the worker receives only a job_id and must read the job row to
+	// discover its tenant, so it cannot set app.current_tenant before its first
+	// DB call. It therefore connects on the system (BYPASSRLS) pool and continues
+	// to rely on the existing app-level tenant predicates (every worker query
+	// already passes the job's tenant_id). A later refactor could make the tenant
+	// known earlier and add GUC plumbing; that is intentionally out of scope here.
+	pool, err := openPool(cfg.SystemDSN())
 	if err != nil {
 		logger.Error("postgres connect failed", "error", err)
 		os.Exit(1)

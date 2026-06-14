@@ -334,13 +334,60 @@ before this is production-ready.**
   mirrored): shared `429` `TooManyRequests` response + rate-limit header
   components on the four generation-create endpoints.
 
+- **Phase 7C-3 — RLS / tenant isolation hardening** (Done): the database now
+  **enforces** tenant isolation as defense in depth, so a missing or wrong
+  `WHERE tenant_id = $1` in any current or future query can no longer leak rows
+  across tenants. This is **slice 3 of 4** of Phase 7C; provider fallback chains
+  + webhooks (7C-4) are **not** in this slice. The existing app-level tenant
+  predicates **remain** — RLS is an additional layer, not a replacement.
+  (1) **Forced RLS + deny-by-default policies** — migration `0009` enables AND
+  **forces** row-level security (the owner is normally exempt; FORCE subjects it
+  too) on every directly tenant-scoped table (`api_tokens`, `style_profiles`,
+  `visual_identities`, `visual_assets`, `generation_jobs`, `asset_packs`,
+  `cost_budgets`, `cost_reservations`, `generation_cost_events`, plus
+  `audit_events`) and on the five tenant-owned child tables
+  (`visual_identity_versions`, `asset_pack_items`, `provider_attempts`,
+  `idempotency_keys`, `cost_reservation_budget_holds`) via parent-join `EXISTS`
+  policies. The canonical predicate is text-safe — `tenant_id = NULLIF(current_
+  setting('app.current_tenant', true), '')`, **never** a uuid cast (ids are TEXT
+  like `tenant_it_jobs`) — and **deny-by-default**: an unset/empty GUC becomes
+  `NULL`, matching no rows. Global reference tables (`provider_models`,
+  `provider_routes`, `provider_model_prices`) are deliberately left readable.
+  **No new table — count stays 18.** (2) **Two DB roles** — `image_platform_api`
+  (non-superuser, no BYPASSRLS, subject to RLS) backs the tenant request path;
+  `image_platform_system` (BYPASSRLS) backs the system/pre-tenant/admin-cross-
+  tenant paths. Table ownership alone is **not** a valid bypass under FORCE RLS,
+  so the system role gets explicit `BYPASSRLS`. (3) **Tenant executor** —
+  `internal/db.WithTenant` runs request work in a transaction with
+  `set_config('app.current_tenant', $1, true)` (transaction-local, so it never
+  leaks across pooled connections); `SetTenantLocal` sets the same GUC inside a
+  service-owned transaction. The hot write paths set the GUC internally:
+  `jobs.Service.CreateAndEnqueue` (+ cache-hit and pack-reuse create), the cost
+  reserve inside create, `identities` upsert, and `adminjobs` cancel/retry. The
+  read-path repositories (styles, identities, assets, jobs read) run their reads
+  inside `WithTenant` using the `tenant_id` they already receive. (4) **System
+  executor** — `internal/db.SystemDB` is a distinct named type wrapping the
+  BYPASSRLS pool, reachable only where deliberately wired: auth token lookup
+  (pre-tenant) and the async `TouchAPITokenLastUsed`, the worker (job lookup by
+  id), the route resolver (global reference data), and the admin cost surface
+  (admin-cross-tenant after an `admin:costs` scope check). The `api_tokens`
+  policy is **not** weakened for prefix lookup — auth uses the system executor
+  instead. (5) **Executor-agnostic cost lifecycle** — `cost.Lifecycle` operates
+  on the tx/pool it is handed: the worker calls standalone `Commit`/`Release`
+  on the system pool (bypass), while admin cancel/retry compose `CommitInTx`/
+  `ReleaseInTx` into a tenant-scoped transaction; it never chooses its own pool
+  or hardcodes the system executor. (6) **Two-pool test harness + CI** — fixture
+  seed/cleanup and every pre-existing integration test run on the system/bypass
+  DSN (`POSTGRES_DSN`), so they pass unchanged; the new RLS-enforcement and
+  tenant-executor tests run on the non-superuser API role (`POSTGRES_API_DSN`),
+  the only way to actually observe enforcement. CI provisions the API role,
+  asserts RLS is enabled+forced + policies exist + isolation/deny-by-default/
+  WITH CHECK under the API role, and keeps the table count at 18. (7) **No
+  client-visible change** — cross-tenant access still behaves like `404
+  not_found`; OpenAPI is byte-for-byte unchanged (`0.10.0`).
+
 ## Remaining
 
-- **Phase 7C-3 — RLS / tenant isolation hardening**: row-level security for
-  tenant isolation (`ENABLE/FORCE ROW LEVEL SECURITY`, policies, `app.current_tenant`
-  GUC, connection/session tenant plumbing). Deferred from 7C-2 on purpose — it
-  needs deliberate DB connection/session plumbing and must not be bundled with
-  request throttling.
 - **Phase 7C-4 — Provider fallback chains + webhooks**: multi-provider fallback
   on failure and outbound webhooks for job lifecycle events.
 

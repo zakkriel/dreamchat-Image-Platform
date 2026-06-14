@@ -66,6 +66,35 @@ func openTestPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
+// openAPITestPool opens a pool as the non-superuser, RLS-enforced API role
+// (image_platform_api) from POSTGRES_API_DSN. Per Phase 7C-3 §22.6a the harness
+// is two-pool: openTestPool connects on the system/bypass DSN (POSTGRES_DSN,
+// superuser in CI) and is used by ALL fixture seed/cleanup and every pre-existing
+// integration test, so they keep working unchanged; openAPITestPool is used ONLY
+// by the RLS-enforcement and tenant-executor tests, which must actually observe
+// the policies. It skips when POSTGRES_API_DSN is unset so the suite still runs
+// locally without the API role provisioned.
+func openAPITestPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	dsn := os.Getenv("POSTGRES_API_DSN")
+	if dsn == "" {
+		t.Skip("POSTGRES_API_DSN not set; skipping RLS-enforcement test")
+	}
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("pgxpool.ParseConfig(api): %v", err)
+	}
+	cfg.MaxConns = 8
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("pgxpool.NewWithConfig(api): %v", err)
+	}
+	if err := pool.Ping(context.Background()); err != nil {
+		t.Fatalf("api pool.Ping: %v", err)
+	}
+	return pool
+}
+
 func cleanup(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()

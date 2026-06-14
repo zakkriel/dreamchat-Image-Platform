@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	appdb "github.com/zakkriel/drchat-image-platform/internal/db"
 	"github.com/zakkriel/drchat-image-platform/internal/db/dbgen"
 )
 
@@ -262,74 +263,111 @@ func marshalMetadata(meta map[string]any) ([]byte, error) {
 	return json.Marshal(meta)
 }
 
+// The retrieval/reuse reads below are request-path only (handlers, via the
+// reuse + retriever interfaces). Each runs inside a tenant executor (Phase
+// 7C-3) so visual_assets reads are scoped by app.current_tenant under RLS, on
+// top of the existing tenant predicate. The query structs always carry TenantID.
+
 func (r *pgRepository) FindExact(ctx context.Context, q RetrievalQuery) (VisualAsset, error) {
-	row, err := r.q.FindExactVisualAsset(ctx, dbgen.FindExactVisualAssetParams{
-		TenantID:            q.TenantID,
-		WorldID:             q.WorldID,
-		VisualIdentityID:    strPtr(q.VisualIdentityID),
-		VariantKey:          q.VariantKey,
-		StateVersion:        q.StateVersion,
-		StyleProfileID:      strPtr(q.StyleProfileID),
-		StyleProfileVersion: q.StyleProfileVersion,
-		QualityTier:         strPtr(q.QualityTier),
+	var out VisualAsset
+	err := appdb.WithTenant(ctx, r.pool, q.TenantID, func(ctx context.Context, tx pgx.Tx) error {
+		row, err := dbgen.New(tx).FindExactVisualAsset(ctx, dbgen.FindExactVisualAssetParams{
+			TenantID:            q.TenantID,
+			WorldID:             q.WorldID,
+			VisualIdentityID:    strPtr(q.VisualIdentityID),
+			VariantKey:          q.VariantKey,
+			StateVersion:        q.StateVersion,
+			StyleProfileID:      strPtr(q.StyleProfileID),
+			StyleProfileVersion: q.StyleProfileVersion,
+			QualityTier:         strPtr(q.QualityTier),
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		out = fromRow(row)
+		return nil
 	})
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return VisualAsset{}, ErrNotFound
-		}
 		return VisualAsset{}, err
 	}
-	return fromRow(row), nil
+	return out, nil
 }
 
 func (r *pgRepository) FindReadyArtifactByPromptHash(ctx context.Context, q ArtifactLookup) (VisualAsset, error) {
-	row, err := r.q.FindReadyArtifactByPromptHash(ctx, dbgen.FindReadyArtifactByPromptHashParams{
-		TenantID:            q.TenantID,
-		WorldID:             q.WorldID,
-		StyleProfileID:      strPtr(q.StyleProfileID),
-		QualityTier:         q.QualityTier,
-		PromptHash:          strPtr(q.PromptHash),
-		StyleProfileVersion: q.StyleProfileVersion,
+	var out VisualAsset
+	err := appdb.WithTenant(ctx, r.pool, q.TenantID, func(ctx context.Context, tx pgx.Tx) error {
+		row, err := dbgen.New(tx).FindReadyArtifactByPromptHash(ctx, dbgen.FindReadyArtifactByPromptHashParams{
+			TenantID:            q.TenantID,
+			WorldID:             q.WorldID,
+			StyleProfileID:      strPtr(q.StyleProfileID),
+			QualityTier:         q.QualityTier,
+			PromptHash:          strPtr(q.PromptHash),
+			StyleProfileVersion: q.StyleProfileVersion,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		out = fromRow(row)
+		return nil
 	})
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return VisualAsset{}, ErrNotFound
-		}
 		return VisualAsset{}, err
 	}
-	return fromRow(row), nil
+	return out, nil
 }
 
 func (r *pgRepository) ListRetrievalCandidates(ctx context.Context, q RetrievalQuery) ([]VisualAsset, error) {
-	rows, err := r.q.ListVisualAssetCandidates(ctx, dbgen.ListVisualAssetCandidatesParams{
-		TenantID:         q.TenantID,
-		WorldID:          q.WorldID,
-		VisualIdentityID: strPtr(q.VisualIdentityID),
-		StateVersion:     q.StateVersion,
-		StyleProfileID:   strPtr(q.StyleProfileID),
+	var out []VisualAsset
+	err := appdb.WithTenant(ctx, r.pool, q.TenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := dbgen.New(tx).ListVisualAssetCandidates(ctx, dbgen.ListVisualAssetCandidatesParams{
+			TenantID:         q.TenantID,
+			WorldID:          q.WorldID,
+			VisualIdentityID: strPtr(q.VisualIdentityID),
+			StateVersion:     q.StateVersion,
+			StyleProfileID:   strPtr(q.StyleProfileID),
+		})
+		if err != nil {
+			return err
+		}
+		out = fromRows(rows)
+		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	return fromRows(rows), nil
+	return out, nil
 }
 
 func (r *pgRepository) ListRetrievalCandidatesByCompatTag(ctx context.Context, q RetrievalQuery, tags []string) ([]VisualAsset, error) {
 	if tags == nil {
 		tags = []string{}
 	}
-	rows, err := r.q.ListVisualAssetCandidatesByCompatTag(ctx, dbgen.ListVisualAssetCandidatesByCompatTagParams{
-		TenantID:          q.TenantID,
-		WorldID:           q.WorldID,
-		VisualIdentityID:  strPtr(q.VisualIdentityID),
-		StateVersion:      q.StateVersion,
-		StyleProfileID:    strPtr(q.StyleProfileID),
-		CompatibilityTags: tags,
+	var out []VisualAsset
+	err := appdb.WithTenant(ctx, r.pool, q.TenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := dbgen.New(tx).ListVisualAssetCandidatesByCompatTag(ctx, dbgen.ListVisualAssetCandidatesByCompatTagParams{
+			TenantID:          q.TenantID,
+			WorldID:           q.WorldID,
+			VisualIdentityID:  strPtr(q.VisualIdentityID),
+			StateVersion:      q.StateVersion,
+			StyleProfileID:    strPtr(q.StyleProfileID),
+			CompatibilityTags: tags,
+		})
+		if err != nil {
+			return err
+		}
+		out = fromRows(rows)
+		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	return fromRows(rows), nil
+	return out, nil
 }
 
 // strPtr returns nil for the empty string so an unset RetrievalQuery field maps
@@ -350,17 +388,25 @@ func fromRows(rows []dbgen.VisualAsset) []VisualAsset {
 }
 
 func (r *pgRepository) GetByIDForTenant(ctx context.Context, id, tenantID string) (VisualAsset, error) {
-	row, err := r.q.GetVisualAssetByID(ctx, dbgen.GetVisualAssetByIDParams{
-		ID:       id,
-		TenantID: tenantID,
+	var out VisualAsset
+	err := appdb.WithTenant(ctx, r.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		row, err := dbgen.New(tx).GetVisualAssetByID(ctx, dbgen.GetVisualAssetByIDParams{
+			ID:       id,
+			TenantID: tenantID,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		out = fromRow(row)
+		return nil
 	})
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return VisualAsset{}, ErrNotFound
-		}
 		return VisualAsset{}, err
 	}
-	return fromRow(row), nil
+	return out, nil
 }
 
 func fromRow(row dbgen.VisualAsset) VisualAsset {

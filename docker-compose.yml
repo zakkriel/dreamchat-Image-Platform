@@ -77,6 +77,7 @@ services:
       LOG_LEVEL: info
       WORKER_CONCURRENCY: "4"
       POSTGRES_DSN: postgres://image_platform:image_platform@postgres:5432/image_platform?sslmode=disable
+      POSTGRES_SYSTEM_DSN: postgres://image_platform:image_platform@postgres:5432/image_platform?sslmode=disable
       REDIS_ADDR: redis:6379
       S3_BUCKET: image-platform
       S3_REGION: us-east-1
@@ -112,6 +113,7 @@ services:
       LOG_LEVEL: info
       WORKER_CONCURRENCY: "4"
       POSTGRES_DSN: postgres://image_platform:image_platform@postgres:5432/image_platform?sslmode=disable
+      POSTGRES_SYSTEM_DSN: postgres://image_platform:image_platform@postgres:5432/image_platform?sslmode=disable
       REDIS_ADDR: redis:6379
       S3_BUCKET: image-platform
       S3_REGION: us-east-1

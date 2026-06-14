@@ -157,6 +157,8 @@ jobs:
                -v ON_ERROR_STOP=1 -f migrations/0007_budget_period_reset.up.sql
           psql -h localhost -U image_platform -d image_platform \
                -v ON_ERROR_STOP=1 -f migrations/0008_rate_limits.up.sql
+          psql -h localhost -U image_platform -d image_platform \
+               -v ON_ERROR_STOP=1 -f migrations/0009_rls_tenant_isolation.up.sql
 
       - name: assert all expected tables exist
         env:
@@ -170,6 +172,7 @@ jobs:
           # 0006 (Phase 7A) is seed-only DML (BFL provider/route/price) — no new table.
           # 0007 (Phase 7C-1c) only ADDs cost_budgets.period_start — no new table.
           # 0008 (Phase 7C-2) only ADDs api_tokens limit columns + an index — no new table.
+          # 0009 (Phase 7C-3) only adds RLS roles/policies — no new table.
           test "$count" = "18"
 
       - name: assert budget period_start column exists
@@ -290,9 +293,68 @@ jobs:
           fi
           echo "duplicate active price correctly rejected"
 
+      # Phase 7C-3: prove RLS is ENABLED + FORCED and the policies exist. The
+      # migration created the image_platform_api (RLS-enforced) and
+      # image_platform_system (BYPASSRLS) roles; the next steps prove enforcement
+      # under the non-superuser API role (superuser/owner checks bypass RLS and
+      # would prove nothing).
+      - name: assert RLS enabled+forced and policies exist
+        env:
+          PGPASSWORD: image_platform
+        run: |
+          for tbl in generation_jobs visual_assets api_tokens cost_reservations idempotency_keys asset_pack_items; do
+            state=$(psql -h localhost -U image_platform -d image_platform -tAc \
+              "SELECT (relrowsecurity AND relforcerowsecurity)::int FROM pg_class WHERE relname = '$tbl'")
+            test "$state" = "1" || { echo "ERROR: $tbl not RLS enabled+forced (state=$state)"; exit 1; }
+            pol=$(psql -h localhost -U image_platform -d image_platform -tAc \
+              "SELECT count(*) FROM pg_policies WHERE tablename = '$tbl' AND policyname = 'tenant_isolation'")
+            test "$pol" = "1" || { echo "ERROR: $tbl missing tenant_isolation policy"; exit 1; }
+          done
+          # Global reference tables must NOT have RLS enabled.
+          for tbl in provider_models provider_routes provider_model_prices; do
+            en=$(psql -h localhost -U image_platform -d image_platform -tAc \
+              "SELECT relrowsecurity::int FROM pg_class WHERE relname = '$tbl'")
+            test "$en" = "0" || { echo "ERROR: global $tbl must not have RLS"; exit 1; }
+          done
+
+      - name: assert RLS enforced under non-superuser API role
+        run: |
+          set -euo pipefail
+          # Seed two tenants' rows as the owner (bypass), then assert isolation,
+          # deny-by-default, and WITH CHECK as image_platform_api.
+          PGPASSWORD=image_platform psql -h localhost -U image_platform -d image_platform -v ON_ERROR_STOP=1 -c \
+            "INSERT INTO generation_jobs (id, tenant_id, job_type, status) VALUES
+               ('ci_rls_a','ci_tenant_a','artifact','queued'),
+               ('ci_rls_b','ci_tenant_b','artifact','queued')
+             ON CONFLICT (id) DO NOTHING"
+          # tenant A (GUC set via PGOPTIONS) sees only its own row.
+          a=$(PGPASSWORD=image_platform_api PGOPTIONS="-c app.current_tenant=ci_tenant_a" \
+            psql -h localhost -U image_platform_api -d image_platform -tAc "SELECT count(*) FROM generation_jobs")
+          test "$a" = "1" || { echo "ERROR: tenant A saw $a rows (want 1)"; exit 1; }
+          # Unset GUC sees zero (deny-by-default).
+          z=$(PGPASSWORD=image_platform_api \
+            psql -h localhost -U image_platform_api -d image_platform -tAc "SELECT count(*) FROM generation_jobs")
+          test "$z" = "0" || { echo "ERROR: unset GUC saw $z rows (want 0)"; exit 1; }
+          # WITH CHECK blocks a cross-tenant insert under GUC=tenant_a.
+          if PGPASSWORD=image_platform_api PGOPTIONS="-c app.current_tenant=ci_tenant_a" \
+            psql -h localhost -U image_platform_api -d image_platform -v ON_ERROR_STOP=1 \
+            -c "INSERT INTO generation_jobs (id, tenant_id, job_type, status) VALUES ('ci_rls_x','ci_tenant_b','artifact','queued')" 2>/dev/null; then
+            echo "ERROR: WITH CHECK allowed a cross-tenant insert"; exit 1
+          fi
+          # The system (BYPASSRLS) role sees both tenants.
+          s=$(PGPASSWORD=image_platform_system \
+            psql -h localhost -U image_platform_system -d image_platform -tAc "SELECT count(*) FROM generation_jobs")
+          test "$s" -ge "2" || { echo "ERROR: system role saw $s rows (want >=2)"; exit 1; }
+          PGPASSWORD=image_platform psql -h localhost -U image_platform -d image_platform -c \
+            "DELETE FROM generation_jobs WHERE id IN ('ci_rls_a','ci_rls_b','ci_rls_x')"
+
       - name: integration tests
         env:
+          # The pre-existing suite runs on the system/owner DSN (bypasses RLS).
           POSTGRES_DSN: postgres://image_platform:image_platform@localhost:5432/image_platform?sslmode=disable
+          # The Phase 7C-3 RLS-enforcement + tenant-executor tests run on the
+          # non-superuser, RLS-enforced API role.
+          POSTGRES_API_DSN: postgres://image_platform_api:image_platform_api@localhost:5432/image_platform?sslmode=disable
           REDIS_ADDR: localhost:6379
           S3_BUCKET: image-platform
           S3_REGION: us-east-1

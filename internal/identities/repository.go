@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	appdb "github.com/zakkriel/drchat-image-platform/internal/db"
 	"github.com/zakkriel/drchat-image-platform/internal/db/dbgen"
 )
 
@@ -101,6 +102,13 @@ func (r *pgRepository) Upsert(ctx context.Context, params UpsertParams) (VisualI
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// Phase 7C-3: this service-owned upsert transaction writes tenant-owned
+	// visual_identities and (child) visual_identity_versions rows, so scope it to
+	// the tenant for RLS before any query.
+	if err := appdb.SetTenantLocal(ctx, tx, params.TenantID); err != nil {
+		return VisualIdentity{}, err
+	}
+
 	q := dbgen.New(tx)
 
 	if err := r.styleCheck(ctx, q, params.StyleProfileID, params.TenantID); err != nil {
@@ -177,33 +185,49 @@ func (r *pgRepository) Upsert(ctx context.Context, params UpsertParams) (VisualI
 }
 
 func (r *pgRepository) GetByOwner(ctx context.Context, tenantID, worldID, ownerType, ownerID string) (VisualIdentity, error) {
-	row, err := dbgen.New(r.pool).GetVisualIdentityByOwner(ctx, dbgen.GetVisualIdentityByOwnerParams{
-		TenantID:  tenantID,
-		WorldID:   worldID,
-		OwnerType: ownerType,
-		OwnerID:   ownerID,
+	var out VisualIdentity
+	err := appdb.WithTenant(ctx, r.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		row, err := dbgen.New(tx).GetVisualIdentityByOwner(ctx, dbgen.GetVisualIdentityByOwnerParams{
+			TenantID:  tenantID,
+			WorldID:   worldID,
+			OwnerType: ownerType,
+			OwnerID:   ownerID,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		out = rowToDomain(row)
+		return nil
 	})
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return VisualIdentity{}, ErrNotFound
-		}
 		return VisualIdentity{}, err
 	}
-	return rowToDomain(row), nil
+	return out, nil
 }
 
 func (r *pgRepository) GetByIDForTenant(ctx context.Context, id, tenantID string) (VisualIdentity, error) {
-	row, err := dbgen.New(r.pool).GetVisualIdentityByID(ctx, dbgen.GetVisualIdentityByIDParams{
-		ID:       id,
-		TenantID: tenantID,
+	var out VisualIdentity
+	err := appdb.WithTenant(ctx, r.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		row, err := dbgen.New(tx).GetVisualIdentityByID(ctx, dbgen.GetVisualIdentityByIDParams{
+			ID:       id,
+			TenantID: tenantID,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		out = rowToDomain(row)
+		return nil
 	})
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return VisualIdentity{}, ErrNotFound
-		}
 		return VisualIdentity{}, err
 	}
-	return rowToDomain(row), nil
+	return out, nil
 }
 
 func identityUnchanged(existing dbgen.VisualIdentity, params UpsertParams, traitsJSON []byte) bool {
