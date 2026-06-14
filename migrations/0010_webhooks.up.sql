@@ -67,3 +67,41 @@ CREATE TABLE webhook_deliveries (
 CREATE INDEX idx_webhook_deliveries_tenant ON webhook_deliveries(tenant_id, created_at DESC);
 -- Look up all deliveries emitted for one generation job.
 CREATE INDEX idx_webhook_deliveries_job ON webhook_deliveries(generation_job_id);
+
+-- ---------------------------------------------------------------------------
+-- Tenant isolation (Phase 7C-3 continuity).
+--
+-- Both new tables are directly tenant-scoped (tenant_id column), so they get
+-- the SAME ENABLE + FORCE ROW LEVEL SECURITY and the SAME canonical text-safe,
+-- deny-by-default tenant_isolation policy as the Phase 7C-3 direct tenant tables
+-- (migrations/0009). Without this, the just-added RLS hardening would have a
+-- gap on the platform's newest tenant data.
+--
+--   * The CONFIG path (PUT/GET /v1/admin/webhook-endpoint) runs on the
+--     RLS-enforced tenant pool and sets app.current_tenant per transaction
+--     (internal/webhooks/repository.go via internal/db.WithTenant), so these
+--     policies actively gate it.
+--   * The WORKER path (emitter + deliverer) runs on the BYPASSRLS system role,
+--     exactly like the rest of the worker under 7C-3 — it bypasses the policy
+--     but still scopes by explicit tenant_id / by-id predicates.
+--
+-- DML grants need no statement here: migration 0009 set ALTER DEFAULT
+-- PRIVILEGES for image_platform_api / image_platform_system, so tables created
+-- by this later migration inherit the SELECT/INSERT/UPDATE/DELETE grants.
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE
+  t text;
+  webhook_tables text[] := ARRAY['webhook_endpoints', 'webhook_deliveries'];
+BEGIN
+  FOREACH t IN ARRAY webhook_tables LOOP
+    EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
+    EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
+    EXECUTE format('DROP POLICY IF EXISTS tenant_isolation ON %I', t);
+    EXECUTE format($f$
+      CREATE POLICY tenant_isolation ON %I
+        USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), ''))
+        WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), ''))
+    $f$, t);
+  END LOOP;
+END $$;

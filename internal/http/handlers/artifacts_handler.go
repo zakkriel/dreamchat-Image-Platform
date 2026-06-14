@@ -190,7 +190,7 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 	// Idempotency replay check FIRST (Phase 7A lifecycle): a replay returns the
 	// existing job without re-running reuse, route resolution, cost reservation,
 	// or enqueue.
-	if idemKey != "" && handleReplay(w, r, h.Service, principal.TokenID, idemKey, endpoint, requestHash) {
+	if idemKey != "" && handleReplay(w, r, h.Service, principal.TenantID, principal.TokenID, idemKey, endpoint, requestHash) {
 		return
 	}
 

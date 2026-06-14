@@ -56,7 +56,7 @@ func (f *fakeRepo) InsertEndpoint(_ context.Context, p InsertEndpointParams) (En
 	return e, nil
 }
 
-func (f *fakeRepo) UpdateEndpointURL(_ context.Context, id, url string) (Endpoint, error) {
+func (f *fakeRepo) UpdateEndpointURL(_ context.Context, id, _ /* tenantID */, url string) (Endpoint, error) {
 	e, ok := f.endpointByID[id]
 	if !ok {
 		return Endpoint{}, ErrNotFound

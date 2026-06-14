@@ -213,22 +213,26 @@ func (q *Queries) MarkWebhookDeliveryResult(ctx context.Context, arg MarkWebhook
 
 const updateWebhookEndpointURL = `-- name: UpdateWebhookEndpointURL :one
 UPDATE webhook_endpoints
-SET url = $2,
+SET url = $1,
     updated_at = now()
-WHERE id = $1
+WHERE id = $2
+  AND tenant_id = $3
   AND is_active = true
 RETURNING id, tenant_id, url, secret, is_active, created_at, updated_at
 `
 
 type UpdateWebhookEndpointURLParams struct {
-	ID  string `json:"id"`
-	Url string `json:"url"`
+	Url      string `json:"url"`
+	ID       string `json:"id"`
+	TenantID string `json:"tenant_id"`
 }
 
 // Change the URL of the tenant's active endpoint, preserving the existing
 // signing secret. Used by the upsert when a Get already found an active row.
+// The tenant_id predicate is app-level defense-in-depth alongside the Phase
+// 7C-3 RLS policy (which already scopes the row to app.current_tenant).
 func (q *Queries) UpdateWebhookEndpointURL(ctx context.Context, arg UpdateWebhookEndpointURLParams) (WebhookEndpoint, error) {
-	row := q.db.QueryRow(ctx, updateWebhookEndpointURL, arg.ID, arg.Url)
+	row := q.db.QueryRow(ctx, updateWebhookEndpointURL, arg.Url, arg.ID, arg.TenantID)
 	var i WebhookEndpoint
 	err := row.Scan(
 		&i.ID,

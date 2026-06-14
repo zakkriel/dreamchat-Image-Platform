@@ -25,10 +25,13 @@ RETURNING id, tenant_id, url, secret, is_active, created_at, updated_at;
 -- name: UpdateWebhookEndpointURL :one
 -- Change the URL of the tenant's active endpoint, preserving the existing
 -- signing secret. Used by the upsert when a Get already found an active row.
+-- The tenant_id predicate is app-level defense-in-depth alongside the Phase
+-- 7C-3 RLS policy (which already scopes the row to app.current_tenant).
 UPDATE webhook_endpoints
-SET url = $2,
+SET url = sqlc.arg(url),
     updated_at = now()
-WHERE id = $1
+WHERE id = sqlc.arg(id)
+  AND tenant_id = sqlc.arg(tenant_id)
   AND is_active = true
 RETURNING id, tenant_id, url, secret, is_active, created_at, updated_at;
 

@@ -38,7 +38,7 @@ func (s *ConfigService) UpsertEndpoint(ctx context.Context, tenantID, rawURL str
 	switch {
 	case err == nil:
 		// Update URL, preserve the secret (and return it so callers can verify).
-		return s.Repo.UpdateEndpointURL(ctx, existing.ID, rawURL)
+		return s.Repo.UpdateEndpointURL(ctx, existing.ID, tenantID, rawURL)
 	case errors.Is(err, ErrNotFound):
 		secret, gerr := generateSecret()
 		if gerr != nil {

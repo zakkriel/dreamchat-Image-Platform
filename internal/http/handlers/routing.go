@@ -92,8 +92,9 @@ func writeRouteError(w http.ResponseWriter, r *http.Request, err error) {
 // job — a response has already been written and the caller must return.
 // handled=false means it is a new request the caller should proceed to resolve
 // and create.
-func handleReplay(w http.ResponseWriter, r *http.Request, svc jobs.Creator, tokenID, idemKey, endpoint, requestHash string) bool {
+func handleReplay(w http.ResponseWriter, r *http.Request, svc jobs.Creator, tenantID, tokenID, idemKey, endpoint, requestHash string) bool {
 	result, found, err := svc.LookupReplay(r.Context(), jobs.ReplayLookup{
+		TenantID:    tenantID,
 		TokenID:     tokenID,
 		Key:         idemKey,
 		Endpoint:    endpoint,

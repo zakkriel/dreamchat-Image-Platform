@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	appdb "github.com/zakkriel/drchat-image-platform/internal/db"
 	"github.com/zakkriel/drchat-image-platform/internal/db/dbgen"
 )
 
@@ -81,7 +82,9 @@ type Repository interface {
 	// InsertEndpoint creates a tenant's active endpoint with a fixed secret.
 	InsertEndpoint(ctx context.Context, params InsertEndpointParams) (Endpoint, error)
 	// UpdateEndpointURL changes an active endpoint's URL, preserving its secret.
-	UpdateEndpointURL(ctx context.Context, id, url string) (Endpoint, error)
+	// tenantID scopes the write under RLS (app.current_tenant) and as an
+	// app-level predicate.
+	UpdateEndpointURL(ctx context.Context, id, tenantID, url string) (Endpoint, error)
 	// InsertDelivery records a pending delivery for an emitted event.
 	InsertDelivery(ctx context.Context, params InsertDeliveryParams) (Delivery, error)
 	// GetDeliveryByID loads one delivery row, or ErrNotFound.
@@ -92,28 +95,50 @@ type Repository interface {
 }
 
 type pgRepository struct {
-	q *dbgen.Queries
+	pool *pgxpool.Pool
 }
 
-// NewRepository wraps the sqlc queries over a connection pool. Mirrors the
-// other internal repositories (e.g. internal/styles/repository.go).
+// NewRepository wraps the sqlc queries over a connection pool (Phase 7C-3
+// RLS-aware; mirrors internal/styles/repository.go).
+//
+// Pool choice is the caller's: the config surface (PUT/GET
+// /v1/admin/webhook-endpoint) constructs this over the TENANT pool, so its
+// tenant-scoped methods run inside a tenant executor (app.current_tenant set)
+// and webhook_endpoints RLS enforces isolation. The worker constructs it over
+// the SYSTEM (BYPASSRLS) pool, where the by-id deliverer reads/writes and the
+// emitter's pending-delivery insert run without a GUC.
+//
+// Tenant-scoped methods (GetActiveEndpointByTenant, InsertEndpoint,
+// UpdateEndpointURL) wrap appdb.WithTenant so they are correct on the tenant
+// pool; on a BYPASSRLS pool the GUC is harmless. By-id / system methods
+// (GetEndpointByID, GetDeliveryByID, MarkDeliveryResult, InsertDelivery) run
+// plain — they are only ever called on the system pool (the worker), which is
+// not subject to RLS.
 func NewRepository(pool *pgxpool.Pool) Repository {
-	return &pgRepository{q: dbgen.New(pool)}
+	return &pgRepository{pool: pool}
 }
 
 func (r *pgRepository) GetActiveEndpointByTenant(ctx context.Context, tenantID string) (Endpoint, error) {
-	row, err := r.q.GetActiveWebhookEndpointByTenant(ctx, tenantID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return Endpoint{}, ErrNotFound
+	var out Endpoint
+	err := appdb.WithTenant(ctx, r.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		row, err := dbgen.New(tx).GetActiveWebhookEndpointByTenant(ctx, tenantID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
 		}
+		out = endpointFromRow(row)
+		return nil
+	})
+	if err != nil {
 		return Endpoint{}, err
 	}
-	return endpointFromRow(row), nil
+	return out, nil
 }
 
 func (r *pgRepository) GetEndpointByID(ctx context.Context, id string) (Endpoint, error) {
-	row, err := r.q.GetWebhookEndpointByID(ctx, id)
+	row, err := dbgen.New(r.pool).GetWebhookEndpointByID(ctx, id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return Endpoint{}, ErrNotFound
@@ -124,34 +149,51 @@ func (r *pgRepository) GetEndpointByID(ctx context.Context, id string) (Endpoint
 }
 
 func (r *pgRepository) InsertEndpoint(ctx context.Context, params InsertEndpointParams) (Endpoint, error) {
-	row, err := r.q.InsertWebhookEndpoint(ctx, dbgen.InsertWebhookEndpointParams{
-		ID:       params.ID,
-		TenantID: params.TenantID,
-		Url:      params.URL,
-		Secret:   params.Secret,
+	var out Endpoint
+	err := appdb.WithTenant(ctx, r.pool, params.TenantID, func(ctx context.Context, tx pgx.Tx) error {
+		row, err := dbgen.New(tx).InsertWebhookEndpoint(ctx, dbgen.InsertWebhookEndpointParams{
+			ID:       params.ID,
+			TenantID: params.TenantID,
+			Url:      params.URL,
+			Secret:   params.Secret,
+		})
+		if err != nil {
+			return err
+		}
+		out = endpointFromRow(row)
+		return nil
 	})
 	if err != nil {
 		return Endpoint{}, err
 	}
-	return endpointFromRow(row), nil
+	return out, nil
 }
 
-func (r *pgRepository) UpdateEndpointURL(ctx context.Context, id, url string) (Endpoint, error) {
-	row, err := r.q.UpdateWebhookEndpointURL(ctx, dbgen.UpdateWebhookEndpointURLParams{
-		ID:  id,
-		Url: url,
+func (r *pgRepository) UpdateEndpointURL(ctx context.Context, id, tenantID, url string) (Endpoint, error) {
+	var out Endpoint
+	err := appdb.WithTenant(ctx, r.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		row, err := dbgen.New(tx).UpdateWebhookEndpointURL(ctx, dbgen.UpdateWebhookEndpointURLParams{
+			ID:       id,
+			TenantID: tenantID,
+			Url:      url,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		out = endpointFromRow(row)
+		return nil
 	})
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return Endpoint{}, ErrNotFound
-		}
 		return Endpoint{}, err
 	}
-	return endpointFromRow(row), nil
+	return out, nil
 }
 
 func (r *pgRepository) InsertDelivery(ctx context.Context, params InsertDeliveryParams) (Delivery, error) {
-	row, err := r.q.InsertWebhookDelivery(ctx, dbgen.InsertWebhookDeliveryParams{
+	row, err := dbgen.New(r.pool).InsertWebhookDelivery(ctx, dbgen.InsertWebhookDeliveryParams{
 		ID:                params.ID,
 		TenantID:          params.TenantID,
 		WebhookEndpointID: params.WebhookEndpointID,
@@ -166,7 +208,7 @@ func (r *pgRepository) InsertDelivery(ctx context.Context, params InsertDelivery
 }
 
 func (r *pgRepository) GetDeliveryByID(ctx context.Context, id string) (Delivery, error) {
-	row, err := r.q.GetWebhookDeliveryByID(ctx, id)
+	row, err := dbgen.New(r.pool).GetWebhookDeliveryByID(ctx, id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return Delivery{}, ErrNotFound
@@ -187,7 +229,7 @@ func (r *pgRepository) MarkDeliveryResult(ctx context.Context, res DeliveryResul
 		e := res.Err
 		lastErr = &e
 	}
-	return r.q.MarkWebhookDeliveryResult(ctx, dbgen.MarkWebhookDeliveryResultParams{
+	return dbgen.New(r.pool).MarkWebhookDeliveryResult(ctx, dbgen.MarkWebhookDeliveryResultParams{
 		ID:             res.DeliveryID,
 		Status:         res.Status,
 		LastHttpStatus: httpStatus,

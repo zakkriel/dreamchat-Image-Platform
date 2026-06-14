@@ -316,7 +316,7 @@ func (h *PacksHandler) generate(w http.ResponseWriter, r *http.Request, kind pac
 	idemKey := r.Header.Get(idempotency.HeaderKey)
 	endpoint := r.Method + " " + r.URL.Path
 	requestHash := jobs.HashRequestBody(raw)
-	if idemKey != "" && handleReplay(w, r, h.Service, principal.TokenID, idemKey, endpoint, requestHash) {
+	if idemKey != "" && handleReplay(w, r, h.Service, principal.TenantID, principal.TokenID, idemKey, endpoint, requestHash) {
 		return
 	}
 

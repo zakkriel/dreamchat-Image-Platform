@@ -140,7 +140,7 @@ func (h *StylePreviewHandler) GeneratePreview(w http.ResponseWriter, r *http.Req
 
 	// Idempotency replay check FIRST (Phase 7A): a replay short-circuits before
 	// route resolution + cost reservation.
-	if idemKey != "" && handleReplay(w, r, h.Service, principal.TokenID, idemKey, endpoint, requestHash) {
+	if idemKey != "" && handleReplay(w, r, h.Service, principal.TenantID, principal.TokenID, idemKey, endpoint, requestHash) {
 		return
 	}
 
