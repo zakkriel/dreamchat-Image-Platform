@@ -19,6 +19,7 @@ package routing
 import (
 	"context"
 	"errors"
+	"sort"
 )
 
 // Resolution failures. All three map to HTTP 422 at the handler boundary; the
@@ -121,9 +122,78 @@ func NewResolver(source RouteSource, available map[string]bool) *Resolver {
 //	provider_route.priority ASC                      (lower = preferred)
 //	provider_id ASC, model_id ASC, route_id ASC      (final deterministic order)
 func (r *Resolver) Resolve(ctx context.Context, req ResolveRequest) (ResolvedRoute, error) {
-	routes, err := r.source.ListRoutes(ctx, req.OperationType)
+	candidates, err := r.candidates(ctx, req)
 	if err != nil {
 		return ResolvedRoute{}, err
+	}
+
+	// Stage 6: deterministic tie-break.
+	best := candidates[0]
+	for _, rt := range candidates[1:] {
+		if ranksBefore(rt, best, req) {
+			best = rt
+		}
+	}
+
+	return resolvedRouteFrom(best), nil
+}
+
+// ResolveChain returns the ordered fallback chain for a request (Phase 7C-4):
+// every candidate that survives the same Stage 1–5 hard filters as Resolve,
+// sorted by the existing total order (ranksBefore), best (the primary) first. It
+// shares the exact filtering and sentinel errors with Resolve via the private
+// candidates helper, so a request that resolves a route here also resolves under
+// Resolve and ResolveChain(...)[0] equals Resolve(...). It returns the same
+// sentinel error (no_route / unsupported_capability /
+// provider_unavailable_for_route) when no candidate survives.
+//
+// The handler resolves this chain once, at job-creation time, then filters it to
+// the same-price-class subset and persists it on the job so the worker can walk
+// the alternates on a primary-provider failure — without ever re-resolving or
+// re-reserving cost.
+func (r *Resolver) ResolveChain(ctx context.Context, req ResolveRequest) ([]ResolvedRoute, error) {
+	candidates, err := r.candidates(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	// Stable sort by the existing total order so ties never depend on the source
+	// row ordering — the same deterministic order Resolve's max-scan produces,
+	// extended to the full surviving set. SliceStable keeps ranksBefore as the
+	// sole authority (it is already a total order, so stability is belt-and-
+	// suspenders for equal-rank rows, which cannot occur given route_id is unique).
+	ordered := make([]Route, len(candidates))
+	copy(ordered, candidates)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return ranksBefore(ordered[i], ordered[j], req)
+	})
+
+	chain := make([]ResolvedRoute, 0, len(ordered))
+	for _, rt := range ordered {
+		chain = append(chain, resolvedRouteFrom(rt))
+	}
+	return chain, nil
+}
+
+// candidates applies the Stage 1–5 hard filters shared by Resolve and
+// ResolveChain (active route + active model + operation, provider availability,
+// quality tier, required_capability, required preview capability), returning the
+// surviving candidate rows in source order or one of the sentinel errors. It is
+// the single source of the filter precedence so the two entry points can never
+// drift: ResolveChain[0] is guaranteed to equal Resolve's pick because both rank
+// the very same survivor set with the very same ranksBefore order.
+//
+// Filter / tie-break precedence (explicit and tested):
+//
+//	active route + active model + operation match   (hard filter; else no_route)
+//	provider availability                            (hard filter; else provider_unavailable_for_route)
+//	quality tier match (when requested)              (hard filter; else no_route)
+//	required_capability match (when requested)       (hard filter; else unsupported_capability)
+//	requested preview capability (when requested)    (hard filter; else unsupported_capability)
+func (r *Resolver) candidates(ctx context.Context, req ResolveRequest) ([]Route, error) {
+	routes, err := r.source.ListRoutes(ctx, req.OperationType)
+	if err != nil {
+		return nil, err
 	}
 
 	// Stage 1: active route + active model + operation match.
@@ -134,7 +204,7 @@ func (r *Resolver) Resolve(ctx context.Context, req ResolveRequest) (ResolvedRou
 		}
 	}
 	if len(active) == 0 {
-		return ResolvedRoute{}, ErrNoRoute
+		return nil, ErrNoRoute
 	}
 
 	// Stage 2: provider availability. A route whose provider is not configured
@@ -146,7 +216,7 @@ func (r *Resolver) Resolve(ctx context.Context, req ResolveRequest) (ResolvedRou
 		}
 	}
 	if len(avail) == 0 {
-		return ResolvedRoute{}, ErrProviderUnavailableForRoute
+		return nil, ErrProviderUnavailableForRoute
 	}
 
 	// Stage 3: quality tier (hard filter when the request specifies one).
@@ -159,7 +229,7 @@ func (r *Resolver) Resolve(ctx context.Context, req ResolveRequest) (ResolvedRou
 			}
 		}
 		if len(filtered) == 0 {
-			return ResolvedRoute{}, ErrNoRoute
+			return nil, ErrNoRoute
 		}
 		candidates = filtered
 	}
@@ -175,7 +245,7 @@ func (r *Resolver) Resolve(ctx context.Context, req ResolveRequest) (ResolvedRou
 			}
 		}
 		if len(filtered) == 0 {
-			return ResolvedRoute{}, ErrUnsupportedCapability
+			return nil, ErrUnsupportedCapability
 		}
 		candidates = filtered
 	}
@@ -190,26 +260,25 @@ func (r *Resolver) Resolve(ctx context.Context, req ResolveRequest) (ResolvedRou
 			}
 		}
 		if len(filtered) == 0 {
-			return ResolvedRoute{}, ErrUnsupportedCapability
+			return nil, ErrUnsupportedCapability
 		}
 		candidates = filtered
 	}
 
-	// Stage 6: deterministic tie-break.
-	best := candidates[0]
-	for _, rt := range candidates[1:] {
-		if ranksBefore(rt, best, req) {
-			best = rt
-		}
-	}
+	return candidates, nil
+}
 
+// resolvedRouteFrom projects a candidate Route row into the ResolvedRoute the
+// handler persists. Shared by Resolve and ResolveChain so the two produce
+// byte-identical results for the same row.
+func resolvedRouteFrom(rt Route) ResolvedRoute {
 	return ResolvedRoute{
-		ProviderID:        best.ProviderID,
-		ProviderRouteID:   best.RouteID,
-		ProviderModelID:   best.ModelID,
-		OperationType:     best.OperationType,
-		PreviewCapability: best.PreviewCapability,
-	}, nil
+		ProviderID:        rt.ProviderID,
+		ProviderRouteID:   rt.RouteID,
+		ProviderModelID:   rt.ModelID,
+		OperationType:     rt.OperationType,
+		PreviewCapability: rt.PreviewCapability,
+	}
 }
 
 // ranksBefore reports whether route a should be preferred over route b for the

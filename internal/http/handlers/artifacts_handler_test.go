@@ -33,6 +33,12 @@ type fakeResolver struct {
 	err     error
 	calls   int
 	lastReq routing.ResolveRequest
+
+	// chain, when set, is returned by ResolveChain (Phase 7C-4); otherwise
+	// ResolveChain returns a single-element chain holding route. chainCalls counts
+	// ResolveChain invocations so tests can assert it ran (or did not, on replay).
+	chain      []routing.ResolvedRoute
+	chainCalls int
 }
 
 func (f *fakeResolver) Resolve(_ context.Context, req routing.ResolveRequest) (routing.ResolvedRoute, error) {
@@ -42,6 +48,21 @@ func (f *fakeResolver) Resolve(_ context.Context, req routing.ResolveRequest) (r
 		return routing.ResolvedRoute{}, f.err
 	}
 	return f.route, nil
+}
+
+// ResolveChain returns a single-element chain (the seeded route) by default so
+// the Phase 7C-4 fallback wiring is exercised without changing existing
+// assertions: the chain's only entry is the primary, which applyFallbackChain
+// drops, leaving no alternates. Tests that need alternates set chain explicitly.
+func (f *fakeResolver) ResolveChain(_ context.Context, req routing.ResolveRequest) ([]routing.ResolvedRoute, error) {
+	f.chainCalls++
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.chain != nil {
+		return f.chain, nil
+	}
+	return []routing.ResolvedRoute{f.route}, nil
 }
 
 // okResolver resolves the seeded mock route, mirroring

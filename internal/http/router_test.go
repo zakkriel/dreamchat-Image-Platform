@@ -244,6 +244,16 @@ func (noopResolver) Resolve(context.Context, routing.ResolveRequest) (routing.Re
 	}, nil
 }
 
+// ResolveChain returns a single-element chain (the seeded mock route) so the
+// Phase 7C-4 fallback wiring is exercised without adding alternates.
+func (n noopResolver) ResolveChain(ctx context.Context, req routing.ResolveRequest) ([]routing.ResolvedRoute, error) {
+	route, err := n.Resolve(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return []routing.ResolvedRoute{route}, nil
+}
+
 func TestHealthEndpoint(t *testing.T) {
 	r := NewRouter(newTestDeps(t, newStubRepo(), config.EnvDev, true))
 

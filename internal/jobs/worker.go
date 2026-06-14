@@ -93,6 +93,49 @@ func resolvedRouteFromPayload(payload map[string]any) (resolvedRoute, error) {
 	return rr, nil
 }
 
+// fallbackRoutesFromPayload reads the same-price fallback chain the handler
+// persisted under "fallback_routes" (Phase 7C-4): a JSON array of objects, each
+// carrying provider_id/model_id/provider_route_id/preview_capability. It is
+// deliberately tolerant — a missing key, a wrong type, or an entry missing its
+// provider_id/model_id is skipped rather than failing the job, because the
+// primary route alone is always sufficient to run the job. The returned routes
+// are the ALTERNATES only (the primary is never in this list); the worker
+// prepends the primary before walking them.
+func fallbackRoutesFromPayload(payload map[string]any) []resolvedRoute {
+	raw, ok := payload["fallback_routes"].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]resolvedRoute, 0, len(raw))
+	for _, entry := range raw {
+		m, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		rr := resolvedRoute{
+			providerID: payloadString(m, "provider_id"),
+			modelID:    payloadString(m, "model_id"),
+			routeID:    payloadString(m, "provider_route_id"),
+		}
+		if rr.providerID == "" || rr.modelID == "" {
+			continue
+		}
+		out = append(out, rr)
+	}
+	return out
+}
+
+// genResult is the outcome of a successful provider generation walked across the
+// resolved chain (Phase 7C-4): the provider result bytes/metadata, the route
+// that actually produced them (for asset provenance + the success cost event),
+// the provider_attempts row id to mark succeeded, and the measured latency.
+type genResult struct {
+	result    providers.ProviderGenerateResult
+	route     resolvedRoute
+	attemptID string
+	latencyMs int64
+}
+
 // failTerminal marks a job permanently failed (not retryable) and releases its
 // cost reservation. Used for unrunnable jobs — a missing provider adapter or a
 // payload missing its resolved route — where an asynq retry could never help.
@@ -171,15 +214,21 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 		return nil
 	}
 
-	// Phase 7A: select the provider adapter from the route the handler resolved
-	// at creation time and persisted on the job. The worker never re-resolves.
+	// Phase 7A: read the primary route the handler resolved at creation time and
+	// persisted on the job. The worker never re-resolves.
 	resolved, rerr := resolvedRouteFromPayload(job.InputPayload)
 	if rerr != nil {
 		w.log().Error("worker: invalid resolved route", "job_id", jobID, "error", rerr)
 		return w.failTerminal(ctx, job, errorCodeInvalidResolvedRoute, rerr.Error())
 	}
-	provider, ok := w.Providers.Get(resolved.providerID)
-	if !ok {
+	// The primary adapter must be registered in this process. A missing primary
+	// adapter is a terminal, non-retryable failure (Phase 7A) — an asynq retry
+	// could never help. Phase 7C-4 fallbacks are walked inside
+	// generateWithFallback (which re-looks up each route's adapter and skips a
+	// missing one); the primary's presence is still a hard precondition here so a
+	// misconfigured process fails fast and clearly rather than silently relying on
+	// a fallback.
+	if _, ok := w.Providers.Get(resolved.providerID); !ok {
 		msg := fmt.Sprintf("no adapter registered for resolved provider %q", resolved.providerID)
 		w.log().Error("worker: provider adapter missing", "job_id", jobID, "provider_id", resolved.providerID)
 		return w.failTerminal(ctx, job, errorCodeProviderUnavailable, msg)
@@ -191,7 +240,7 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 	// creation time, from the route the handler resolved — the worker never
 	// re-resolves). Any other job takes the unchanged Phase 7A single-phase path.
 	if w.isPreviewFirst(job) {
-		return w.processPreviewFirst(ctx, job, provider, resolved, attemptNumber, finalAttempt)
+		return w.processPreviewFirst(ctx, job, resolved, attemptNumber, finalAttempt)
 	}
 
 	if _, err := w.Jobs.MarkRunning(ctx, job.ID, job.TenantID); err != nil {
@@ -199,24 +248,18 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 		return err
 	}
 
-	attempt, err := w.Jobs.InsertProviderAttempt(ctx, ProviderAttemptInsertParams{
-		ID:              ids.NewProviderAttemptID(),
-		GenerationJobID: job.ID,
-		ProviderID:      resolved.providerID,
-		AttemptNumber:   attemptNumber,
-	})
-	if err != nil {
-		w.log().Error("worker: insert attempt", "job_id", jobID, "error", err)
-		return err
-	}
-
-	start := time.Now()
 	worldID := ""
 	if job.WorldID != nil {
 		worldID = *job.WorldID
 	}
 	description, _ := job.InputPayload["description"].(string)
-	result, providerErr := provider.Generate(ctx, providers.ProviderGenerateRequest{
+
+	// Phase 7C-4: walk the resolved chain (primary first, then each persisted
+	// same-price fallback) until one route succeeds. Each route records its own
+	// provider attempt; per-route failures are recorded inside the walk. If every
+	// route fails, do the terminal job-fail/release here on the final asynq
+	// attempt, then return so asynq retries the whole chain.
+	out, gerr := w.generateWithFallback(ctx, job, resolved, providers.ProviderGenerateRequest{
 		JobID:     job.ID,
 		Operation: providers.OperationTextToImage,
 		Prompt:    description,
@@ -226,28 +269,28 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 			"world_id": worldID,
 			"job_type": job.JobType,
 		},
-	})
-	latency := time.Since(start).Milliseconds()
-
-	if providerErr != nil {
-		w.recordFailure(ctx, job, attempt.ID, attempt.ProviderID, providerErr, latency, finalAttempt)
-		return providerErr
+	}, attemptNumber)
+	if gerr != nil {
+		w.failJobOnFinalAttempt(ctx, job, gerr, finalAttempt)
+		return gerr
 	}
+	result := out.result
+	latency := out.latencyMs
 
 	assetID := ids.NewVisualAssetID()
 	urls, err := w.uploadImages(ctx, assetID, result.Images)
 	if err != nil {
-		w.recordFailure(ctx, job, attempt.ID, attempt.ProviderID, err, latency, finalAttempt)
+		w.recordFailure(ctx, job, out.attemptID, out.route.providerID, err, latency, finalAttempt)
 		// Treat storage failures the same as provider failures for retry purposes.
 		return err
 	}
 
-	// Phase 7A provenance: stamp the resolved provider/model/route (the same the
-	// handler priced and persisted) so the stored asset records exactly which
-	// route produced it. The shared builder also carries the request's render
-	// hash (prompt_hash), quality tier, style provenance, and the provider hash
-	// in metadata.
-	insertParams := w.buildArtifactInsertParams(job, resolved, assetID, urls, result, worldID)
+	// Phase 7C-4 provenance: stamp the WINNING route's provider/model/route (the
+	// route that actually produced the bytes — may be a same-price fallback, not
+	// the primary) so the stored asset records exactly which route produced it.
+	// The shared builder also carries the request's render hash (prompt_hash),
+	// quality tier, style provenance, and the provider hash in metadata.
+	insertParams := w.buildArtifactInsertParams(job, out.route, assetID, urls, result, worldID)
 
 	// Phase 6A4 forced regeneration: a forced job (force_regenerate carried on
 	// the payload) supersedes its slot — in one transaction, under a slot lock,
@@ -265,20 +308,22 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 	forced := payloadBool(job.InputPayload, "force_regenerate")
 	asset, outcome, err := w.Jobs.InsertFinalAssetAndCompleteJobIfNotCancelled(ctx, job.ID, job.TenantID, insertParams, forced, artifactSlotFor(job, insertParams))
 	if err != nil {
-		w.recordFailure(ctx, job, attempt.ID, attempt.ProviderID, fmt.Errorf("insert asset: %w", err), latency, finalAttempt)
+		w.recordFailure(ctx, job, out.attemptID, out.route.providerID, fmt.Errorf("insert asset: %w", err), latency, finalAttempt)
 		return err
 	}
 	if outcome == PersistSkippedCancelled {
 		return w.finishCancelled(ctx, job, "final")
 	}
 
-	if err := w.Jobs.MarkProviderAttemptSucceeded(ctx, attempt.ID, int32(latency)); err != nil {
-		w.log().Warn("worker: mark attempt succeeded", "attempt_id", attempt.ID, "error", err)
+	if err := w.Jobs.MarkProviderAttemptSucceeded(ctx, out.attemptID, int32(latency)); err != nil {
+		w.log().Warn("worker: mark attempt succeeded", "attempt_id", out.attemptID, "error", err)
 	}
 
 	latencyInt := int32(latency)
 	tokenID := job.RequestedByTokenID
-	providerID := resolved.providerID
+	// Provenance reflects the WINNER (the route that produced the bytes), which may
+	// be a same-price fallback rather than the primary (Phase 7C-4).
+	providerID := out.route.providerID
 	if err := w.Jobs.InsertCostEvent(ctx, CostEventInsertParams{
 		ID:                ids.NewCostEventID(),
 		TenantID:          job.TenantID,
@@ -286,7 +331,7 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 		AssetID:           &asset.ID,
 		TokenID:           tokenID,
 		ProviderID:        &providerID,
-		ProviderAttemptID: &attempt.ID,
+		ProviderAttemptID: &out.attemptID,
 		Operation:         string(providers.OperationTextToImage),
 		DurationMs:        &latencyInt,
 		Status:            "completed",
@@ -356,7 +401,7 @@ func (w *Worker) isPreviewFirst(job Job) bool {
 // after the preview was delivered leaves the preview asset readable and
 // final_asset_ids empty (the preview is not superseded — it is the last useful
 // output of the failed two-phase job).
-func (w *Worker) processPreviewFirst(ctx context.Context, job Job, provider providers.ImageProvider, resolved resolvedRoute, attemptNumber int32, finalAttempt bool) error {
+func (w *Worker) processPreviewFirst(ctx context.Context, job Job, resolved resolvedRoute, attemptNumber int32, finalAttempt bool) error {
 	worldID := ""
 	if job.WorldID != nil {
 		worldID = *job.WorldID
@@ -372,19 +417,10 @@ func (w *Worker) processPreviewFirst(ctx context.Context, job Job, provider prov
 			w.log().Error("worker: mark running (preview)", "job_id", job.ID, "error", err)
 			return err
 		}
-		attempt, err := w.Jobs.InsertProviderAttempt(ctx, ProviderAttemptInsertParams{
-			ID:              ids.NewProviderAttemptID(),
-			GenerationJobID: job.ID,
-			ProviderID:      resolved.providerID,
-			AttemptNumber:   attemptNumber,
-		})
-		if err != nil {
-			w.log().Error("worker: insert attempt (preview)", "job_id", job.ID, "error", err)
-			return err
-		}
 
-		start := time.Now()
-		result, providerErr := provider.Generate(ctx, providers.ProviderGenerateRequest{
+		// Phase 7C-4: the preview phase walks the chain independently — its
+		// provenance reflects whichever route produced the preview bytes.
+		out, gerr := w.generateWithFallback(ctx, job, resolved, providers.ProviderGenerateRequest{
 			JobID:     job.ID,
 			Operation: providers.OperationTextToImage,
 			Prompt:    description,
@@ -395,23 +431,25 @@ func (w *Worker) processPreviewFirst(ctx context.Context, job Job, provider prov
 				"job_type": job.JobType,
 				"tier":     "preview",
 			},
-		})
-		latency := time.Since(start).Milliseconds()
-		if providerErr != nil {
-			// Preview-phase failure: no preview asset is created. On the terminal
-			// attempt recordFailure marks the job failed and releases the reservation.
-			w.recordFailure(ctx, job, attempt.ID, attempt.ProviderID, providerErr, latency, finalAttempt)
-			return providerErr
+		}, attemptNumber)
+		if gerr != nil {
+			// Preview-phase chain exhausted: no preview asset is created. On the
+			// terminal attempt fail the job + release the reservation. Per-route
+			// failures were already recorded inside the walk.
+			w.failJobOnFinalAttempt(ctx, job, gerr, finalAttempt)
+			return gerr
 		}
+		result := out.result
+		latency := out.latencyMs
 
 		previewAssetID := ids.NewVisualAssetID()
 		urls, err := w.uploadImages(ctx, previewAssetID, result.Images)
 		if err != nil {
-			w.recordFailure(ctx, job, attempt.ID, attempt.ProviderID, err, latency, finalAttempt)
+			w.recordFailure(ctx, job, out.attemptID, out.route.providerID, err, latency, finalAttempt)
 			return err
 		}
 
-		previewParams := w.buildArtifactInsertParams(job, resolved, previewAssetID, urls, result, worldID)
+		previewParams := w.buildArtifactInsertParams(job, out.route, previewAssetID, urls, result, worldID)
 		// The preview tier is tagged preview_safe and lands status=preview_ready;
 		// it is never a reuse target.
 		previewParams.CompatibilityTags = []string{assets.TagPreviewSafe}
@@ -423,31 +461,22 @@ func (w *Worker) processPreviewFirst(ctx context.Context, job Job, provider prov
 		// externally observable through the job read and the job-assets read.
 		_, outcome, err := w.Jobs.InsertPreviewAssetAndMarkPreviewReadyIfNotCancelled(ctx, job.ID, job.TenantID, previewParams)
 		if err != nil {
-			w.recordFailure(ctx, job, attempt.ID, attempt.ProviderID, fmt.Errorf("insert preview asset: %w", err), latency, finalAttempt)
+			w.recordFailure(ctx, job, out.attemptID, out.route.providerID, fmt.Errorf("insert preview asset: %w", err), latency, finalAttempt)
 			return err
 		}
 		if outcome == PersistSkippedCancelled {
 			return w.finishCancelled(ctx, job, "preview")
 		}
-		if err := w.Jobs.MarkProviderAttemptSucceeded(ctx, attempt.ID, int32(latency)); err != nil {
-			w.log().Warn("worker: mark attempt succeeded (preview)", "attempt_id", attempt.ID, "error", err)
+		if err := w.Jobs.MarkProviderAttemptSucceeded(ctx, out.attemptID, int32(latency)); err != nil {
+			w.log().Warn("worker: mark attempt succeeded (preview)", "attempt_id", out.attemptID, "error", err)
 		}
 	}
 
 	// --- Phase B: final -----------------------------------------------------
-	attempt, err := w.Jobs.InsertProviderAttempt(ctx, ProviderAttemptInsertParams{
-		ID:              ids.NewProviderAttemptID(),
-		GenerationJobID: job.ID,
-		ProviderID:      resolved.providerID,
-		AttemptNumber:   attemptNumber,
-	})
-	if err != nil {
-		w.log().Error("worker: insert attempt (final)", "job_id", job.ID, "error", err)
-		return err
-	}
-
-	start := time.Now()
-	result, providerErr := provider.Generate(ctx, providers.ProviderGenerateRequest{
+	// Phase 7C-4: the final phase walks the chain independently of the preview
+	// phase — its winner (and thus the final asset's provenance + the success cost
+	// event) may differ from the preview phase's winner.
+	out, gerr := w.generateWithFallback(ctx, job, resolved, providers.ProviderGenerateRequest{
 		JobID:     job.ID,
 		Operation: providers.OperationTextToImage,
 		Prompt:    description,
@@ -458,24 +487,25 @@ func (w *Worker) processPreviewFirst(ctx context.Context, job Job, provider prov
 			"job_type": job.JobType,
 			"tier":     "final",
 		},
-	})
-	latency := time.Since(start).Milliseconds()
-	if providerErr != nil {
-		// Final-phase failure AFTER the preview was delivered: on the terminal
-		// attempt the job is marked failed and the reservation released. The
-		// preview asset stays preview_ready and final_asset_ids stays empty.
-		w.recordFailure(ctx, job, attempt.ID, attempt.ProviderID, providerErr, latency, finalAttempt)
-		return providerErr
+	}, attemptNumber)
+	if gerr != nil {
+		// Final-phase chain exhausted AFTER the preview was delivered: on the
+		// terminal attempt the job is marked failed and the reservation released.
+		// The preview asset stays preview_ready and final_asset_ids stays empty.
+		w.failJobOnFinalAttempt(ctx, job, gerr, finalAttempt)
+		return gerr
 	}
+	result := out.result
+	latency := out.latencyMs
 
 	finalAssetID := ids.NewVisualAssetID()
 	urls, err := w.uploadImages(ctx, finalAssetID, result.Images)
 	if err != nil {
-		w.recordFailure(ctx, job, attempt.ID, attempt.ProviderID, err, latency, finalAttempt)
+		w.recordFailure(ctx, job, out.attemptID, out.route.providerID, err, latency, finalAttempt)
 		return err
 	}
 
-	finalParams := w.buildArtifactInsertParams(job, resolved, finalAssetID, urls, result, worldID)
+	finalParams := w.buildArtifactInsertParams(job, out.route, finalAssetID, urls, result, worldID)
 	// Phase 7C-1a guarded persist: insert the final asset and complete the job
 	// in ONE transaction under the job row lock. If a cancel landed after the
 	// preview was delivered but before this final write, nothing is inserted,
@@ -486,18 +516,19 @@ func (w *Worker) processPreviewFirst(ctx context.Context, job Job, provider prov
 	forced := payloadBool(job.InputPayload, "force_regenerate")
 	asset, outcome, err := w.Jobs.InsertFinalAssetAndCompleteJobIfNotCancelled(ctx, job.ID, job.TenantID, finalParams, forced, artifactSlotFor(job, finalParams))
 	if err != nil {
-		w.recordFailure(ctx, job, attempt.ID, attempt.ProviderID, fmt.Errorf("insert asset: %w", err), latency, finalAttempt)
+		w.recordFailure(ctx, job, out.attemptID, out.route.providerID, fmt.Errorf("insert asset: %w", err), latency, finalAttempt)
 		return err
 	}
 	if outcome == PersistSkippedCancelled {
 		return w.finishCancelled(ctx, job, "final")
 	}
-	if err := w.Jobs.MarkProviderAttemptSucceeded(ctx, attempt.ID, int32(latency)); err != nil {
-		w.log().Warn("worker: mark attempt succeeded (final)", "attempt_id", attempt.ID, "error", err)
+	if err := w.Jobs.MarkProviderAttemptSucceeded(ctx, out.attemptID, int32(latency)); err != nil {
+		w.log().Warn("worker: mark attempt succeeded (final)", "attempt_id", out.attemptID, "error", err)
 	}
 
 	latencyInt := int32(latency)
-	providerID := resolved.providerID
+	// Provenance reflects the final phase's WINNER (Phase 7C-4).
+	providerID := out.route.providerID
 	if err := w.Jobs.InsertCostEvent(ctx, CostEventInsertParams{
 		ID:                ids.NewCostEventID(),
 		TenantID:          job.TenantID,
@@ -505,7 +536,7 @@ func (w *Worker) processPreviewFirst(ctx context.Context, job Job, provider prov
 		AssetID:           &asset.ID,
 		TokenID:           job.RequestedByTokenID,
 		ProviderID:        &providerID,
-		ProviderAttemptID: &attempt.ID,
+		ProviderAttemptID: &out.attemptID,
 		Operation:         string(providers.OperationTextToImage),
 		DurationMs:        &latencyInt,
 		Status:            "completed",
@@ -637,12 +668,81 @@ func (w *Worker) uploadImages(ctx context.Context, assetID string, images []prov
 	return uploadedURLs{high: high, low: low, thumb: thumb}, nil
 }
 
-func (w *Worker) recordFailure(ctx context.Context, job Job, attemptID, providerID string, callErr error, latencyMs int64, finalAttempt bool) {
+// generateWithFallback attempts generation across the resolved provider chain
+// (Phase 7C-4): the primary route first, then each persisted same-price fallback
+// in order. Each route gets its own provider_attempts row; a route whose adapter
+// is not registered in this process is skipped. The first success returns the
+// winning route (for asset provenance + the success cost event) and its attempt.
+// If every route fails, the LAST error is returned and per-route failures have
+// already been recorded; the caller performs the terminal job-fail/release on the
+// final asynq attempt. Because every fallback is same-price class, the single
+// existing cost reservation stays valid regardless of which route wins.
+//
+// Provenance note: the cost reservation was priced on the PRIMARY model; a
+// winning fallback is the same price class, so committing the unchanged
+// reservation is correct, but the produced asset's provider/model/route
+// provenance and the success cost event reflect the WINNER (an honest record of
+// what actually produced the bytes). The job payload's persisted primary
+// provider_id/model_id is unchanged.
+func (w *Worker) generateWithFallback(ctx context.Context, job Job, primary resolvedRoute, genReq providers.ProviderGenerateRequest, attemptNumber int32) (genResult, error) {
+	routes := append([]resolvedRoute{primary}, fallbackRoutesFromPayload(job.InputPayload)...)
+
+	var lastErr error
+	anyAdapter := false
+	for _, route := range routes {
+		adapter, ok := w.Providers.Get(route.providerID)
+		if !ok {
+			// A persisted fallback whose adapter is not registered in this process
+			// is skipped (e.g. a provider configured only when a key is present).
+			w.log().Warn("worker: fallback adapter missing; skipping route",
+				"job_id", job.ID, "provider_id", route.providerID, "route_id", route.routeID)
+			continue
+		}
+		anyAdapter = true
+
+		attempt, err := w.Jobs.InsertProviderAttempt(ctx, ProviderAttemptInsertParams{
+			ID:              ids.NewProviderAttemptID(),
+			GenerationJobID: job.ID,
+			ProviderID:      route.providerID,
+			AttemptNumber:   attemptNumber,
+		})
+		if err != nil {
+			w.log().Error("worker: insert attempt", "job_id", job.ID, "provider_id", route.providerID, "error", err)
+			return genResult{}, err
+		}
+
+		start := time.Now()
+		result, providerErr := adapter.Generate(ctx, genReq)
+		latency := time.Since(start).Milliseconds()
+		if providerErr != nil {
+			// Record this route's failure (mark attempt failed + failed cost event).
+			// Terminal job-fail/release is the caller's job once the whole chain is
+			// exhausted on the final asynq attempt.
+			w.recordAttemptFailure(ctx, job, attempt.ID, attempt.ProviderID, providerErr, latency)
+			lastErr = providerErr
+			continue
+		}
+		return genResult{result: result, route: route, attemptID: attempt.ID, latencyMs: latency}, nil
+	}
+
+	if !anyAdapter {
+		return genResult{}, fmt.Errorf("no adapter registered for any route in the resolved chain (primary provider %q)", primary.providerID)
+	}
+	return genResult{}, lastErr
+}
+
+// recordAttemptFailure records a single provider attempt's failure: it marks the
+// provider_attempts row failed (with the mapped error code + message + latency)
+// and inserts a status=failed cost event for the attempt. It is the per-attempt
+// half of the old recordFailure, shared by the fallback walk (one call per failed
+// route) and the post-generate failure paths. It performs NO terminal job
+// handling — that is failJobOnFinalAttempt's responsibility.
+func (w *Worker) recordAttemptFailure(ctx context.Context, job Job, attemptID, providerID string, callErr error, latencyMs int64) {
 	w.log().Error("worker: attempt failed",
 		"job_id", job.ID,
 		"attempt_id", attemptID,
+		"provider_id", providerID,
 		"error", callErr.Error(),
-		"final", finalAttempt,
 	)
 	errMsg := callErr.Error()
 	if err := w.Jobs.MarkProviderAttemptFailed(ctx, attemptID, errorCodeFor(callErr), errMsg, int32(latencyMs)); err != nil {
@@ -665,18 +765,43 @@ func (w *Worker) recordFailure(ctx context.Context, job Job, attemptID, provider
 	}); err != nil {
 		w.log().Warn("worker: insert cost event (failure)", "job_id", job.ID, "error", err)
 	}
-	if finalAttempt {
-		if _, err := w.Jobs.MarkFailed(ctx, job.ID, job.TenantID, errorCodeFor(callErr), errMsg, false); err != nil {
-			w.log().Error("worker: mark job failed", "job_id", job.ID, "error", err)
-		}
-		// Terminal failure: release the cost reservation (reserved → released,
-		// return the held estimate to the budget; spent untouched). Idempotent.
-		if w.Finalizer != nil {
-			if err := w.Finalizer.Release(ctx, job.ID); err != nil {
-				w.log().Error("worker: release cost reservation", "job_id", job.ID, "error", err)
-			}
+}
+
+// failJobOnFinalAttempt performs the terminal job handling when an attempt
+// exhausts its retries (Phase 7C-4 split out of recordFailure): on the final
+// asynq attempt it marks the job failed (not retryable) and releases the cost
+// reservation; on an earlier attempt it does nothing so the job stays for retry.
+// callErr supplies the terminal error code + message. Per-attempt recording
+// (mark attempt failed + failed cost event) is done separately by
+// recordAttemptFailure / the fallback walk before this is called.
+func (w *Worker) failJobOnFinalAttempt(ctx context.Context, job Job, callErr error, finalAttempt bool) {
+	if !finalAttempt {
+		return
+	}
+	errMsg := callErr.Error()
+	if _, err := w.Jobs.MarkFailed(ctx, job.ID, job.TenantID, errorCodeFor(callErr), errMsg, false); err != nil {
+		w.log().Error("worker: mark job failed", "job_id", job.ID, "error", err)
+	}
+	// Terminal failure: release the cost reservation (reserved → released,
+	// return the held estimate to the budget; spent untouched). Idempotent.
+	if w.Finalizer != nil {
+		if err := w.Finalizer.Release(ctx, job.ID); err != nil {
+			w.log().Error("worker: release cost reservation", "job_id", job.ID, "error", err)
 		}
 	}
+}
+
+// recordFailure records a post-generate failure keyed on a specific attempt id
+// (the WINNER's attempt): the uploadImages / InsertFinalAsset / InsertPreviewAsset
+// paths that fail AFTER a provider already succeeded. It marks that attempt
+// failed + inserts a failed cost event (recordAttemptFailure) and, on the final
+// asynq attempt, fails the job + releases the reservation
+// (failJobOnFinalAttempt). Its behavior is unchanged from before the Phase 7C-4
+// split; only the provider-call failure paths now go through generateWithFallback
+// instead.
+func (w *Worker) recordFailure(ctx context.Context, job Job, attemptID, providerID string, callErr error, latencyMs int64, finalAttempt bool) {
+	w.recordAttemptFailure(ctx, job, attemptID, providerID, callErr, latencyMs)
+	w.failJobOnFinalAttempt(ctx, job, callErr, finalAttempt)
 }
 
 func errorCodeFor(err error) string {

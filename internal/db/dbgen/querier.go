@@ -232,6 +232,13 @@ type Querier interface {
 	// retry path can read the persisted resolved route + payload under the same
 	// lock it validates and reopens the job with.
 	LockGenerationJobRowForUpdate(ctx context.Context, arg LockGenerationJobRowForUpdateParams) (GenerationJob, error)
+	// LookupActiveUnitPrice returns the active unit-price components for (provider ×
+	// model × operation), independent of quantity (Phase 7C-4 fallback chains). The
+	// handler compares these across the resolved chain to keep only same-price-class
+	// fallbacks, so the single existing cost reservation stays valid regardless of
+	// which route the worker ends up using. No row means there is no active price
+	// entry (the primary will fail no_price_entry at reservation anyway).
+	LookupActiveUnitPrice(ctx context.Context, arg LookupActiveUnitPriceParams) (LookupActiveUnitPriceRow, error)
 	// MarkBudgetHoldStatus records the hold's terminal state. The WHERE guard on
 	// status='reserved' makes a re-run a no-op.
 	MarkBudgetHoldStatus(ctx context.Context, arg MarkBudgetHoldStatusParams) error

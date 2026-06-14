@@ -364,6 +364,104 @@ func TestTieBreakDeterministic(t *testing.T) {
 	}
 }
 
+// --- Phase 7C-4 fallback chain ----------------------------------------------
+
+func resolveChain(t *testing.T, routes []Route, available map[string]bool, req ResolveRequest) ([]ResolvedRoute, error) {
+	t.Helper()
+	return NewResolver(fakeSource{routes: routes}, available).ResolveChain(context.Background(), req)
+}
+
+// TestResolveChainReturnsCandidatesInTieBreakOrder: with three same-tier routes
+// at distinct priorities, ResolveChain returns all three in the tie-break order
+// (priority ASC), independent of the source row order, and chain[0] equals the
+// Resolve result.
+func TestResolveChainReturnsCandidatesInTieBreakOrder(t *testing.T) {
+	low := mockRoute()
+	low.RouteID, low.ModelID, low.Priority = "route_low", "pm_low", 50
+	mid := mockRoute()
+	mid.RouteID, mid.ModelID, mid.Priority = "route_mid", "pm_mid", 100
+	high := mockRoute()
+	high.RouteID, high.ModelID, high.Priority = "route_high", "pm_high", 150
+
+	req := ResolveRequest{OperationType: "text_to_image", QualityTier: "standard"}
+	// Source order deliberately scrambled to prove ordering comes from ranksBefore.
+	chain, err := resolveChain(t, []Route{high, low, mid}, map[string]bool{"mock": true}, req)
+	if err != nil {
+		t.Fatalf("ResolveChain: %v", err)
+	}
+	if len(chain) != 3 {
+		t.Fatalf("expected 3 candidates, got %d: %+v", len(chain), chain)
+	}
+	wantOrder := []string{"route_low", "route_mid", "route_high"}
+	for i, want := range wantOrder {
+		if chain[i].ProviderRouteID != want {
+			t.Fatalf("chain[%d] = %q, want %q (full chain %+v)", i, chain[i].ProviderRouteID, want, chain)
+		}
+	}
+
+	// chain[0] must equal the single Resolve pick for the same request.
+	got, err := resolve(t, []Route{high, low, mid}, map[string]bool{"mock": true}, req)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got != chain[0] {
+		t.Fatalf("Resolve result %+v must equal ResolveChain[0] %+v", got, chain[0])
+	}
+}
+
+// TestResolveChainMultiCandidateAcrossProviders: a multi-candidate chain spanning
+// two providers is ordered by priority then provider_id; chain[0] equals Resolve,
+// and unavailable providers are filtered out of the chain entirely.
+func TestResolveChainMultiCandidateAcrossProviders(t *testing.T) {
+	m := mockRoute() // mock, priority 100
+	b := bflRoute()  // bfl, priority 200
+	req := ResolveRequest{OperationType: "text_to_image", QualityTier: "standard"}
+
+	chain, err := resolveChain(t, []Route{b, m}, map[string]bool{"mock": true, "bfl": true}, req)
+	if err != nil {
+		t.Fatalf("ResolveChain: %v", err)
+	}
+	if len(chain) != 2 {
+		t.Fatalf("expected 2 candidates, got %d: %+v", len(chain), chain)
+	}
+	if chain[0].ProviderID != "mock" || chain[1].ProviderID != "bfl" {
+		t.Fatalf("expected [mock, bfl] by priority, got %+v", chain)
+	}
+	got, err := resolve(t, []Route{b, m}, map[string]bool{"mock": true, "bfl": true}, req)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got != chain[0] {
+		t.Fatalf("Resolve result %+v must equal ResolveChain[0] %+v", got, chain[0])
+	}
+
+	// bfl unavailable → chain has only the mock route.
+	chain2, err := resolveChain(t, []Route{b, m}, map[string]bool{"mock": true}, req)
+	if err != nil {
+		t.Fatalf("ResolveChain (bfl unavailable): %v", err)
+	}
+	if len(chain2) != 1 || chain2[0].ProviderID != "mock" {
+		t.Fatalf("expected single mock candidate when bfl unavailable, got %+v", chain2)
+	}
+}
+
+// TestResolveChainPropagatesSentinels: ResolveChain returns the SAME sentinel
+// errors as Resolve for the no-candidate cases.
+func TestResolveChainPropagatesSentinels(t *testing.T) {
+	if _, err := resolveChain(t, []Route{mockRoute()}, map[string]bool{"mock": true},
+		ResolveRequest{OperationType: "upscale"}); !errors.Is(err, ErrNoRoute) {
+		t.Fatalf("expected ErrNoRoute, got %v", err)
+	}
+	if _, err := resolveChain(t, []Route{bflRoute()}, map[string]bool{"mock": true},
+		ResolveRequest{OperationType: "text_to_image"}); !errors.Is(err, ErrProviderUnavailableForRoute) {
+		t.Fatalf("expected ErrProviderUnavailableForRoute, got %v", err)
+	}
+	if _, err := resolveChain(t, []Route{mockRoute()}, map[string]bool{"mock": true},
+		ResolveRequest{OperationType: "text_to_image", QualityTier: "standard", RequiredCapability: "pack_capable"}); !errors.Is(err, ErrUnsupportedCapability) {
+		t.Fatalf("expected ErrUnsupportedCapability, got %v", err)
+	}
+}
+
 func TestPriorityBeatsModelOrder(t *testing.T) {
 	// Lower priority number wins even if its model_id sorts later.
 	low := mockRoute()
