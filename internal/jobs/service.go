@@ -96,6 +96,18 @@ type PackReuseItem struct {
 	SortOrder  int32
 }
 
+// FallbackRoute is one alternate provider route the handler resolved at creation
+// time (Phase 7C-4). The worker walks these in order when the primary provider
+// fails. Every persisted fallback shares the primary's active unit price
+// (same-price class), so the existing single cost reservation stays valid and
+// the worker never re-reserves.
+type FallbackRoute struct {
+	ProviderID        string
+	ModelID           string
+	ProviderRouteID   string
+	PreviewCapability string
+}
+
 // CreateAndEnqueueParams carries everything a handler needs to provide to
 // the service to land a generation job.
 type CreateAndEnqueueParams struct {
@@ -121,6 +133,19 @@ type CreateAndEnqueueParams struct {
 	OperationType   string
 	Units           int32
 	UserID          string
+
+	// RouteChain is the ordered set of ALTERNATE provider routes the handler
+	// resolved at creation time (Phase 7C-4) — it EXCLUDES the primary, which
+	// stays in ProviderID/ModelID/ProviderRouteID. CreateAndEnqueue filters this
+	// to the same-price-class subset (routes whose active unit price equals the
+	// primary's) and persists the survivors on the job so the worker can walk them
+	// on a primary-provider failure. Because every persisted fallback shares the
+	// primary's unit price, the single existing cost reservation stays valid
+	// regardless of which route ultimately produces the asset, and the worker
+	// never re-resolves or re-reserves. Empty when the caller wires no fallbacks
+	// (cache-hit / pack-reuse completed jobs never set it — they do no provider
+	// work).
+	RouteChain []FallbackRoute
 
 	// Idempotency context. When IdempotencyKey is empty the service skips
 	// the idempotency table altogether and creates a fresh job.
@@ -338,6 +363,17 @@ func (s *Service) CreateAndEnqueue(ctx context.Context, params CreateAndEnqueueP
 	// resolved route so an admin retry can re-reserve cost against the exact same
 	// operation/units/model without re-resolving the route.
 	params.InputPayload = withCostContextPayload(params.InputPayload, params.OperationType, params.Units)
+	// Phase 7C-4: filter the handler-supplied alternate routes to the same-price
+	// class as the primary and persist the survivors on the payload, so the worker
+	// can walk them on a primary-provider failure without re-resolving or
+	// re-reserving cost. This is a pre-transaction read (q := dbgen.New(s.pool));
+	// an empty/nil chain or a primary with no price entry leaves the payload
+	// untouched (the primary then fails no_price_entry at reservation anyway).
+	if len(params.RouteChain) > 0 {
+		if fallbacks := s.samePriceFallbacks(ctx, params); len(fallbacks) > 0 {
+			params.InputPayload = withFallbackRoutesPayload(params.InputPayload, fallbacks)
+		}
+	}
 
 	payload, err := marshalPayload(params.InputPayload)
 	if err != nil {
@@ -554,6 +590,70 @@ func (s *Service) CreateAndEnqueue(ctx context.Context, params CreateAndEnqueueP
 		result.ConcurrentJobsUsed = int(liveCount) + 1
 	}
 	return result, nil
+}
+
+// samePriceFallbacks filters the handler-supplied alternate routes
+// (params.RouteChain) down to the same-price class as the primary route (Phase
+// 7C-4): the subset whose active unit price (price_per_unit, unit_type,
+// currency) exactly equals the primary's. Only these may be walked by the worker
+// without re-reserving cost — the single existing reservation was priced on the
+// primary, and a same-price fallback keeps it exactly valid.
+//
+// It is a READ against the pool (q := dbgen.New(s.pool)) run BEFORE the create
+// transaction begins, so it never holds DB locks while ranging the chain. It
+// looks up the primary's price once; a primary with no active price entry
+// returns nil (the primary will fail no_price_entry at reservation anyway, so
+// fallbacks are moot). For each candidate it skips the entry equal to the
+// primary (same provider_id + model_id + route) and any candidate whose price
+// lookup fails or differs, preserving the handler's order for the survivors. The
+// survivors are returned as []map[string]any (keys: provider_id, model_id,
+// provider_route_id, preview_capability) ready to stamp onto the payload.
+func (s *Service) samePriceFallbacks(ctx context.Context, params CreateAndEnqueueParams) []map[string]any {
+	q := dbgen.New(s.pool)
+	primary, err := q.LookupActiveUnitPrice(ctx, dbgen.LookupActiveUnitPriceParams{
+		ProviderID:    params.ProviderID,
+		ModelID:       params.ModelID,
+		OperationType: params.OperationType,
+	})
+	if err != nil {
+		// No active price for the primary: the primary itself will fail
+		// no_price_entry at reservation, so there is nothing to fall back to.
+		return nil
+	}
+
+	kept := make([]map[string]any, 0, len(params.RouteChain))
+	for _, cand := range params.RouteChain {
+		// Skip a candidate that is the primary route itself.
+		if cand.ProviderID == params.ProviderID &&
+			cand.ModelID == params.ModelID &&
+			cand.ProviderRouteID == params.ProviderRouteID {
+			continue
+		}
+		price, err := q.LookupActiveUnitPrice(ctx, dbgen.LookupActiveUnitPriceParams{
+			ProviderID:    cand.ProviderID,
+			ModelID:       cand.ModelID,
+			OperationType: params.OperationType,
+		})
+		if err != nil {
+			// No active price for this candidate: it could not be reserved at the
+			// primary's hold, so it is not a same-price fallback.
+			continue
+		}
+		// Units are identical across the chain (same operation), so comparing the
+		// three price components is sufficient to prove same-price class.
+		if price.PricePerUnit != primary.PricePerUnit ||
+			price.UnitType != primary.UnitType ||
+			price.Currency != primary.Currency {
+			continue
+		}
+		kept = append(kept, map[string]any{
+			"provider_id":        cand.ProviderID,
+			"model_id":           cand.ModelID,
+			"provider_route_id":  cand.ProviderRouteID,
+			"preview_capability": cand.PreviewCapability,
+		})
+	}
+	return kept
 }
 
 // concurrentLockKey is the per-token advisory-lock key for the Phase 7C-2
@@ -1054,6 +1154,23 @@ func withResolvedRoutePayload(payload map[string]any, providerID, modelID, route
 	}
 	if routeID != "" {
 		payload["provider_route_id"] = routeID
+	}
+	return payload
+}
+
+// withFallbackRoutesPayload stamps the same-price fallback chain onto a job's
+// input_payload under "fallback_routes" (Phase 7C-4). generation_jobs has no
+// first-class fallback columns, so the payload is the carrier the worker reads to
+// walk the alternates on a primary-provider failure. Each entry is a
+// map[string]any with keys provider_id, model_id, provider_route_id,
+// preview_capability — the shape samePriceFallbacks produces. An empty list is
+// not stamped (the caller skips this when there are no survivors).
+func withFallbackRoutesPayload(payload map[string]any, fallbacks []map[string]any) map[string]any {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	if len(fallbacks) > 0 {
+		payload["fallback_routes"] = fallbacks
 	}
 	return payload
 }

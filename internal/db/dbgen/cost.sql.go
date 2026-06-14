@@ -189,6 +189,39 @@ func (q *Queries) ListBudgetsForReservation(ctx context.Context, arg ListBudgets
 	return items, nil
 }
 
+const lookupActiveUnitPrice = `-- name: LookupActiveUnitPrice :one
+SELECT unit_type, currency, price_per_unit::text AS price_per_unit
+FROM provider_model_prices
+WHERE provider_id = $1 AND model_id = $2 AND operation_type = $3
+  AND is_active = true
+ORDER BY effective_from DESC LIMIT 1
+`
+
+type LookupActiveUnitPriceParams struct {
+	ProviderID    string `json:"provider_id"`
+	ModelID       string `json:"model_id"`
+	OperationType string `json:"operation_type"`
+}
+
+type LookupActiveUnitPriceRow struct {
+	UnitType     string `json:"unit_type"`
+	Currency     string `json:"currency"`
+	PricePerUnit string `json:"price_per_unit"`
+}
+
+// LookupActiveUnitPrice returns the active unit-price components for (provider ×
+// model × operation), independent of quantity (Phase 7C-4 fallback chains). The
+// handler compares these across the resolved chain to keep only same-price-class
+// fallbacks, so the single existing cost reservation stays valid regardless of
+// which route the worker ends up using. No row means there is no active price
+// entry (the primary will fail no_price_entry at reservation anyway).
+func (q *Queries) LookupActiveUnitPrice(ctx context.Context, arg LookupActiveUnitPriceParams) (LookupActiveUnitPriceRow, error) {
+	row := q.db.QueryRow(ctx, lookupActiveUnitPrice, arg.ProviderID, arg.ModelID, arg.OperationType)
+	var i LookupActiveUnitPriceRow
+	err := row.Scan(&i.UnitType, &i.Currency, &i.PricePerUnit)
+	return i, err
+}
+
 const reserveActiveBudget = `-- name: ReserveActiveBudget :one
 UPDATE cost_budgets
 SET reserved_amount = reserved_amount + $1,

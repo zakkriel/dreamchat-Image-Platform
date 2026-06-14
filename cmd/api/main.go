@@ -27,6 +27,7 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/storage"
 	"github.com/zakkriel/drchat-image-platform/internal/styles"
 	"github.com/zakkriel/drchat-image-platform/internal/telemetry"
+	"github.com/zakkriel/drchat-image-platform/internal/webhooks"
 )
 
 func main() {
@@ -126,10 +127,18 @@ func main() {
 		// Admin job control is tenant-local (tenant from the principal), so it
 		// runs on the tenant pool and sets app.current_tenant inside its own
 		// cancel/retry transactions.
-		AdminJobs:   adminjobs.NewService(tenantPool, cost.NewService(logger), finalizer, enqueuer, logger),
-		Storage:     store,
-		Resolver:    resolver,
-		RateLimiter: rateLimiter,
+		AdminJobs: adminjobs.NewService(tenantPool, cost.NewService(logger), finalizer, enqueuer, logger),
+		// Phase 7C-4: the API serves the webhook endpoint config surface (it
+		// generates the signing secret and persists the per-tenant endpoint). It
+		// is tenant-local (tenant from the principal), so it runs on the TENANT
+		// pool and its repository sets app.current_tenant inside each
+		// transaction — the webhook_endpoints RLS policy enforces isolation. The
+		// API process does NOT emit events or enqueue deliveries (the worker does
+		// that, on the system pool).
+		WebhooksConfig: webhooks.NewConfigService(webhooks.NewRepository(tenantPool)),
+		Storage:        store,
+		Resolver:       resolver,
+		RateLimiter:    rateLimiter,
 	}
 
 	router := apphttp.NewRouter(deps)

@@ -265,6 +265,11 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		MaxConcurrentJobs:  principal.Limits.MaxConcurrentJobs,
 	}
 	applyResolvedRoute(&params, payload, resolved)
+	// Phase 7C-4: resolve the ordered fallback chain with the same request and
+	// thread the alternates (chain minus the applied primary) onto the params; the
+	// jobs service keeps only the same-price subset. A ResolveChain error is
+	// treated as "no fallbacks" — the primary already resolved successfully.
+	applyFallbackChain(&params, resolveFallbackChain(r.Context(), h.Resolver, resolveReq))
 	if idemKey != "" {
 		params.IdempotencyKey = idemKey
 		params.Endpoint = endpoint

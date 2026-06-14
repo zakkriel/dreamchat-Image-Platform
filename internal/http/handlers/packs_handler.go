@@ -379,14 +379,15 @@ func (h *PacksHandler) generate(w http.ResponseWriter, r *http.Request, kind pac
 	if req.LatencyTier != nil {
 		latencyTier = string(*req.LatencyTier)
 	}
-	resolved, err := h.Resolver.Resolve(r.Context(), routing.ResolveRequest{
+	resolveReq := routing.ResolveRequest{
 		TenantID:           principal.TenantID,
 		OperationType:      artifactOperationType,
 		QualityTier:        effectiveQuality,
 		LatencyTier:        latencyTier,
 		RequiredCapability: capabilityPackCapable,
 		ProviderPreference: h.ProviderPreference,
-	})
+	}
+	resolved, err := h.Resolver.Resolve(r.Context(), resolveReq)
 	if err != nil {
 		writeRouteError(w, r, err)
 		return
@@ -414,6 +415,11 @@ func (h *PacksHandler) generate(w http.ResponseWriter, r *http.Request, kind pac
 		MaxConcurrentJobs: principal.Limits.MaxConcurrentJobs,
 	}
 	applyResolvedRoute(&params, payload, resolved)
+	// Phase 7C-4: resolve the ordered fallback chain with the same request and
+	// thread the alternates (chain minus the applied primary) onto the params; the
+	// jobs service keeps only the same-price subset. A ResolveChain error is
+	// treated as "no fallbacks" — the primary already resolved successfully.
+	applyFallbackChain(&params, resolveFallbackChain(r.Context(), h.Resolver, resolveReq))
 	if idemKey != "" {
 		params.IdempotencyKey = idemKey
 		params.Endpoint = endpoint

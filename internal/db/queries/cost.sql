@@ -18,6 +18,19 @@ WHERE provider_id = sqlc.arg(provider_id)
 ORDER BY effective_from DESC
 LIMIT 1;
 
+-- LookupActiveUnitPrice returns the active unit-price components for (provider ×
+-- model × operation), independent of quantity (Phase 7C-4 fallback chains). The
+-- handler compares these across the resolved chain to keep only same-price-class
+-- fallbacks, so the single existing cost reservation stays valid regardless of
+-- which route the worker ends up using. No row means there is no active price
+-- entry (the primary will fail no_price_entry at reservation anyway).
+-- name: LookupActiveUnitPrice :one
+SELECT unit_type, currency, price_per_unit::text AS price_per_unit
+FROM provider_model_prices
+WHERE provider_id = sqlc.arg(provider_id) AND model_id = sqlc.arg(model_id) AND operation_type = sqlc.arg(operation_type)
+  AND is_active = true
+ORDER BY effective_from DESC LIMIT 1;
+
 -- ListBudgetsForReservation returns every budget that could apply to a
 -- request: the tenant-scope budget(s) plus any token / world / user scoped
 -- budgets matching the request's identifiers. The caller picks which to

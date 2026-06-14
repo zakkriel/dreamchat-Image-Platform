@@ -62,6 +62,12 @@ const (
 // in-memory resolver.
 type RouteResolver interface {
 	Resolve(ctx context.Context, req routing.ResolveRequest) (routing.ResolvedRoute, error)
+	// ResolveChain returns the ordered fallback chain for the request (Phase
+	// 7C-4): every candidate surviving the same hard filters as Resolve, best
+	// (the primary) first. The handler resolves it after a successful Resolve,
+	// drops the already-applied primary, and threads the same-price subset onto
+	// the job so the worker can walk the alternates on a primary failure.
+	ResolveChain(ctx context.Context, req routing.ResolveRequest) ([]routing.ResolvedRoute, error)
 }
 
 // writeRouteError maps a routing failure to its 422 error code. All routing
@@ -162,4 +168,46 @@ func applyResolvedRoute(params *jobs.CreateAndEnqueueParams, payload map[string]
 	if resolved.PreviewCapability != "" {
 		payload["preview_capability"] = resolved.PreviewCapability
 	}
+}
+
+// applyFallbackChain threads the resolved fallback chain (Phase 7C-4) onto the
+// create params as the ALTERNATES only: it drops the entry matching the
+// already-applied primary (matched on ProviderRouteID) and maps the rest to
+// jobs.FallbackRoute. The jobs service further filters these to the same-price
+// class before persisting them, so the worker can walk the alternates on a
+// primary-provider failure without re-resolving or re-reserving cost.
+//
+// An empty chain leaves params.RouteChain nil (no fallbacks). This is called
+// only after Resolve already succeeded, so the primary is guaranteed present;
+// any chain entry whose route id matches the applied primary is the primary
+// itself and is skipped.
+func applyFallbackChain(params *jobs.CreateAndEnqueueParams, chain []routing.ResolvedRoute) {
+	if len(chain) == 0 {
+		return
+	}
+	alternates := make([]jobs.FallbackRoute, 0, len(chain))
+	for _, rt := range chain {
+		if rt.ProviderRouteID == params.ProviderRouteID {
+			continue
+		}
+		alternates = append(alternates, jobs.FallbackRoute{
+			ProviderID:        rt.ProviderID,
+			ModelID:           rt.ProviderModelID,
+			ProviderRouteID:   rt.ProviderRouteID,
+			PreviewCapability: rt.PreviewCapability,
+		})
+	}
+	params.RouteChain = alternates
+}
+
+// resolveFallbackChain resolves the ordered fallback chain for a request after
+// the primary Resolve already succeeded (Phase 7C-4). A ResolveChain error is
+// treated as "no fallbacks": the primary already resolved successfully, so the
+// job is still runnable on the primary alone — there is nothing to surface.
+func resolveFallbackChain(ctx context.Context, resolver RouteResolver, req routing.ResolveRequest) []routing.ResolvedRoute {
+	chain, err := resolver.ResolveChain(ctx, req)
+	if err != nil {
+		return nil
+	}
+	return chain
 }

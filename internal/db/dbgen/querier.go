@@ -85,6 +85,12 @@ type Querier interface {
 	// same hash (e.g. a re-run that raced before this reuse path existed).
 	FindReadyArtifactByPromptHash(ctx context.Context, arg FindReadyArtifactByPromptHashParams) (VisualAsset, error)
 	GetActiveAPITokenByPrefix(ctx context.Context, tokenPrefix string) (GetActiveAPITokenByPrefixRow, error)
+	// Phase 7C-4 (2/2): outbound webhooks. Queries for the per-tenant endpoint
+	// config and the per-event delivery-attempt log.
+	// The tenant's single active webhook endpoint (the partial unique index
+	// guarantees at most one). The repository uses this both to serve the GET
+	// config read and to decide insert-vs-update on the PUT upsert.
+	GetActiveWebhookEndpointByTenant(ctx context.Context, tenantID string) (WebhookEndpoint, error)
 	GetAssetPackByID(ctx context.Context, id string) (GetAssetPackByIDRow, error)
 	GetCostBudget(ctx context.Context, id string) (GetCostBudgetRow, error)
 	GetGenerationJobByID(ctx context.Context, arg GetGenerationJobByIDParams) (GenerationJob, error)
@@ -96,6 +102,13 @@ type Querier interface {
 	GetVisualIdentityByID(ctx context.Context, arg GetVisualIdentityByIDParams) (VisualIdentity, error)
 	GetVisualIdentityByOwner(ctx context.Context, arg GetVisualIdentityByOwnerParams) (VisualIdentity, error)
 	GetVisualIdentityByOwnerForUpdate(ctx context.Context, arg GetVisualIdentityByOwnerForUpdateParams) (VisualIdentity, error)
+	// Load one delivery row for the deliver task. Joined with the endpoint by the
+	// repository (a second query) so the deliverer has the URL + secret to sign.
+	GetWebhookDeliveryByID(ctx context.Context, id string) (WebhookDelivery, error)
+	// The endpoint a delivery row targets (the deliverer needs url + secret). Read
+	// by id (the delivery carries webhook_endpoint_id) so a later deactivation of
+	// the tenant's active endpoint does not strand in-flight deliveries.
+	GetWebhookEndpointByID(ctx context.Context, id string) (WebhookEndpoint, error)
 	// Pack orchestration queries (Phase 5A, ADR-008). The platform — not the
 	// provider adapter — owns pack fan-out: the create transaction inserts the
 	// asset_packs row alongside the generation_jobs row, and the worker writes
@@ -173,6 +186,15 @@ type Querier interface {
 	InsertVisualAsset(ctx context.Context, arg InsertVisualAssetParams) (VisualAsset, error)
 	InsertVisualIdentity(ctx context.Context, arg InsertVisualIdentityParams) (VisualIdentity, error)
 	InsertVisualIdentityVersion(ctx context.Context, arg InsertVisualIdentityVersionParams) error
+	// Record a freshly emitted event (status = pending, attempt_count = 0). The
+	// asynq deliver task re-reads this row by id on every attempt; the queue
+	// payload only carries the id.
+	InsertWebhookDelivery(ctx context.Context, arg InsertWebhookDeliveryParams) (WebhookDelivery, error)
+	// Create a tenant's active endpoint. The signing secret is server-generated
+	// and passed in once here; it is never rewritten on a later URL update (see
+	// UpdateWebhookEndpointURL), so a caller that has stored the secret keeps a
+	// stable signing key across URL changes.
+	InsertWebhookEndpoint(ctx context.Context, arg InsertWebhookEndpointParams) (WebhookEndpoint, error)
 	ListAssetPackItems(ctx context.Context, assetPackID string) ([]AssetPackItem, error)
 	// ListBudgetsForReservation returns every budget that could apply to a
 	// request: the tenant-scope budget(s) plus any token / world / user scoped
@@ -232,6 +254,13 @@ type Querier interface {
 	// retry path can read the persisted resolved route + payload under the same
 	// lock it validates and reopens the job with.
 	LockGenerationJobRowForUpdate(ctx context.Context, arg LockGenerationJobRowForUpdateParams) (GenerationJob, error)
+	// LookupActiveUnitPrice returns the active unit-price components for (provider ×
+	// model × operation), independent of quantity (Phase 7C-4 fallback chains). The
+	// handler compares these across the resolved chain to keep only same-price-class
+	// fallbacks, so the single existing cost reservation stays valid regardless of
+	// which route the worker ends up using. No row means there is no active price
+	// entry (the primary will fail no_price_entry at reservation anyway).
+	LookupActiveUnitPrice(ctx context.Context, arg LookupActiveUnitPriceParams) (LookupActiveUnitPriceRow, error)
 	// MarkBudgetHoldStatus records the hold's terminal state. The WHERE guard on
 	// status='reserved' makes a re-run a no-op.
 	MarkBudgetHoldStatus(ctx context.Context, arg MarkBudgetHoldStatusParams) error
@@ -257,6 +286,10 @@ type Querier interface {
 	// reserved_amount is zeroed because the savepoint already rolled back every
 	// budget increment and hold this reservation made.
 	MarkReservationBudgetExceeded(ctx context.Context, arg MarkReservationBudgetExceededParams) error
+	// Record the outcome of one delivery attempt: set the terminal/in-progress
+	// status, bump attempt_count, and stamp the last HTTP status + error. Called
+	// once per asynq attempt (delivered on 2xx, failed otherwise).
+	MarkWebhookDeliveryResult(ctx context.Context, arg MarkWebhookDeliveryResultParams) error
 	// Phase 6A4 supersede: the current max version across ALL rows (ready AND
 	// archived) of the exact artifact reuse slot, so the regenerated asset's version
 	// is COALESCE(max, 0) + 1 and stays monotonic even as predecessors are archived.
@@ -346,6 +379,11 @@ type Querier interface {
 	// is_active, notes). COALESCE keeps unspecified fields unchanged.
 	UpdateProviderModelPrice(ctx context.Context, arg UpdateProviderModelPriceParams) (UpdateProviderModelPriceRow, error)
 	UpdateVisualIdentityWithVersionBump(ctx context.Context, arg UpdateVisualIdentityWithVersionBumpParams) (VisualIdentity, error)
+	// Change the URL of the tenant's active endpoint, preserving the existing
+	// signing secret. Used by the upsert when a Get already found an active row.
+	// The tenant_id predicate is app-level defense-in-depth alongside the Phase
+	// 7C-3 RLS policy (which already scopes the row to app.current_tenant).
+	UpdateWebhookEndpointURL(ctx context.Context, arg UpdateWebhookEndpointURLParams) (WebhookEndpoint, error)
 }
 
 var _ Querier = (*Queries)(nil)
