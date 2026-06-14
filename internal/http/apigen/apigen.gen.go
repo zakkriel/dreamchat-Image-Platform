@@ -371,6 +371,16 @@ type CostBudget struct {
 	// Period Reset period for a cost budget.
 	Period BudgetPeriod `json:"period"`
 
+	// PeriodStart Start of the budget's current UTC window (Phase 7C-1c). The
+	// reservation path lazily rolls the budget over to a fresh window when
+	// it has elapsed: `period_start` advances (daily → UTC date floor,
+	// monthly → first of the UTC month), `spent_amount` resets to 0, and an
+	// `exceeded` budget becomes `active` again (a `paused` budget stays
+	// paused). A live reservation opened just before the reset stays in
+	// `reserved_amount` until its job terminates. Read-only over the admin
+	// surface; it advances only via the lazy reset.
+	PeriodStart *time.Time `json:"period_start,omitempty"`
+
 	// ReservedAmount Sum of currently-held reservations for the current period
 	// (status `reserved`). Read-only; computed by the platform.
 	ReservedAmount *string `json:"reserved_amount,omitempty"`
@@ -419,8 +429,14 @@ type CostBudgetWrite struct {
 	LimitAmount string  `json:"limit_amount"`
 
 	// Period Reset period for a cost budget.
-	Period  BudgetPeriod `json:"period"`
-	ScopeId string       `json:"scope_id"`
+	Period BudgetPeriod `json:"period"`
+
+	// PeriodStart Optional start of the budget's first UTC window (Phase 7C-1c).
+	// Defaults to the current UTC window start for the period when omitted.
+	// `reserved_amount` and `spent_amount` remain platform-owned and cannot
+	// be set.
+	PeriodStart *time.Time `json:"period_start,omitempty"`
+	ScopeId     string     `json:"scope_id"`
 
 	// ScopeType Scope at which a cost budget applies. Budgets at narrower scopes
 	// (token, world, user) sit inside the parent tenant's budget; both
@@ -1118,13 +1134,6 @@ type GetV1AdminJobsParams struct {
 	Limit         *int                 `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
-// PostV1AdminJobsJobIdRetryJSONBody defines parameters for PostV1AdminJobsJobIdRetry.
-type PostV1AdminJobsJobIdRetryJSONBody struct {
-	// Force Override the retryable check.
-	Force  *bool  `json:"force,omitempty"`
-	Reason string `json:"reason"`
-}
-
 // GetV1AdminPriceBookParams defines parameters for GetV1AdminPriceBook.
 type GetV1AdminPriceBookParams struct {
 	ProviderId    *string             `form:"provider_id,omitempty" json:"provider_id,omitempty"`
@@ -1208,12 +1217,6 @@ type PostV1AdminCostBudgetsJSONRequestBody = CostBudgetWrite
 
 // PutV1AdminCostBudgetsBudgetIdJSONRequestBody defines body for PutV1AdminCostBudgetsBudgetId for application/json ContentType.
 type PutV1AdminCostBudgetsBudgetIdJSONRequestBody = CostBudgetMutable
-
-// PostV1AdminJobsJobIdCancelJSONRequestBody defines body for PostV1AdminJobsJobIdCancel for application/json ContentType.
-type PostV1AdminJobsJobIdCancelJSONRequestBody = AdminReasonBody
-
-// PostV1AdminJobsJobIdRetryJSONRequestBody defines body for PostV1AdminJobsJobIdRetry for application/json ContentType.
-type PostV1AdminJobsJobIdRetryJSONRequestBody PostV1AdminJobsJobIdRetryJSONBody
 
 // PostV1AdminPriceBookJSONRequestBody defines body for PostV1AdminPriceBook for application/json ContentType.
 type PostV1AdminPriceBookJSONRequestBody = ProviderModelPriceWrite

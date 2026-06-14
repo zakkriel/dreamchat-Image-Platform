@@ -17,7 +17,11 @@ import (
 )
 
 type fakeJobsRepo struct {
-	mu               sync.Mutex
+	mu sync.Mutex
+	// assets is the linked in-memory visual_assets store the Phase 7C-1 guarded
+	// persist methods delegate to (production runs both writes in one DB
+	// transaction; the fakes split them but keep the same observable effect).
+	assets           *fakeAssetsRepo
 	jobs             map[string]Job
 	attempts         []ProviderAttempt
 	costEvents       []CostEventInsertParams
@@ -179,6 +183,67 @@ func (r *fakeJobsRepo) MarkPreviewReady(_ context.Context, id, tenantID string, 
 	r.jobs[id] = job
 	r.markPreviewReady = append(r.markPreviewReady, id)
 	return job, nil
+}
+
+// InsertFinalAssetAndCompleteJobIfNotCancelled models the Phase 7C-1a guarded
+// final write: skip when the job is cancelled, otherwise insert the asset (via
+// the linked assets store, superseding when forced) and mark the job completed.
+// MarkCompleted is reused so the finalizer tests' failNextMarkCompleted hook
+// still forces a post-insert failure.
+func (r *fakeJobsRepo) InsertFinalAssetAndCompleteJobIfNotCancelled(ctx context.Context, jobID, tenantID string, params assets.InsertParams, forced bool, slot assets.ArtifactSlot) (assets.VisualAsset, PersistOutcome, error) {
+	r.mu.Lock()
+	job, ok := r.jobs[jobID]
+	if !ok || job.TenantID != tenantID {
+		r.mu.Unlock()
+		return assets.VisualAsset{}, PersistPersisted, ErrNotFound
+	}
+	if job.Status == statusCancelled {
+		r.mu.Unlock()
+		return assets.VisualAsset{}, PersistSkippedCancelled, nil
+	}
+	r.mu.Unlock()
+
+	var (
+		asset assets.VisualAsset
+		err   error
+	)
+	if forced {
+		asset, err = r.assets.SupersedeAndInsertArtifact(ctx, params, slot)
+	} else {
+		asset, err = r.assets.Insert(ctx, params)
+	}
+	if err != nil {
+		return assets.VisualAsset{}, PersistPersisted, err
+	}
+	if _, err := r.MarkCompleted(ctx, jobID, tenantID, []string{asset.ID}); err != nil {
+		return assets.VisualAsset{}, PersistPersisted, err
+	}
+	return asset, PersistPersisted, nil
+}
+
+// InsertPreviewAssetAndMarkPreviewReadyIfNotCancelled models the Phase 7C-1a
+// guarded preview write.
+func (r *fakeJobsRepo) InsertPreviewAssetAndMarkPreviewReadyIfNotCancelled(ctx context.Context, jobID, tenantID string, params assets.InsertParams) (assets.VisualAsset, PersistOutcome, error) {
+	r.mu.Lock()
+	job, ok := r.jobs[jobID]
+	if !ok || job.TenantID != tenantID {
+		r.mu.Unlock()
+		return assets.VisualAsset{}, PersistPersisted, ErrNotFound
+	}
+	if job.Status == statusCancelled {
+		r.mu.Unlock()
+		return assets.VisualAsset{}, PersistSkippedCancelled, nil
+	}
+	r.mu.Unlock()
+
+	asset, err := r.assets.InsertPreview(ctx, params)
+	if err != nil {
+		return assets.VisualAsset{}, PersistPersisted, err
+	}
+	if _, err := r.MarkPreviewReady(ctx, jobID, tenantID, []string{asset.ID}); err != nil {
+		return assets.VisualAsset{}, PersistPersisted, err
+	}
+	return asset, PersistPersisted, nil
 }
 
 func (r *fakeJobsRepo) MarkFailed(_ context.Context, id, tenantID, errorCode, errorMessage string, retryable bool) (Job, error) {
@@ -529,6 +594,7 @@ func (errorProvider) Capabilities() providers.ProviderCapabilities {
 func TestWorkerProcessHappyPath(t *testing.T) {
 	jobsRepo := newFakeJobsRepo()
 	assetsRepo := &fakeAssetsRepo{}
+	jobsRepo.assets = assetsRepo
 	storage := &fakeStorage{}
 
 	worldID := "w1"
@@ -588,6 +654,7 @@ func TestWorkerProcessHappyPath(t *testing.T) {
 func TestWorkerProcessPersistsRequestQualityTierAndRenderHash(t *testing.T) {
 	jobsRepo := newFakeJobsRepo()
 	assetsRepo := &fakeAssetsRepo{}
+	jobsRepo.assets = assetsRepo
 	storage := &fakeStorage{}
 
 	worldID := "w1"
@@ -637,6 +704,7 @@ func TestWorkerProcessPersistsRequestQualityTierAndRenderHash(t *testing.T) {
 func TestWorkerProcessProviderErrorOnFinalAttemptMarksFailed(t *testing.T) {
 	jobsRepo := newFakeJobsRepo()
 	assetsRepo := &fakeAssetsRepo{}
+	jobsRepo.assets = assetsRepo
 	storage := &fakeStorage{}
 	worldID := "w1"
 	_, _ = jobsRepo.Insert(context.Background(), InsertParams{
@@ -673,6 +741,7 @@ func TestWorkerProcessProviderErrorOnFinalAttemptMarksFailed(t *testing.T) {
 func TestWorkerProcessProviderErrorOnEarlyAttemptDoesNotMarkFailed(t *testing.T) {
 	jobsRepo := newFakeJobsRepo()
 	assetsRepo := &fakeAssetsRepo{}
+	jobsRepo.assets = assetsRepo
 	storage := &fakeStorage{}
 	worldID := "w1"
 	_, _ = jobsRepo.Insert(context.Background(), InsertParams{
@@ -701,6 +770,7 @@ func TestWorkerProcessProviderErrorOnEarlyAttemptDoesNotMarkFailed(t *testing.T)
 func TestWorkerProcessAttemptNumberMatchesRetryCount(t *testing.T) {
 	jobsRepo := newFakeJobsRepo()
 	assetsRepo := &fakeAssetsRepo{}
+	jobsRepo.assets = assetsRepo
 	storage := &fakeStorage{}
 	worldID := "w1"
 	_, _ = jobsRepo.Insert(context.Background(), InsertParams{
@@ -731,6 +801,7 @@ func TestWorkerProcessAttemptNumberMatchesRetryCount(t *testing.T) {
 func TestWorkerProcessForceRegenerateSupersedesArtifactSlot(t *testing.T) {
 	jobsRepo := newFakeJobsRepo()
 	assetsRepo := &fakeAssetsRepo{}
+	jobsRepo.assets = assetsRepo
 	storage := &fakeStorage{}
 
 	world := "w1"

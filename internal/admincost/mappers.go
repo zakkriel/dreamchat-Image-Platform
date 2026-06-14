@@ -88,7 +88,8 @@ func budgetFromInsert(r dbgen.InsertCostBudgetRow) Budget {
 		ID: r.ID, TenantID: r.TenantID, ScopeType: r.ScopeType, ScopeID: r.ScopeID,
 		Period: r.Period, LimitAmount: r.LimitAmount, ReservedAmount: r.ReservedAmount,
 		SpentAmount: r.SpentAmount, Currency: r.Currency, Status: r.Status,
-		CreatedAt: tsTime(r.CreatedAt), UpdatedAt: tsTime(r.UpdatedAt),
+		PeriodStart: tsTime(r.PeriodStart),
+		CreatedAt:   tsTime(r.CreatedAt), UpdatedAt: tsTime(r.UpdatedAt),
 	}
 }
 
@@ -97,7 +98,8 @@ func budgetFromList(r dbgen.ListCostBudgetsRow) Budget {
 		ID: r.ID, TenantID: r.TenantID, ScopeType: r.ScopeType, ScopeID: r.ScopeID,
 		Period: r.Period, LimitAmount: r.LimitAmount, ReservedAmount: r.ReservedAmount,
 		SpentAmount: r.SpentAmount, Currency: r.Currency, Status: r.Status,
-		CreatedAt: tsTime(r.CreatedAt), UpdatedAt: tsTime(r.UpdatedAt),
+		PeriodStart: tsTime(r.PeriodStart),
+		CreatedAt:   tsTime(r.CreatedAt), UpdatedAt: tsTime(r.UpdatedAt),
 	}
 }
 
@@ -106,7 +108,8 @@ func budgetFromUpdate(r dbgen.UpdateCostBudgetRow) Budget {
 		ID: r.ID, TenantID: r.TenantID, ScopeType: r.ScopeType, ScopeID: r.ScopeID,
 		Period: r.Period, LimitAmount: r.LimitAmount, ReservedAmount: r.ReservedAmount,
 		SpentAmount: r.SpentAmount, Currency: r.Currency, Status: r.Status,
-		CreatedAt: tsTime(r.CreatedAt), UpdatedAt: tsTime(r.UpdatedAt),
+		PeriodStart: tsTime(r.PeriodStart),
+		CreatedAt:   tsTime(r.CreatedAt), UpdatedAt: tsTime(r.UpdatedAt),
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/zakkriel/drchat-image-platform/internal/admincost"
+	"github.com/zakkriel/drchat-image-platform/internal/adminjobs"
 	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/auth"
 	"github.com/zakkriel/drchat-image-platform/internal/config"
@@ -83,6 +84,7 @@ func main() {
 		JobsRepo:       jobs.NewRepository(pool),
 		JobsService:    jobs.NewService(pool, enqueuer, cost.NewService(logger)).WithFinalizer(finalizer),
 		AdminCost:      admincost.NewService(pool, logger),
+		AdminJobs:      adminjobs.NewService(pool, cost.NewService(logger), finalizer, enqueuer, logger),
 		Storage:        store,
 		Resolver:       resolver,
 	}

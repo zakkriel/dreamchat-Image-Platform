@@ -34,6 +34,36 @@ WHERE tenant_id = sqlc.arg(tenant_id)
     OR (scope_type = 'user'   AND scope_id = sqlc.arg(user_id))
   );
 
+-- ResetBudgetPeriodIfElapsed lazily rolls a budget over to its current UTC
+-- window (Phase 7C-1c). It runs inside the reservation transaction, before the
+-- limit is enforced, so a daily/monthly budget whose window has elapsed starts
+-- the new period clean:
+--   - advance period_start to the current window start
+--   - zero spent_amount
+--   - clear an `exceeded` status back to `active` (paused stays paused)
+--   - reserved_amount is left untouched, so a live hold opened just before the
+--     reset survives until its job terminates.
+-- The WHERE period_start < <window start> guard makes the reset idempotent: two
+-- concurrent reservations serialize on the row lock the UPDATE takes, and only
+-- the first (whose period_start is still behind the window) actually resets.
+-- The window start is computed in UTC from now() so no clock is injected.
+-- name: ResetBudgetPeriodIfElapsed :execrows
+UPDATE cost_budgets
+SET period_start = CASE period
+        WHEN 'daily'   THEN date_trunc('day',   now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+        WHEN 'monthly' THEN date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+        ELSE period_start
+    END,
+    spent_amount = 0,
+    status = CASE WHEN status = 'exceeded' THEN 'active' ELSE status END,
+    updated_at = now()
+WHERE id = sqlc.arg(id)
+  AND period_start < CASE period
+        WHEN 'daily'   THEN date_trunc('day',   now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+        WHEN 'monthly' THEN date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+        ELSE period_start
+    END;
+
 -- ReserveActiveBudget atomically holds `amount` against an active budget.
 -- The conditional WHERE is the consistency point: concurrent requests that
 -- would collectively oversell the limit see all-but-one fail (no row

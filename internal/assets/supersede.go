@@ -166,6 +166,15 @@ func SupersedeVariantSlotWithQueries(ctx context.Context, q *dbgen.Queries, para
 	return asset, nil
 }
 
+// SupersedeArtifactSlotWithQueries runs the Phase 6A4 artifact supersede +
+// insert inside the caller's transaction (the same shape as
+// SupersedeVariantSlotWithQueries). The Phase 7C-1 guarded worker persistence
+// reuses it so a forced single-phase/preview-first final write supersedes the
+// slot and completes the job in one transaction under the job row lock.
+func SupersedeArtifactSlotWithQueries(ctx context.Context, q *dbgen.Queries, params InsertParams, slot ArtifactSlot) (VisualAsset, error) {
+	return supersedeArtifactSlot(ctx, q, params, slot)
+}
+
 func (r *pgRepository) SupersedeAndInsertArtifact(ctx context.Context, params InsertParams, slot ArtifactSlot) (VisualAsset, error) {
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {

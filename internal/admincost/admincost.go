@@ -96,18 +96,22 @@ type PriceEntry struct {
 }
 
 type Budget struct {
-	ID             string    `json:"id"`
-	TenantID       string    `json:"tenant_id"`
-	ScopeType      string    `json:"scope_type"`
-	ScopeID        string    `json:"scope_id"`
-	Period         string    `json:"period"`
-	LimitAmount    string    `json:"limit_amount"`
-	ReservedAmount string    `json:"reserved_amount"`
-	SpentAmount    string    `json:"spent_amount"`
-	Currency       string    `json:"currency"`
-	Status         string    `json:"status"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID             string `json:"id"`
+	TenantID       string `json:"tenant_id"`
+	ScopeType      string `json:"scope_type"`
+	ScopeID        string `json:"scope_id"`
+	Period         string `json:"period"`
+	LimitAmount    string `json:"limit_amount"`
+	ReservedAmount string `json:"reserved_amount"`
+	SpentAmount    string `json:"spent_amount"`
+	Currency       string `json:"currency"`
+	Status         string `json:"status"`
+	// PeriodStart is the start of the budget's current UTC window (Phase 7C-1c).
+	// The reservation path lazily advances it (zeroing spent_amount) when the
+	// window has elapsed; it is otherwise read-only over the admin surface.
+	PeriodStart time.Time `json:"period_start"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 type ReservationRow struct {
@@ -288,6 +292,10 @@ type CreateBudgetInput struct {
 	LimitAmount string
 	Currency    string
 	Status      string
+	// PeriodStart optionally pins the start of the budget's first window. When
+	// nil it defaults to the current UTC window start for the period (Phase
+	// 7C-1c). reserved_amount and spent_amount remain platform-owned.
+	PeriodStart *time.Time
 }
 
 // CreateBudget inserts a budget. reserved_amount and spent_amount are
@@ -320,6 +328,12 @@ func (s *Service) CreateBudget(ctx context.Context, actor Actor, in CreateBudget
 	if currency == "" {
 		currency = defaultCurrency
 	}
+	// period_start defaults to the current UTC window start for the period
+	// (matching the lazy reset's window semantics) unless the caller pins it.
+	periodStart := currentWindowStart(in.Period, s.now())
+	if in.PeriodStart != nil {
+		periodStart = in.PeriodStart.UTC()
+	}
 
 	var out Budget
 	err = s.inTx(ctx, func(q *dbgen.Queries) error {
@@ -332,6 +346,7 @@ func (s *Service) CreateBudget(ctx context.Context, actor Actor, in CreateBudget
 			LimitAmount: limit,
 			Currency:    currency,
 			Status:      status,
+			PeriodStart: pgtype.Timestamptz{Time: periodStart, Valid: true},
 		})
 		if err != nil {
 			return err
@@ -548,4 +563,16 @@ func numericFromString(s string) (pgtype.Numeric, error) {
 		return pgtype.Numeric{}, err
 	}
 	return n, nil
+}
+
+// currentWindowStart returns the start of the UTC budget window for a period
+// (Phase 7C-1c). It mirrors the SQL window math used by the lazy reset so a
+// freshly created budget and one that has rolled over share the same anchor:
+// daily → UTC date floor, monthly → first of the current UTC month.
+func currentWindowStart(period string, now time.Time) time.Time {
+	u := now.UTC()
+	if period == "monthly" {
+		return time.Date(u.Year(), u.Month(), 1, 0, 0, 0, 0, time.UTC)
+	}
+	return time.Date(u.Year(), u.Month(), u.Day(), 0, 0, 0, 0, time.UTC)
 }

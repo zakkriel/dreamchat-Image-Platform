@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: DreamChat Image Platform API
-  version: 0.8.0
+  version: 0.9.0
   description: |
     Standalone API for generating, storing, retrieving, and versioning persistent visual assets for DreamChat worlds.
 
@@ -693,13 +693,25 @@ paths:
   /v1/admin/jobs/{job_id}/retry:
     post:
       tags: [Admin]
-      summary: Retry a failed job
+      summary: Retry a failed generation job
       description: |
-        **PLANNED — required admin surface for implementation, not yet served.**
+        Reopens a failed job, **keeping the same job identity**. The job is
+        re-reserved against the **persisted resolved route** already on the job
+        (`provider_id`, `model_id`, `provider_route_id`, operation, and units in
+        `input_payload`) — the route is **never re-resolved**. On a successful
+        reservation the job returns to `queued` and is re-enqueued; its failure
+        fields (`error_code`, `error_message`, `retryable`) and run timestamps
+        are cleared, stale `final_asset_ids` are cleared, and `preview_asset_ids`
+        are preserved (a preview-first job resumes at its final phase). A fresh
+        cost reservation is created and linked to the same job.
 
-        Creates a new generation job that references the original. Returns the
-        new job_id. Emits `admin.job.retried` audit event. Should refuse for
-        non-retryable failure codes unless `force: true` is set.
+        Tenant is taken from the authenticated principal; it is never read from
+        the path or body. No request body is required.
+
+        Allowed only from status `failed`; any other status returns
+        `409 invalid_state`. A denied reservation leaves the job `failed` and
+        does not enqueue: `422 no_price_entry` (no active price entry) or
+        `422 budget_exceeded` (budget would be exceeded).
       security:
         - BearerAuth: [admin:jobs]
       parameters:
@@ -707,36 +719,34 @@ paths:
           in: path
           required: true
           schema: { type: string }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [reason]
-              properties:
-                reason: { type: string }
-                force:
-                  type: boolean
-                  default: false
-                  description: Override the retryable check.
       responses:
-        '202':
-          description: New job accepted
+        '200':
+          description: Job reopened (status `queued`) and re-enqueued.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GenerationJobAccepted'
+                $ref: '#/components/schemas/GenerationJob'
         default:
           $ref: '#/components/responses/ErrorResponse'
   /v1/admin/jobs/{job_id}/cancel:
     post:
       tags: [Admin]
-      summary: Cancel a queued or running job
+      summary: Cancel a non-terminal generation job
       description: |
-        **PLANNED — required admin surface for implementation, not yet served.**
+        Transitions a non-terminal job to `cancelled` and releases its cost
+        reservation **exactly once** (reserved budget is reclaimed). Tenant is
+        taken from the authenticated principal; it is never read from the path
+        or body. No request body is required.
 
-        Transitions the job to `cancelled`. Emits `admin.job.cancelled`.
+        Allowed from `queued`, `running`, and `preview_ready`. From `completed`
+        or `failed` it returns `409 invalid_state`. From `cancelled` it is
+        idempotent and returns `200` with the existing cancelled job.
+
+        The worker treats `cancelled` as terminal: it never calls the provider,
+        uploads, inserts an asset, marks the job completed, or commits cost for a
+        cancelled job. Provider work already in flight when the cancel lands may
+        complete, but its result is **never recorded** as job output — the
+        guarded output write skips persistence when the job is cancelled.
       security:
         - BearerAuth: [admin:jobs]
       parameters:
@@ -744,15 +754,9 @@ paths:
           in: path
           required: true
           schema: { type: string }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/AdminReasonBody'
       responses:
         '200':
-          description: Cancelled
+          description: Job cancelled (idempotent if already cancelled).
           content:
             application/json:
               schema:
@@ -2011,6 +2015,18 @@ components:
           default: USD
         status:
           $ref: '#/components/schemas/BudgetStatus'
+        period_start:
+          type: string
+          format: date-time
+          description: |
+            Start of the budget's current UTC window (Phase 7C-1c). The
+            reservation path lazily rolls the budget over to a fresh window when
+            it has elapsed: `period_start` advances (daily → UTC date floor,
+            monthly → first of the UTC month), `spent_amount` resets to 0, and an
+            `exceeded` budget becomes `active` again (a `paused` budget stays
+            paused). A live reservation opened just before the reset stays in
+            `reserved_amount` until its job terminates. Read-only over the admin
+            surface; it advances only via the lazy reset.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
     CostBudgetWrite:
@@ -2031,6 +2047,14 @@ components:
         currency: { type: string, default: USD }
         status:
           $ref: '#/components/schemas/BudgetStatus'
+        period_start:
+          type: string
+          format: date-time
+          description: |
+            Optional start of the budget's first UTC window (Phase 7C-1c).
+            Defaults to the current UTC window start for the period when omitted.
+            `reserved_amount` and `spent_amount` remain platform-owned and cannot
+            be set.
     CostBudgetMutable:
       type: object
       description: Fields editable on an existing budget.

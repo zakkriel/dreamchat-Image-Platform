@@ -51,6 +51,12 @@ func (s *stubJobsRepo) MarkCompleted(context.Context, string, string, []string) 
 func (s *stubJobsRepo) MarkFailed(context.Context, string, string, string, string, bool) (jobs.Job, error) {
 	return jobs.Job{}, nil
 }
+func (s *stubJobsRepo) InsertFinalAssetAndCompleteJobIfNotCancelled(context.Context, string, string, assets.InsertParams, bool, assets.ArtifactSlot) (assets.VisualAsset, jobs.PersistOutcome, error) {
+	return assets.VisualAsset{}, jobs.PersistPersisted, nil
+}
+func (s *stubJobsRepo) InsertPreviewAssetAndMarkPreviewReadyIfNotCancelled(context.Context, string, string, assets.InsertParams) (assets.VisualAsset, jobs.PersistOutcome, error) {
+	return assets.VisualAsset{}, jobs.PersistPersisted, nil
+}
 func (s *stubJobsRepo) InsertProviderAttempt(context.Context, jobs.ProviderAttemptInsertParams) (jobs.ProviderAttempt, error) {
 	return jobs.ProviderAttempt{}, nil
 }

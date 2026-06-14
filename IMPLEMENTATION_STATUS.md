@@ -228,11 +228,62 @@ before this is production-ready.**
   status / `preview_asset_ids` primitives plus two additive sqlc queries
   (`InsertPreviewVisualAsset`, `MarkGenerationJobPreviewReady`).
 
+- **Phase 7C-1 — Admin job control + budget period reset** (Done): the platform
+  can now cancel a non-terminal job (reclaiming its reserved cost), retry a
+  failed job (without re-resolving its route), and enforce daily/monthly budgets
+  per actual period instead of as lifetime caps. This is **slice 1 of 3** of
+  Phase 7C; rate limiting + RLS (7C-2) and provider fallback chains + webhooks
+  (7C-3) are **not** in this slice.
+  (1) **Admin cancel** — `POST /v1/admin/jobs/{job_id}/cancel` (scope
+  `admin:jobs`; tenant from the principal, never the path/body). Allowed from
+  `queued | running | preview_ready`; from `completed | failed` returns
+  `409 invalid_state`; from `cancelled` it is idempotent (`200` with the existing
+  job). A successful cancel sets `status=cancelled`, `completed_at=now()`,
+  `error_code=cancelled`, a useful `error_message`, `retryable=false`, and
+  releases the cost reservation **exactly once** — the status flip and the
+  release commit in one transaction (`cost.Lifecycle.ReleaseInTx`), so the budget
+  hold is reclaimed atomically. (2) **In-flight cancel guard** — the worker now
+  persists output through guarded methods
+  (`InsertFinalAssetAndCompleteJobIfNotCancelled`,
+  `InsertPreviewAssetAndMarkPreviewReadyIfNotCancelled`) that lock the
+  `generation_jobs` row, skip the write if the job is `cancelled`, and otherwise
+  insert the asset + transition the job **atomically**. Admin cancel takes the
+  same row lock, so a cancelled job can never end up with a final/preview output
+  attached even if the provider returned just before the cancel landed. The
+  worker treats `cancelled` as terminal (no provider call, upload, asset, commit;
+  release is the only cleanup). (3) **Admin retry** —
+  `POST /v1/admin/jobs/{job_id}/retry` (scope `admin:jobs`). Allowed only from
+  `failed`; otherwise `409 invalid_state`. Retry keeps the **same job identity**
+  and re-reserves cost against the **persisted resolved route** read from
+  `input_payload` (`provider_id`, `model_id`, `provider_route_id`, operation,
+  units) — it **never** calls the resolver. On a successful reservation the job
+  returns to `queued` (failure fields + run timestamps cleared, stale
+  `final_asset_ids` cleared, `preview_asset_ids` preserved so a preview-first job
+  resumes at final), the fresh reservation is linked, and the job is enqueued. A
+  denied reservation returns `422 no_price_entry` / `422 budget_exceeded`, leaves
+  the job `failed`, and creates no live reservation (the speculative failed
+  reservation rolls back). An enqueue failure after commit mirrors the create
+  path: mark failed + release the fresh reservation. (4) **Lazy budget period
+  reset** — `cost_budgets.period_start` (migration `0007`, additive column, table
+  count stays **18**) anchors each budget to its current UTC window. At
+  reservation time, inside the reserve transaction, a budget whose window has
+  elapsed is rolled over atomically: `period_start` advances (daily → UTC date
+  floor, monthly → first of the UTC month), `spent_amount` resets to 0, an
+  `exceeded` status returns to `active` (a `paused` budget stays paused), and
+  `reserved_amount` is **not** force-zeroed (a live hold opened just before the
+  reset survives until its job terminates). The reset is idempotent under
+  concurrency (conditional `period_start < window` update + row lock). The admin
+  budget surface exposes `period_start` additively (create accepts an optional
+  `period_start`, defaulting to the current window; update still mutates only
+  `limit_amount`/`status`). **No cron, scheduler, or background worker** — reset
+  is purely lazy. OpenAPI `0.8.0 → 0.9.0` (strictly additive, mirrored).
+
 ## Remaining
 
-- **Phase 7C — Production controls**: capability checks beyond routing, admin
-  retry/cancel, rate limits, period reset, webhooks, RLS, provider fallback
-  chains.
+- **Phase 7C-2 — Rate limiting + RLS**: per-token/tenant rate limits and
+  row-level security for tenant isolation.
+- **Phase 7C-3 — Provider fallback chains + webhooks**: multi-provider fallback
+  on failure and outbound webhooks for job lifecycle events.
 
 ## Notes
 
