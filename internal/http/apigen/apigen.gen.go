@@ -343,6 +343,15 @@ type AssetStatus string
 // AssetType Kind of visual asset.
 type AssetType string
 
+// AttachAnchorAssetsRequest defines model for AttachAnchorAssetsRequest.
+type AttachAnchorAssetsRequest struct {
+	// AnchorAssetIds The reference asset ids to set as the identity's anchors. Replaces
+	// the existing set. Each must be a ready, tenant-owned asset with a
+	// high-res object, unassigned or already bound to this identity.
+	AnchorAssetIds []string `json:"anchor_asset_ids"`
+	WorldId        string   `json:"world_id"`
+}
+
 // BudgetPeriod Reset period for a cost budget.
 type BudgetPeriod string
 
@@ -1291,11 +1300,17 @@ type PostV1CharactersCharacterIdGeneratePackJSONRequestBody = GenerateCharacterP
 // PostV1CharactersCharacterIdVisualIdentityJSONRequestBody defines body for PostV1CharactersCharacterIdVisualIdentity for application/json ContentType.
 type PostV1CharactersCharacterIdVisualIdentityJSONRequestBody = CreateVisualIdentityRequest
 
+// PostV1CharactersCharacterIdVisualIdentityAnchorsJSONRequestBody defines body for PostV1CharactersCharacterIdVisualIdentityAnchors for application/json ContentType.
+type PostV1CharactersCharacterIdVisualIdentityAnchorsJSONRequestBody = AttachAnchorAssetsRequest
+
 // PostV1PlacesPlaceIdGeneratePackJSONRequestBody defines body for PostV1PlacesPlaceIdGeneratePack for application/json ContentType.
 type PostV1PlacesPlaceIdGeneratePackJSONRequestBody = GeneratePlacePackRequest
 
 // PostV1PlacesPlaceIdVisualIdentityJSONRequestBody defines body for PostV1PlacesPlaceIdVisualIdentity for application/json ContentType.
 type PostV1PlacesPlaceIdVisualIdentityJSONRequestBody = CreateVisualIdentityRequest
+
+// PostV1PlacesPlaceIdVisualIdentityAnchorsJSONRequestBody defines body for PostV1PlacesPlaceIdVisualIdentityAnchors for application/json ContentType.
+type PostV1PlacesPlaceIdVisualIdentityAnchorsJSONRequestBody = AttachAnchorAssetsRequest
 
 // PostV1StylesJSONRequestBody defines body for PostV1Styles for application/json ContentType.
 type PostV1StylesJSONRequestBody = CreateStyleProfileRequest

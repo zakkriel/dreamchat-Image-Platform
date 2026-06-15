@@ -201,6 +201,19 @@ func (s *stubIdentitiesRepo) GetByIDForTenant(_ context.Context, id, tenantID st
 	return identities.VisualIdentity{}, identities.ErrNotFound
 }
 
+func (s *stubIdentitiesRepo) SetAnchorAssets(_ context.Context, id, tenantID string, anchorAssetIDs []string) (identities.VisualIdentity, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key, v := range s.byOwner {
+		if v.ID == id && v.TenantID == tenantID {
+			v.AnchorAssetIds = anchorAssetIDs
+			s.byOwner[key] = v
+			return v, nil
+		}
+	}
+	return identities.VisualIdentity{}, identities.ErrNotFound
+}
+
 type stubAssetsRepo struct {
 	byID map[string]assets.VisualAsset
 }

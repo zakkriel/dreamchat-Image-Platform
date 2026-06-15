@@ -8,6 +8,11 @@ import (
 var (
 	ErrNotImplemented = errors.New("provider: not implemented")
 	ErrNotApplicable  = errors.New("provider: not applicable")
+	// ErrReferenceRequired is returned by a reference-conditioned provider's
+	// Generate when the request carries no ReferenceURLs. It is the adapter-level
+	// fail-closed guard that prevents a recurring-character provider from silently
+	// producing a different character off a text prompt alone (PRD 03 §8).
+	ErrReferenceRequired = errors.New("provider: reference image required")
 )
 
 type PreviewCapability string
@@ -63,6 +68,15 @@ type ProviderCapabilities struct {
 	// is configured (PRD 03 §8 readiness). Real provider adapters leave this
 	// false.
 	Synthetic bool
+	// RequiresReferenceImage is true for a reference-conditioned provider that
+	// CANNOT hold a recurring character from a text prompt alone — it must be given
+	// one or more reference image URLs (Generate fails closed otherwise). The
+	// worker honors this by gathering the identity's anchor/reference assets into
+	// ProviderGenerateRequest.ReferenceURLs and failing the job clearly when none
+	// exist, rather than silently generating a different character (PRD 03 §8 /
+	// recurring-character consistency). Prompt-only providers (mock, BFL scene)
+	// leave this false.
+	RequiresReferenceImage bool
 }
 
 type ProviderGenerateRequest struct {

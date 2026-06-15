@@ -81,11 +81,49 @@ the §8.3 hierarchy (`production_capable` ⊇ `pack_capable` ⊇ `identity_capab
 The mock provider is synthetic: it may satisfy identity/pack routes only when
 `ALLOW_SYNTHETIC_PROVIDERS=true`, and that flag defaults **false in every
 environment** (safety does not key off `ENVIRONMENT`). Even when enabled, mock
-never counts as a real identity-capable provider for readiness. The
-current real provider, BFL `flux-pro-1.1`, is `scene_capable` only — suitable for
-scenes/artifacts, not recurring characters. Recurring character consistency
-requires a reference/identity-capable provider; prompt-only retries do not solve
-recurring identity. See `docs/adr/016-provider-capability-reconciliation.md`.
+never counts as a real identity-capable provider for readiness. BFL
+`flux-pro-1.1` is `scene_capable` only — suitable for scenes/artifacts, not
+recurring characters. Recurring character consistency requires a
+reference/identity-capable provider; prompt-only retries do not solve recurring
+identity. See `docs/adr/016-provider-capability-reconciliation.md`.
+
+## Reference-conditioned providers (recurring characters)
+
+The first **real** identity/pack-capable provider is **fal.ai** running
+**FLUX.1 Kontext [pro] multi** (`fal-ai/flux-pro/kontext/multi`; `provider_id =
+"fal"`, `model_name = "flux-pro-kontext-multi"`). It is reference-conditioned: it
+takes a text prompt plus one or more reference image URLs (`image_urls`) and
+renders the *same* subject in the prompted variation. It is registered only when
+`FAL_KEY` is set, advertises `{scene_capable, identity_capable, pack_capable}`
+(real, **not** `production_capable` until benchmarked), and is priced at
+**$0.04/output image** (per-image, current schema). See
+`docs/adr/017-reference-conditioned-provider.md` and the adapter doc comment in
+`internal/providers/fal/fal.go`.
+
+A provider that cannot hold a character from a prompt alone declares
+`ProviderCapabilities.RequiresReferenceImage = true`. When the resolved provider
+for a pack sets it, the worker gathers the visual identity's `anchor_asset_ids`,
+**loads and validates each anchor** (tenant ownership, status `ready`, a high-res
+object), presigns the anchor's actual stored high-res key, and threads the URLs
+into `ProviderGenerateRequest.ReferenceURLs` for every role. **If the identity has
+no anchors the pack fails closed** with `missing_reference_assets`; **a bad anchor
+fails with `invalid_reference_asset`** — no provider call, never a different
+character. Prompt-only providers (mock, BFL) leave the flag false, so this path is
+a no-op for them.
+
+Anchors are attached over the API — `POST /v1/characters/{character_id}/visual-
+identity/anchors` and the symmetric `POST /v1/places/{place_id}/visual-identity/
+anchors` — which validate each candidate asset before persisting the set, so a
+recurring-character/place pack runs with no manual SQL. Both pack kinds request
+`pack_capable` and may resolve the fal route, so both have an anchor flow. Reference-conditioned
+adapters also handle local timeout/cancellation: on a post-submit timeout the fal
+adapter best-effort cancels the queued request (`cancel_url`) so a worker timeout
+never leaves an orphaned, billing job.
+
+Only the `pack_capable` fal route is seeded (migration `0011`): pack generation is
+the recurring-character path wired with references in this slice. fal has no
+`scene_capable` route (it requires references; scene/artifact requests carry
+none), so BFL continues to serve all scene/artifact generation unchanged.
 
 ## Error Normalization
 

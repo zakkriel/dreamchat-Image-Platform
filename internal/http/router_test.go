@@ -45,6 +45,9 @@ func (noopIdentitiesRepo) GetByOwner(context.Context, string, string, string, st
 func (noopIdentitiesRepo) GetByIDForTenant(context.Context, string, string) (identities.VisualIdentity, error) {
 	return identities.VisualIdentity{}, identities.ErrNotFound
 }
+func (noopIdentitiesRepo) SetAnchorAssets(context.Context, string, string, []string) (identities.VisualIdentity, error) {
+	return identities.VisualIdentity{}, identities.ErrNotFound
+}
 
 type noopAssetsRepo struct{}
 

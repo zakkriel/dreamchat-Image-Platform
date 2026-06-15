@@ -113,3 +113,41 @@ func TestReconcileSyntheticPolicyMarksMockPackInvalidWhenDisabled(t *testing.T) 
 		}
 	}
 }
+
+// TestReconcileAcceptsRealFalPackRoute proves boot reconciliation accepts the new
+// REAL reference-conditioned provider's pack route under the production synthetic
+// policy (ALLOW_SYNTHETIC_PROVIDERS=false): the fal pack route is valid and flips
+// real identity readiness on, while the co-located synthetic mock pack route stays
+// invalid by policy. This is the slice's core routing claim — a real
+// identity/pack provider can serve recurring-character work in production.
+func TestReconcileAcceptsRealFalPackRoute(t *testing.T) {
+	routes := []Route{
+		{RouteID: "route_fal_text_to_image_pack", ProviderID: "fal", ModelID: "pm_fal_flux_kontext_multi", OperationType: "text_to_image", RequiredCapability: "pack_capable", Enabled: true, ModelActive: true},
+		{RouteID: "route_mock_text_to_image_pack", ProviderID: "mock", ModelID: "pm_mock_v1", OperationType: "text_to_image", RequiredCapability: "pack_capable", Enabled: true, ModelActive: true},
+	}
+	index := map[string]providers.ProviderCapabilities{
+		// Mirrors the real fal adapter: reference-conditioned identity/pack, real.
+		"fal": {ProviderID: "fal", Capabilities: []providers.Capability{
+			providers.CapabilitySceneCapable, providers.CapabilityIdentityCapable, providers.CapabilityPackCapable,
+		}, RequiresReferenceImage: true},
+		"mock": {ProviderID: "mock", Capabilities: []providers.Capability{
+			providers.CapabilitySceneCapable, providers.CapabilityProductionCapable,
+		}, Synthetic: true},
+	}
+
+	// Production policy: synthetic identity disabled.
+	report := Reconcile(routes, index, false)
+	byID := map[string]RouteDecision{}
+	for _, d := range report.Decisions {
+		byID[d.RouteID] = d
+	}
+	if !byID["route_fal_text_to_image_pack"].Valid {
+		t.Errorf("real fal pack route must be valid under production policy: %+v", byID["route_fal_text_to_image_pack"])
+	}
+	if byID["route_mock_text_to_image_pack"].Valid {
+		t.Errorf("synthetic mock pack route must stay invalid under production policy: %+v", byID["route_mock_text_to_image_pack"])
+	}
+	if !report.Readiness.RealIdentityCapable {
+		t.Error("fal must flip real identity readiness on")
+	}
+}

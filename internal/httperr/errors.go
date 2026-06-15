@@ -52,6 +52,12 @@ const (
 	// from unsupported_capability (no route exists for the capability) and
 	// provider_unavailable_for_route (provider not wired in this process).
 	CodeRouteCapabilityMismatch = "route_capability_mismatch"
+
+	// CodeInvalidAnchorAsset surfaces (HTTP 422) when attaching anchor assets to a
+	// visual identity and a supplied asset cannot serve as a reference: not owned
+	// by the tenant, not ready, missing a high-res object, or already bound to a
+	// different identity (ADR-017).
+	CodeInvalidAnchorAsset = "invalid_anchor_asset"
 )
 
 type Body struct {

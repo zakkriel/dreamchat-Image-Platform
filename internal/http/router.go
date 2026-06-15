@@ -187,6 +187,15 @@ func mountIdentities(v1 chi.Router, deps Deps) {
 	v1.With(auth.RequireScopes("images:read")).Get("/characters/{character_id}/visual-identity", h.GetCharacter)
 	v1.With(auth.RequireScopes("images:write")).Post("/places/{place_id}/visual-identity", h.UpsertPlace)
 	v1.With(auth.RequireScopes("images:read")).Get("/places/{place_id}/visual-identity", h.GetPlace)
+	// Anchor attach (ADR-017) needs the assets repo to validate references; mount
+	// it only when assets are wired so the endpoint never half-works. Both
+	// character and place anchors are mounted symmetrically: place packs also
+	// request pack_capable and may resolve the reference-conditioned fal route.
+	if deps.AssetsRepo != nil {
+		h = h.WithAssets(deps.AssetsRepo)
+		v1.With(auth.RequireScopes("images:write")).Post("/characters/{character_id}/visual-identity/anchors", h.AttachCharacterAnchors)
+		v1.With(auth.RequireScopes("images:write")).Post("/places/{place_id}/visual-identity/anchors", h.AttachPlaceAnchors)
+	}
 }
 
 func mountAssets(v1 chi.Router, deps Deps) {

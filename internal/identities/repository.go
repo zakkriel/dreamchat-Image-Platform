@@ -59,6 +59,13 @@ type Repository interface {
 	Upsert(ctx context.Context, params UpsertParams) (VisualIdentity, error)
 	GetByOwner(ctx context.Context, tenantID, worldID, ownerType, ownerID string) (VisualIdentity, error)
 	GetByIDForTenant(ctx context.Context, id, tenantID string) (VisualIdentity, error)
+	// SetAnchorAssets replaces a visual identity's anchor_asset_ids (the reference
+	// images a reference-conditioned provider uses to hold a recurring character,
+	// ADR-017) and returns the updated identity. It is tenant-scoped: an identity
+	// not owned by the tenant yields ErrNotFound. Asset validation (ownership,
+	// ready status, high-res object, identity binding) is the caller's
+	// responsibility — this method only persists the set atomically.
+	SetAnchorAssets(ctx context.Context, identityID, tenantID string, anchorAssetIDs []string) (VisualIdentity, error)
 }
 
 type pgRepository struct {
@@ -213,6 +220,44 @@ func (r *pgRepository) GetByIDForTenant(ctx context.Context, id, tenantID string
 	err := appdb.WithTenant(ctx, r.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		row, err := dbgen.New(tx).GetVisualIdentityByID(ctx, dbgen.GetVisualIdentityByIDParams{
 			ID:       id,
+			TenantID: tenantID,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		out = rowToDomain(row)
+		return nil
+	})
+	if err != nil {
+		return VisualIdentity{}, err
+	}
+	return out, nil
+}
+
+func (r *pgRepository) SetAnchorAssets(ctx context.Context, identityID, tenantID string, anchorAssetIDs []string) (VisualIdentity, error) {
+	if anchorAssetIDs == nil {
+		anchorAssetIDs = []string{}
+	}
+	var out VisualIdentity
+	err := appdb.WithTenant(ctx, r.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		// Tenant-scoped UPDATE: a row owned by another tenant (or absent) affects
+		// zero rows → ErrNotFound. anchor_asset_ids is a text[] column; pgx binds
+		// the []string directly. updated_at is bumped, version is NOT (anchors are
+		// reference provenance, not a canonical-trait change that versions identity).
+		tag, err := tx.Exec(ctx,
+			`UPDATE visual_identities SET anchor_asset_ids = $1, updated_at = now() WHERE id = $2 AND tenant_id = $3`,
+			anchorAssetIDs, identityID, tenantID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrNotFound
+		}
+		row, err := dbgen.New(tx).GetVisualIdentityByID(ctx, dbgen.GetVisualIdentityByIDParams{
+			ID:       identityID,
 			TenantID: tenantID,
 		})
 		if err != nil {
