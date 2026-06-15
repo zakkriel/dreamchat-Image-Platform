@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { apiRequest, type ApiResult } from '../api/client'
 import { useConfig } from '../state/config'
+import { getScenario, useScenarioSeq } from '../scenario/store'
 import { QUALITY_TIERS, type GenerationJobAccepted, type QualityTier } from '../api/types'
 import { Button, Checkbox, Field, JsonBlock, Panel, Select, StatusBanner, TextInput } from './ui'
 
@@ -24,6 +25,19 @@ function PackForm({ kind, defaultEntityId, defaultTemplate, activeStyleId, activ
   const [quality, setQuality] = useState<QualityTier | ''>('standard')
   const [forceRegenerate, setForceRegenerate] = useState(false)
   const [result, setResult] = useState<ApiResult<GenerationJobAccepted> | null>(null)
+
+  const seq = useScenarioSeq()
+  useEffect(() => {
+    if (seq === 0) return
+    const s = getScenario()?.pack?.[kind]
+    if (!s) return
+    if (s.entityId !== undefined) setEntityId(s.entityId)
+    if (s.worldId !== undefined) setWorldId(s.worldId)
+    if (s.styleProfileId !== undefined) setStyleProfileId(s.styleProfileId)
+    if (s.packTemplate !== undefined) setPackTemplate(s.packTemplate)
+    if (s.qualityTier !== undefined) setQuality(s.qualityTier)
+    if (s.forceRegenerate !== undefined) setForceRegenerate(s.forceRegenerate)
+  }, [seq, kind])
 
   const effectiveStyle = styleProfileId || activeStyleId
   const idLabel = kind === 'character' ? 'character_id' : 'place_id'

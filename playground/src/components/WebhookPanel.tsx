@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { apiRequest, type ApiResult } from '../api/client'
+import { getScenario, useScenarioSeq } from '../scenario/store'
 import type { WebhookEndpoint, WebhookEndpointWithSecret } from '../api/types'
 import { Button, CopyButton, Field, JsonBlock, Panel, StatusBanner, TextInput } from './ui'
 
@@ -7,6 +8,14 @@ export function WebhookPanel() {
   const [url, setUrl] = useState('https://webhook.site/your-id')
   const [putResult, setPutResult] = useState<ApiResult<WebhookEndpointWithSecret> | null>(null)
   const [getResult, setGetResult] = useState<ApiResult<WebhookEndpoint> | null>(null)
+
+  const seq = useScenarioSeq()
+  useEffect(() => {
+    if (seq === 0) return
+    const s = getScenario()?.webhook
+    if (!s) return
+    if (s.url !== undefined) setUrl(s.url)
+  }, [seq])
 
   async function putEndpoint() {
     setPutResult(

@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { apiRequest, type ApiResult } from '../api/client'
 import { setConfig, useConfig } from '../state/config'
+import { getScenario, useScenarioSeq } from '../scenario/store'
 import type { VisualIdentity } from '../api/types'
 import { Button, Field, JsonBlock, Panel, StatusBanner, TextArea, TextInput } from './ui'
 
@@ -19,6 +20,23 @@ export function VisualIdentityPanel() {
 
   const [createResult, setCreateResult] = useState<ApiResult<VisualIdentity> | null>(null)
   const [getResult, setGetResult] = useState<ApiResult<VisualIdentity> | null>(null)
+
+  const seq = useScenarioSeq()
+  useEffect(() => {
+    if (seq === 0) return
+    const s = getScenario()?.visualIdentity
+    if (!s) return
+    if (s.ownerType !== undefined) setEntity(s.ownerType)
+    if (s.worldId !== undefined) setWorldId(s.worldId)
+    if (s.ownerId !== undefined) setOwnerId(s.ownerId)
+    if (s.displayName !== undefined) setDisplayName(s.displayName)
+    if (s.canonicalVisualTraits !== undefined) {
+      setTraits(JSON.stringify(s.canonicalVisualTraits, null, 2))
+      setTraitsError(null)
+    }
+    if (s.styleProfileId !== undefined) setStyleProfileId(s.styleProfileId)
+    if (s.consistencyKey !== undefined) setConsistencyKey(s.consistencyKey)
+  }, [seq])
 
   const effectiveStyle = styleProfileId || cfg.activeStyleId
   const basePath = entity === 'character' ? 'characters' : 'places'

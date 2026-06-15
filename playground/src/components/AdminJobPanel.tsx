@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { apiRequest, type ApiResult } from '../api/client'
+import { getScenario, useScenarioSeq } from '../scenario/store'
 import type { GenerationJob } from '../api/types'
 import { Button, Field, JsonBlock, Panel, StatusBanner, TextInput } from './ui'
 
@@ -7,6 +8,14 @@ export function AdminJobPanel() {
   const [jobId, setJobId] = useState('')
   const [retryResult, setRetryResult] = useState<ApiResult<GenerationJob> | null>(null)
   const [cancelResult, setCancelResult] = useState<ApiResult<GenerationJob> | null>(null)
+
+  const seq = useScenarioSeq()
+  useEffect(() => {
+    if (seq === 0) return
+    const s = getScenario()?.admin
+    if (!s) return
+    if (s.jobId !== undefined) setJobId(s.jobId)
+  }, [seq])
 
   async function retry() {
     setRetryResult(

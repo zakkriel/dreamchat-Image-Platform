@@ -1,3 +1,4 @@
+import { ScenarioImportPanel } from './components/ScenarioImportPanel'
 import { ConnectionPanel } from './components/ConnectionPanel'
 import { StylePanel } from './components/StylePanel'
 import { VisualIdentityPanel } from './components/VisualIdentityPanel'
@@ -20,6 +21,7 @@ export default function App() {
         </p>
       </header>
       <main className="panels">
+        <ScenarioImportPanel />
         <ConnectionPanel />
         <StylePanel />
         <VisualIdentityPanel />

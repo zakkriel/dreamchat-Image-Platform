@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { apiRequest, type ApiResult } from '../api/client'
 import { useConfig } from '../state/config'
+import { getScenario, useScenarioSeq } from '../scenario/store'
 import {
   DELIVERY_MODES,
   LATENCY_TIERS,
@@ -24,6 +25,22 @@ export function ArtifactPanel() {
   const [forceRegenerate, setForceRegenerate] = useState(false)
   const [idempotencyKey, setIdempotencyKey] = useState('')
   const [result, setResult] = useState<ApiResult<GenerationJobAccepted> | null>(null)
+
+  const seq = useScenarioSeq()
+  useEffect(() => {
+    if (seq === 0) return
+    const s = getScenario()?.artifact
+    if (!s) return
+    if (s.artifactId !== undefined) setArtifactId(s.artifactId)
+    if (s.worldId !== undefined) setWorldId(s.worldId)
+    if (s.styleProfileId !== undefined) setStyleProfileId(s.styleProfileId)
+    if (s.description !== undefined) setDescription(s.description)
+    if (s.qualityTier !== undefined) setQuality(s.qualityTier)
+    if (s.latencyTier !== undefined) setLatency(s.latencyTier)
+    if (s.deliveryMode !== undefined) setDeliveryMode(s.deliveryMode)
+    if (s.forceRegenerate !== undefined) setForceRegenerate(s.forceRegenerate)
+    if (s.idempotencyKey !== undefined) setIdempotencyKey(s.idempotencyKey)
+  }, [seq])
 
   const effectiveStyle = styleProfileId || cfg.activeStyleId
 

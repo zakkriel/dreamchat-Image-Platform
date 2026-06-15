@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { apiRequest, type ApiResult } from '../api/client'
 import { setConfig, useConfig } from '../state/config'
+import { getScenario, useScenarioSeq } from '../scenario/store'
 import { QUALITY_TIERS, STYLE_MODES, type QualityTier, type StyleMode, type StyleProfile } from '../api/types'
 import { Button, Field, JsonBlock, Panel, Select, StatusBanner, TextInput } from './ui'
 
@@ -15,6 +16,18 @@ export function StylePanel() {
   const [styles, setStyles] = useState<StyleProfile[]>([])
   const [createResult, setCreateResult] = useState<ApiResult | null>(null)
   const [listResult, setListResult] = useState<ApiResult | null>(null)
+
+  const seq = useScenarioSeq()
+  useEffect(() => {
+    if (seq === 0) return
+    const s = getScenario()?.style
+    if (!s) return
+    if (s.name !== undefined) setName(s.name)
+    if (s.styleMode !== undefined) setStyleMode(s.styleMode)
+    if (s.positivePrompt !== undefined) setPositivePrompt(s.positivePrompt)
+    if (s.negativePrompt !== undefined) setNegativePrompt(s.negativePrompt)
+    if (s.defaultQualityTier !== undefined) setQuality(s.defaultQualityTier)
+  }, [seq])
 
   async function listStyles() {
     const res = await apiRequest<{ styles: StyleProfile[] }>({ method: 'GET', path: '/v1/styles' })

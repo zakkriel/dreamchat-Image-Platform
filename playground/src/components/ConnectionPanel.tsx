@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { apiRequest, type ApiResult } from '../api/client'
 import { setConfig, useConfig } from '../state/config'
+import { getScenario, useScenarioSeq } from '../scenario/store'
 import { Button, Field, JsonBlock, Panel, StatusBanner, TextInput } from './ui'
 
 export function ConnectionPanel() {
@@ -11,6 +12,30 @@ export function ConnectionPanel() {
   const [health, setHealth] = useState<ApiResult | null>(null)
   const [openapiVersion, setOpenapiVersion] = useState<string | null>(null)
   const [openapiResult, setOpenapiResult] = useState<ApiResult | null>(null)
+
+  // Apply an imported scenario's connection section. Base URL is filled when
+  // present; token fields are only touched when explicitly provided so they
+  // stay manually managed by default.
+  const seq = useScenarioSeq()
+  useEffect(() => {
+    if (seq === 0) return
+    const s = getScenario()?.connection
+    if (!s) return
+    const patch: Partial<{ baseUrl: string; token: string; adminToken: string }> = {}
+    if (s.baseUrl !== undefined) {
+      setBaseUrl(s.baseUrl)
+      patch.baseUrl = s.baseUrl
+    }
+    if (s.token !== undefined) {
+      setToken(s.token)
+      patch.token = s.token
+    }
+    if (s.adminToken !== undefined) {
+      setAdminToken(s.adminToken)
+      patch.adminToken = s.adminToken
+    }
+    setConfig(patch)
+  }, [seq])
 
   function save() {
     setConfig({ baseUrl: baseUrl.trim(), token: token.trim(), adminToken: adminToken.trim() })
