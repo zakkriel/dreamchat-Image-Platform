@@ -78,8 +78,10 @@ the §8.3 hierarchy (`production_capable` ⊇ `pack_capable` ⊇ `identity_capab
   fails closed with `route_capability_mismatch` (HTTP 422) when the only matching
   route's provider cannot back its claimed capability.
 
-The mock provider is synthetic: it satisfies identity/pack for dev/test routing
-but never makes production readiness report a real identity-capable provider. The
+The mock provider is synthetic: it may satisfy identity/pack routes only when
+`ALLOW_SYNTHETIC_PROVIDERS=true`, and that flag defaults **false in every
+environment** (safety does not key off `ENVIRONMENT`). Even when enabled, mock
+never counts as a real identity-capable provider for readiness. The
 current real provider, BFL `flux-pro-1.1`, is `scene_capable` only — suitable for
 scenes/artifacts, not recurring characters. Recurring character consistency
 requires a reference/identity-capable provider; prompt-only retries do not solve
