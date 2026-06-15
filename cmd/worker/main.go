@@ -14,9 +14,8 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/config"
 	"github.com/zakkriel/drchat-image-platform/internal/cost"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
-	"github.com/zakkriel/drchat-image-platform/internal/providers"
-	"github.com/zakkriel/drchat-image-platform/internal/providers/bfl"
-	"github.com/zakkriel/drchat-image-platform/internal/providers/mock"
+	"github.com/zakkriel/drchat-image-platform/internal/providers/bootstrap"
+	"github.com/zakkriel/drchat-image-platform/internal/providers/routing"
 	"github.com/zakkriel/drchat-image-platform/internal/storage"
 	"github.com/zakkriel/drchat-image-platform/internal/telemetry"
 	"github.com/zakkriel/drchat-image-platform/internal/webhooks"
@@ -62,7 +61,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	registry := buildRegistry(cfg, logger)
+	registry := bootstrap.Registry(cfg)
+	if cfg.BFLAPIKey != "" {
+		logger.Info("bfl provider registered")
+	}
+	// PRD 03 §8 readiness: log whether a real identity-capable provider is
+	// configured, distinguishing real providers from synthetic/test-only ones, so
+	// the worker process surfaces the same honest signal as the API at boot. The
+	// synthetic-identity policy mirrors the resolver's so the logs agree.
+	routing.LogReconciliation(logger, routing.Reconcile(nil, registry.Capabilities(), cfg.AllowSyntheticProviders))
 
 	// Phase 7C-4: outbound webhooks. The worker owns the emitter (it emits at
 	// durable job-lifecycle transitions) and the deliverer (it runs the
@@ -139,23 +146,6 @@ func openPool(dsn string) (*pgxpool.Pool, error) {
 		return nil, err
 	}
 	return pool, nil
-}
-
-// buildRegistry registers exactly the providers configured in this process
-// (Phase 7A): mock is always available; bfl is registered only when a
-// BFL_API_KEY is set. The route resolver (API side) consults the same
-// availability set via cfg.AvailableProviders(), so the worker is never handed a
-// job for a provider it cannot invoke.
-func buildRegistry(cfg *config.Config, logger interface {
-	Info(msg string, args ...any)
-}) *providers.Registry {
-	reg := providers.NewRegistry()
-	reg.Register(mock.ProviderID, mock.New())
-	if cfg.BFLAPIKey != "" {
-		reg.Register(bfl.ProviderID, bfl.New(cfg.BFLAPIKey))
-		logger.Info("bfl provider registered")
-	}
-	return reg
 }
 
 // asynqLogger adapts slog to asynq's logger interface.

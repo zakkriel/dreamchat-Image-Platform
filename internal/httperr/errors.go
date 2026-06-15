@@ -44,6 +44,14 @@ const (
 	CodeNoRoute                     = "no_route"
 	CodeUnsupportedCapability       = "unsupported_capability"
 	CodeProviderUnavailableForRoute = "provider_unavailable_for_route"
+
+	// Provider capability reconciliation (PRD 03 §8). Surfaces as HTTP 422: a
+	// route matched the request but its provider adapter cannot actually back the
+	// capability the route claims (config drift), so the platform fails closed
+	// rather than route identity/pack work to an unsuitable provider. Distinct
+	// from unsupported_capability (no route exists for the capability) and
+	// provider_unavailable_for_route (provider not wired in this process).
+	CodeRouteCapabilityMismatch = "route_capability_mismatch"
 )
 
 type Body struct {

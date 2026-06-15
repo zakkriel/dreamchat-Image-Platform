@@ -40,3 +40,16 @@ func (r *Registry) Available() map[string]bool {
 	}
 	return out
 }
+
+// Capabilities returns the advertised ProviderCapabilities of every registered
+// provider, keyed by provider id. This is the authoritative capability index the
+// boot-time reconciler and the route resolver use to verify that a route's
+// claimed required_capability is actually backed by its provider adapter (PRD 03
+// §8) — config can overstate a route's capability, the adapter cannot.
+func (r *Registry) Capabilities() map[string]ProviderCapabilities {
+	out := make(map[string]ProviderCapabilities, len(r.providers))
+	for id, p := range r.providers {
+		out[id] = p.Capabilities()
+	}
+	return out
+}

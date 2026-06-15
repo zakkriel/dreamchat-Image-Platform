@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"log/slog"
 	stdhttp "net/http"
 	"os"
 	"os/signal"
@@ -22,6 +23,8 @@ import (
 	apphttp "github.com/zakkriel/drchat-image-platform/internal/http"
 	"github.com/zakkriel/drchat-image-platform/internal/identities"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
+	"github.com/zakkriel/drchat-image-platform/internal/providers"
+	"github.com/zakkriel/drchat-image-platform/internal/providers/bootstrap"
 	"github.com/zakkriel/drchat-image-platform/internal/providers/routing"
 	"github.com/zakkriel/drchat-image-platform/internal/ratelimit"
 	"github.com/zakkriel/drchat-image-platform/internal/storage"
@@ -105,7 +108,24 @@ func main() {
 	// Route resolution reads global reference tables (provider_routes /
 	// provider_models), which carry no tenant_id and are NOT RLS-protected, so it
 	// runs on the system pool.
-	resolver := routing.NewResolver(routing.NewDBRouteSource(systemDB.Pool()), cfg.AvailableProviders())
+	//
+	// PRD 03 §8: wire the provider capability index so resolution enforces the
+	// provider-satisfies-route check (a DB route cannot overstate its provider's
+	// real capabilities) as defense-in-depth behind the boot-time reconciler.
+	routeSource := routing.NewDBRouteSource(systemDB.Pool())
+	capabilityIndex := bootstrap.CapabilityIndex(cfg)
+	resolver := routing.NewResolver(routeSource, cfg.AvailableProviders()).
+		WithProviderCapabilities(capabilityIndex).
+		WithSyntheticIdentityAllowed(cfg.AllowSyntheticProviders)
+
+	// PRD 03 §8: reconcile every configured route against the registered provider
+	// capabilities at boot and log the result (route id, provider, model, required
+	// capability, provider capabilities, decision) plus identity readiness — so a
+	// misconfigured identity/pack route or a missing real identity-capable
+	// provider is visible in logs rather than silently producing inconsistent
+	// recurring characters. Reconciliation does not fail startup; the resolver
+	// fails the request closed, matching the repo's fail-at-resolution pattern.
+	reconcileRoutesAtBoot(context.Background(), logger, routeSource, capabilityIndex, cfg.AllowSyntheticProviders)
 
 	deps := apphttp.Deps{
 		Logger: logger,
@@ -175,6 +195,34 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("api stopped")
+}
+
+// reconcileRoutesAtBoot lists every configured route across the known operation
+// types and reconciles it against the registered provider capabilities (PRD 03
+// §8), logging the per-route decision and the identity-readiness summary. A
+// failure to list routes (e.g. transient DB error) is logged but does not abort
+// startup — the route resolver still enforces the same provider-satisfies-route
+// check on every request as defense-in-depth.
+func reconcileRoutesAtBoot(ctx context.Context, logger *slog.Logger, source routing.RouteSource, index map[string]providers.ProviderCapabilities, allowSyntheticIdentity bool) {
+	routes, err := routing.GatherRoutes(ctx, source, reconcileOperations)
+	if err != nil {
+		logger.Warn("provider route reconciliation skipped: could not list routes", "error", err)
+		// Still log readiness from the capability index alone (no routes needed).
+		routing.LogReconciliation(logger, routing.Reconcile(nil, index, allowSyntheticIdentity))
+		return
+	}
+	routing.LogReconciliation(logger, routing.Reconcile(routes, index, allowSyntheticIdentity))
+}
+
+// reconcileOperations is the set of operation types boot reconciliation inspects;
+// it mirrors providers.OperationType so reconciliation covers every route the
+// resolver could ever select.
+var reconcileOperations = []string{
+	string(providers.OperationTextToImage),
+	string(providers.OperationImageToImage),
+	string(providers.OperationUpscale),
+	string(providers.OperationVariantPack),
+	string(providers.OperationEdit),
 }
 
 func openPool(dsn string) (*pgxpool.Pool, error) {

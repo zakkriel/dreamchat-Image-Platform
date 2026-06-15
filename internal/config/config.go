@@ -56,6 +56,17 @@ type Config struct {
 
 	APITokenPepper     string
 	OpenAPIDocsEnabled bool
+
+	// AllowSyntheticProviders gates whether synthetic providers (mock) may satisfy
+	// identity-axis routes (identity/pack/production) during route resolution
+	// (PRD 03 §8). Default: FALSE in ALL environments — safety must not depend on
+	// ENVIRONMENT (a production deployment may run with ENVIRONMENT=dev). So by
+	// default a deployment with only a scene-capable real provider fails
+	// character/pack requests closed (HTTP 422) instead of resolving synthetic
+	// placeholder grids. Local/dev/CI mock identity-pack tests must set
+	// ALLOW_SYNTHETIC_PROVIDERS=true explicitly. Mock still backs scene/draft
+	// routes regardless of this flag.
+	AllowSyntheticProviders bool
 }
 
 func Load() (*Config, error) {
@@ -84,6 +95,8 @@ func Load() (*Config, error) {
 
 		APITokenPepper:     getEnv("API_TOKEN_PEPPER", ""),
 		OpenAPIDocsEnabled: getEnvBool("OPENAPI_DOCS_ENABLED", defaultDocsEnabled(env)),
+
+		AllowSyntheticProviders: getEnvBool("ALLOW_SYNTHETIC_PROVIDERS", false),
 	}
 
 	if err := cfg.validate(); err != nil {

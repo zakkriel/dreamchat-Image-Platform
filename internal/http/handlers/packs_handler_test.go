@@ -435,6 +435,25 @@ func TestPackUnsupportedCapabilityReturns422BeforeWrites(t *testing.T) {
 	}
 }
 
+// PRD 03 §8: a character/pack request whose only matching route claims
+// pack_capable but is wired to a provider that cannot back it fails closed with
+// 422 route_capability_mismatch BEFORE any cost reservation / job create — so a
+// fail-closed routing rejection leaves no dangling budget hold. This is the
+// handler-level proof of the "no dangling reservation" acceptance criterion:
+// route resolution runs before CreateAndEnqueue (which reserves cost), so a
+// resolution failure means the reserver is never invoked.
+func TestPackCapabilityMismatchReturns422WithNoDanglingReservation(t *testing.T) {
+	creator := newStubCreator()
+	router := newPacksRouterWithResolver(creator, seededPackIdentities(), &fakeResolver{err: routing.ErrRouteProviderCapabilityMismatch})
+	body := map[string]any{"world_id": packWorldID, "style_profile_id": "sty_ok"}
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/characters/char_hero/generate-pack",
+		tenantA, []string{"images:write"}, body, nil)
+	assertError(t, rec, http.StatusUnprocessableEntity, "route_capability_mismatch")
+	if len(creator.calls) != 0 {
+		t.Fatalf("fail-closed routing must not reserve cost / create a job, got %d service calls", len(creator.calls))
+	}
+}
+
 // Phase 7A: a pack request that resolves no provider route fails 422 no_route
 // before any cost reservation / job create.
 func TestPackNoRouteReturns422BeforeAnyWrites(t *testing.T) {
