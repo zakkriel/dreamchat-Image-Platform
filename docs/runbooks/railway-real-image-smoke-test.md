@@ -46,7 +46,7 @@ Create one Railway **project** with five components:
 | **Worker service** | Built from the same `Dockerfile` with build arg `BINARY=worker`. Consumes asynq jobs from Redis, calls the provider, writes images to S3. | No |
 | **Postgres** | Railway Postgres plugin (`Add` → `Database` → `PostgreSQL`). | Internal |
 | **Redis** | Railway Redis plugin (`Add` → `Database` → `Redis`). | Internal |
-| **S3-compatible storage** | A bucket on any S3-compatible provider reachable over the public internet — e.g. Cloudflare R2, Backblaze B2, AWS S3, or a self-hosted MinIO with a public endpoint. **Railway has no built-in S3.** | Endpoint must be **publicly reachable** so the presigned download URL opens in a browser |
+| **S3-compatible storage** | **Railway Storage Buckets** are the preferred Railway-native option (they are S3-compatible). External S3-compatible providers — Cloudflare R2, Backblaze B2, AWS S3, or a public MinIO — also work. The smoke test only requires an S3-compatible endpoint reachable by the API and worker. | Endpoint must be reachable by the API and worker; for the presigned download URL to open in a browser it must also be reachable from your machine |
 
 ### How API and worker differ
 
@@ -112,6 +112,18 @@ Optionally point each service's **Config-as-code** path at the checked-in files:
 A self-contained runner is built into the repo at `cmd/migrate`. It embeds
 `migrations/0*.up.sql`, applies them in filename order, prints each filename,
 and exits non-zero on the first error.
+
+> **How `cmd/migrate` and `cmd/seed-token` are executed.** The
+> `railway run --service api go run ./cmd/migrate` and `go run ./cmd/seed-token`
+> commands are **local** commands: you run them from a repo checkout on a machine
+> that has **Go installed**, with the Railway service environment variables
+> injected (that is what `railway run --service <svc>` does). The deployed
+> API/worker images do **not** contain Go and do **not** contain these commands —
+> each deployed image contains only the single selected `BINARY` (`api` or
+> `worker`). If you instead want to run migration or seeding **inside Railway** as
+> a one-off service/container, configure a one-off build of the same `Dockerfile`
+> with the build arg `BINARY=migrate` or `BINARY=seed-token` (the Dockerfile
+> builds `./cmd/${BINARY}`), and run it once against the database.
 
 Run it as a one-off against the Railway database. Easiest from a local checkout
 with the Railway CLI (it injects the service env, including `POSTGRES_DSN`):
@@ -197,8 +209,10 @@ Save the printed `Authorization: Bearer dci_dev_..._...` value; it is shown once
 
 1. **Postgres** — add the Railway Postgres plugin; note its connection URL.
 2. **Redis** — add the Railway Redis plugin; note its host/port + password.
-3. **S3-compatible storage** — create a bucket on a publicly reachable provider;
-   note endpoint, region, bucket, access key, secret.
+3. **S3-compatible storage** — create a Railway Storage Bucket (preferred,
+   S3-compatible) or a bucket on an external S3-compatible provider (Cloudflare
+   R2, Backblaze B2, AWS S3, public MinIO); note endpoint, region, bucket, access
+   key, secret.
 4. **API service** — new service from this GitHub repo, Dockerfile builder,
    `BINARY=api`, public networking on, healthcheck `/health`, all env vars from §2.
 5. **Worker service** — new service from the same repo, Dockerfile builder,
