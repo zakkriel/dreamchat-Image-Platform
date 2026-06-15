@@ -111,6 +111,11 @@ type Resolver struct {
 	// empty (callers/tests that do not wire it), the check is skipped so existing
 	// behavior is unchanged — production wires it via WithProviderCapabilities.
 	capabilities map[string]providers.ProviderCapabilities
+	// allowSyntheticIdentity gates whether SYNTHETIC providers (mock) may satisfy
+	// identity-axis routes (identity/pack/production). Default false (safe for
+	// public/production environments): a character/pack request then fails closed
+	// rather than resolving synthetic placeholder grids. Dev/test set it on.
+	allowSyntheticIdentity bool
 }
 
 // NewResolver builds a resolver over the given route source and availability
@@ -135,16 +140,26 @@ func (r *Resolver) WithProviderCapabilities(index map[string]providers.ProviderC
 	return r
 }
 
+// WithSyntheticIdentityAllowed sets whether synthetic providers (mock) may
+// satisfy identity-axis routes (identity/pack/production). It defaults to false
+// so public/production environments fail character/pack requests closed instead
+// of resolving synthetic placeholder grids (PRD 03 §8). Dev/test enable it.
+// Returns the receiver for chaining at construction.
+func (r *Resolver) WithSyntheticIdentityAllowed(allow bool) *Resolver {
+	r.allowSyntheticIdentity = allow
+	return r
+}
+
 // Resolve returns the chosen route or one of the sentinel errors.
 //
 // Filter / tie-break precedence (explicit and tested):
 //
 //	active route + active model + operation match   (hard filter; else no_route)
 //	provider availability                            (hard filter; else provider_unavailable_for_route)
-//	provider satisfies route capability (when wired)  (hard filter; else route_capability_mismatch)
 //	quality tier match (when requested)              (hard filter; else no_route)
 //	required_capability match (when requested)       (hard filter; else unsupported_capability)
 //	requested preview capability (when requested)    (hard filter; else unsupported_capability)
+//	provider satisfies route capability (when wired)  (hard filter; else route_capability_mismatch)
 //	-- among survivors, ranked by: --
 //	latency tier match (when requested)              (matching first)
 //	configured provider preference (when given)      (preferred first)
@@ -204,22 +219,27 @@ func (r *Resolver) ResolveChain(ctx context.Context, req ResolveRequest) ([]Reso
 	return chain, nil
 }
 
-// candidates applies the Stage 1–5 hard filters shared by Resolve and
-// ResolveChain (active route + active model + operation, provider availability,
-// quality tier, required_capability, required preview capability), returning the
-// surviving candidate rows in source order or one of the sentinel errors. It is
-// the single source of the filter precedence so the two entry points can never
-// drift: ResolveChain[0] is guaranteed to equal Resolve's pick because both rank
-// the very same survivor set with the very same ranksBefore order.
+// candidates applies the hard filters shared by Resolve and ResolveChain (active
+// route + active model + operation, provider availability, quality tier, exact
+// required_capability, required preview capability, and finally
+// provider-satisfies-route), returning the surviving candidate rows in source
+// order or one of the sentinel errors. It is the single source of the filter
+// precedence so the two entry points can never drift: ResolveChain[0] is
+// guaranteed to equal Resolve's pick because both rank the very same survivor set
+// with the very same ranksBefore order.
+//
+// The provider-satisfies-route check runs LAST, only on routes that already
+// survived every request-scoped filter, so an unrelated invalid route never
+// changes the error a request sees for routes it would not have served.
 //
 // Filter / tie-break precedence (explicit and tested):
 //
 //	active route + active model + operation match   (hard filter; else no_route)
 //	provider availability                            (hard filter; else provider_unavailable_for_route)
-//	provider satisfies route capability (when wired)  (hard filter; else route_capability_mismatch)
 //	quality tier match (when requested)              (hard filter; else no_route)
 //	required_capability match (when requested)       (hard filter; else unsupported_capability)
 //	requested preview capability (when requested)    (hard filter; else unsupported_capability)
+//	provider satisfies route capability (when wired)  (hard filter; else route_capability_mismatch)
 func (r *Resolver) candidates(ctx context.Context, req ResolveRequest) ([]Route, error) {
 	routes, err := r.source.ListRoutes(ctx, req.OperationType)
 	if err != nil {
@@ -247,28 +267,6 @@ func (r *Resolver) candidates(ctx context.Context, req ResolveRequest) ([]Route,
 	}
 	if len(avail) == 0 {
 		return nil, ErrProviderUnavailableForRoute
-	}
-
-	// Stage 2b: provider-satisfies-route (PRD 03 §8 fail-closed routing). A route
-	// row CLAIMS a required_capability, but config can overstate what its provider
-	// adapter actually supports. When the capability index is wired, drop any
-	// route whose provider does not satisfy the route's claimed capability under
-	// the §8.3 hierarchy. This is defense-in-depth behind the boot-time
-	// reconciler, and it is DISTINCT from request-to-route matching (Stage 4),
-	// which stays exact. When the index is not wired (callers/tests), the check is
-	// skipped and behavior is unchanged.
-	if len(r.capabilities) > 0 {
-		satisfied := make([]Route, 0, len(avail))
-		for _, rt := range avail {
-			if rt.RequiredCapability == "" ||
-				providers.CapabilitiesSatisfy(r.capabilities[rt.ProviderID].Capabilities, providers.Capability(rt.RequiredCapability)) {
-				satisfied = append(satisfied, rt)
-			}
-		}
-		if len(satisfied) == 0 {
-			return nil, ErrRouteProviderCapabilityMismatch
-		}
-		avail = satisfied
 	}
 
 	// Stage 3: quality tier (hard filter when the request specifies one).
@@ -315,6 +313,29 @@ func (r *Resolver) candidates(ctx context.Context, req ResolveRequest) ([]Route,
 			return nil, ErrUnsupportedCapability
 		}
 		candidates = filtered
+	}
+
+	// Stage 6: provider-satisfies-route (PRD 03 §8 fail-closed routing). It runs
+	// LAST, on the routes that already survived every request-scoped filter
+	// (operation, availability, quality, EXACT required_capability, preview), so
+	// an unrelated invalid route can never change the error a request sees for
+	// routes it would not have served. A route row CLAIMS a required_capability,
+	// but config can overstate what its provider adapter actually supports, and a
+	// synthetic provider must not back identity/pack work in production unless
+	// explicitly allowed — both are enforced here. When the capability index is
+	// not wired (callers/tests), the check is skipped and behavior is unchanged.
+	if len(r.capabilities) > 0 {
+		satisfied := make([]Route, 0, len(candidates))
+		for _, rt := range candidates {
+			if rt.RequiredCapability == "" ||
+				providers.ProviderSatisfiesRoute(r.capabilities[rt.ProviderID], providers.Capability(rt.RequiredCapability), r.allowSyntheticIdentity) {
+				satisfied = append(satisfied, rt)
+			}
+		}
+		if len(satisfied) == 0 {
+			return nil, ErrRouteProviderCapabilityMismatch
+		}
+		candidates = satisfied
 	}
 
 	return candidates, nil

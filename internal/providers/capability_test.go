@@ -78,6 +78,55 @@ func TestCapabilitiesSatisfyAnyAdvertised(t *testing.T) {
 	}
 }
 
+// TestProviderSatisfiesRouteSyntheticPolicy proves the synthetic-provider policy:
+// a synthetic provider does NOT satisfy identity-axis routes unless explicitly
+// allowed, but always satisfies scene/draft routes; a real provider is
+// unaffected by the policy.
+func TestProviderSatisfiesRouteSyntheticPolicy(t *testing.T) {
+	synthetic := ProviderCapabilities{
+		ProviderID: "mock", Synthetic: true,
+		Capabilities: []Capability{CapabilitySceneCapable, CapabilityProductionCapable},
+	}
+	real := ProviderCapabilities{
+		ProviderID:   "real",
+		Capabilities: []Capability{CapabilityProductionCapable},
+	}
+
+	// Synthetic + identity axis: blocked when disabled, allowed when enabled.
+	for _, need := range []Capability{CapabilityIdentityCapable, CapabilityPackCapable, CapabilityProductionCapable} {
+		if ProviderSatisfiesRoute(synthetic, need, false) {
+			t.Errorf("synthetic must NOT satisfy %q when synthetic identity disabled", need)
+		}
+		if !ProviderSatisfiesRoute(synthetic, need, true) {
+			t.Errorf("synthetic must satisfy %q when synthetic identity enabled", need)
+		}
+	}
+
+	// Synthetic + scene axis: always allowed (policy is identity-axis scoped).
+	if !ProviderSatisfiesRoute(synthetic, CapabilitySceneCapable, false) {
+		t.Error("synthetic must still satisfy scene_capable when synthetic identity disabled")
+	}
+
+	// Real provider: policy never blocks it.
+	if !ProviderSatisfiesRoute(real, CapabilityPackCapable, false) {
+		t.Error("real provider must satisfy pack_capable regardless of synthetic policy")
+	}
+}
+
+func TestIsIdentityAxisCapability(t *testing.T) {
+	identityAxis := []Capability{CapabilityIdentityCapable, CapabilityPackCapable, CapabilityProductionCapable}
+	for _, c := range identityAxis {
+		if !IsIdentityAxisCapability(c) {
+			t.Errorf("%q should be on the identity axis", c)
+		}
+	}
+	for _, c := range []Capability{CapabilitySceneCapable, CapabilityDraftOnly, Capability("")} {
+		if IsIdentityAxisCapability(c) {
+			t.Errorf("%q should NOT be on the identity axis", c)
+		}
+	}
+}
+
 // TestAssessIdentityReadinessRealVsSynthetic proves a synthetic/test provider
 // (mock) does not make production readiness report an identity-capable provider,
 // while a real provider that satisfies identity does.

@@ -51,11 +51,23 @@ adapters actually advertise, and fail closed:
 3. At route resolution, the resolver enforces the same provider-satisfies-route
    check as defense-in-depth and returns a distinct
    `route_capability_mismatch` (HTTP 422) when the only matching route's provider
-   cannot back its claimed capability.
+   cannot back its claimed capability. **The check runs LAST**, only on routes
+   that already survived every request-scoped filter (operation, availability,
+   quality, exact `required_capability`, preview). An unrelated invalid route can
+   therefore never change the error a request sees for routes it would not have
+   served (e.g. an overstated pack route does not make a scene request return
+   `route_capability_mismatch`).
 4. Readiness distinguishes real providers from synthetic/test-only providers (a
-   `Synthetic` marker on `ProviderCapabilities`; mock sets it). Mock may satisfy
-   capability tests in dev/test, but it never makes production readiness report
-   "identity-capable provider configured".
+   `Synthetic` marker on `ProviderCapabilities`; mock sets it). **Synthetic
+   providers do not participate in identity/pack routing by default.** A synthetic
+   provider satisfies identity-axis routes (identity/pack/production) only when
+   `ALLOW_SYNTHETIC_PROVIDERS` is on — defaulting on in dev/test and **off in
+   live** (mirrors the `OPENAPI_DOCS_ENABLED` env-default precedent). So a
+   public/production deployment with only a scene-capable real provider fails
+   character/pack requests closed instead of resolving synthetic placeholder
+   grids. Synthetic providers still back scene/draft routes in any environment.
+   The readiness warning alone is **not** the control — fail-closed routing
+   excludes synthetic identity providers by default; the warning is observability.
 
 Route resolution already runs before cost reservation in the handler, so a
 fail-closed rejection happens before any budget hold is taken — no dangling
@@ -75,6 +87,14 @@ reservation.
   `scene_capable` request collapse onto a `pack_capable` route, routing cheap
   work to expensive identity providers. Explicitly rejected — matching stays
   exact; the hierarchy is provider-satisfies-route only.
+- **Let mock keep satisfying identity/pack everywhere (readiness warning only).**
+  Rejected: a Railway/public deployment would still resolve the seeded mock pack
+  route and emit placeholder grids for character packs — the exact silent failure
+  §8 exists to prevent. The synthetic policy makes the warning enforceable.
+- **Run the provider-satisfies-route filter before the request filters.** Simpler
+  to place next to availability, but an unrelated invalid route then changes the
+  error for requests it would never serve. Rejected in favor of running it last,
+  scoped to actual candidate routes.
 
 ## Tradeoffs
 
@@ -93,8 +113,14 @@ reservation.
 ## Consequences
 
 - `providers.CapabilitySatisfies` / `CapabilitiesSatisfy` /
-  `AssessIdentityReadiness` are the single source of capability semantics.
-- `ProviderCapabilities.Synthetic` marks mock/fixture providers.
+  `ProviderSatisfiesRoute` / `AssessIdentityReadiness` are the single source of
+  capability semantics. `ProviderSatisfiesRoute` applies both the hierarchy and
+  the synthetic policy and is shared by the resolver and the reconciler so boot
+  logs and resolution decisions never diverge.
+- `ProviderCapabilities.Synthetic` marks mock/fixture providers; the
+  `ALLOW_SYNTHETIC_PROVIDERS` env var (default dev/test on, live off) gates
+  whether they back identity/pack routes, wired via
+  `Resolver.WithSyntheticIdentityAllowed`.
 - `routing.Reconcile` / `GatherRoutes` / `LogReconciliation` run at API and
   worker boot; the resolver gains `WithProviderCapabilities` and a
   `route_capability_mismatch` failure.

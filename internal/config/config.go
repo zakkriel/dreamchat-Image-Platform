@@ -56,6 +56,14 @@ type Config struct {
 
 	APITokenPepper     string
 	OpenAPIDocsEnabled bool
+
+	// AllowSyntheticProviders gates whether synthetic providers (mock) may satisfy
+	// identity-axis routes (identity/pack/production) during route resolution
+	// (PRD 03 §8). Default: on in dev/test, OFF in live — so a public/production
+	// deployment with only a scene-capable real provider fails character/pack
+	// requests closed (HTTP 422) instead of resolving synthetic placeholder grids.
+	// An explicit ALLOW_SYNTHETIC_PROVIDERS env var overrides the default.
+	AllowSyntheticProviders bool
 }
 
 func Load() (*Config, error) {
@@ -84,6 +92,8 @@ func Load() (*Config, error) {
 
 		APITokenPepper:     getEnv("API_TOKEN_PEPPER", ""),
 		OpenAPIDocsEnabled: getEnvBool("OPENAPI_DOCS_ENABLED", defaultDocsEnabled(env)),
+
+		AllowSyntheticProviders: getEnvBool("ALLOW_SYNTHETIC_PROVIDERS", defaultAllowSyntheticProviders(env)),
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -96,6 +106,16 @@ func Load() (*Config, error) {
 // env var is unset: docs are on by default in dev/test and off by default
 // in live (ADR-015). An explicit env var value overrides this.
 func defaultDocsEnabled(env Environment) bool {
+	return env != EnvLive
+}
+
+// defaultAllowSyntheticProviders returns the default for ALLOW_SYNTHETIC_PROVIDERS
+// when the env var is unset: synthetic providers (mock) may satisfy identity/pack
+// routes in dev/test but NOT in live (PRD 03 §8). This keeps local/CI mock-pack
+// flows working while ensuring a public/production deployment fails character/pack
+// requests closed unless a real identity-capable provider is configured. An
+// explicit env var value overrides this.
+func defaultAllowSyntheticProviders(env Environment) bool {
 	return env != EnvLive
 }
 

@@ -42,6 +42,9 @@ type ReconcileReport struct {
 	// Readiness reports whether a real (non-synthetic) identity-capable provider
 	// is configured (§8 readiness observability).
 	Readiness providers.IdentityReadiness
+	// AllowSyntheticIdentity records the policy this report was computed under:
+	// whether synthetic providers were permitted to satisfy identity-axis routes.
+	AllowSyntheticIdentity bool
 }
 
 // InvalidCount returns how many routes failed reconciliation.
@@ -60,15 +63,20 @@ func (r ReconcileReport) InvalidCount() int {
 const (
 	reconcileReasonUnregistered       = "provider_not_registered"
 	reconcileReasonCapabilityMismatch = "provider_capability_mismatch"
+	reconcileReasonSyntheticDisabled  = "synthetic_identity_disabled"
 )
 
-// Reconcile checks every route against the provider capability index and returns
-// the per-route decisions plus the identity-readiness summary. It is pure (no
+// Reconcile checks every route against the provider capability index under the
+// given synthetic-provider policy and returns the per-route decisions plus the
+// identity-readiness summary. allowSyntheticIdentity must match the policy the
+// resolver runs with (see Resolver.WithSyntheticIdentityAllowed) so boot logs
+// reflect exactly which routes the resolver will fail closed. It is pure (no
 // logging, no DB) so it is fully unit-testable; LogReconciliation renders it.
-func Reconcile(routes []Route, index map[string]providers.ProviderCapabilities) ReconcileReport {
+func Reconcile(routes []Route, index map[string]providers.ProviderCapabilities, allowSyntheticIdentity bool) ReconcileReport {
 	report := ReconcileReport{
-		Decisions: make([]RouteDecision, 0, len(routes)),
-		Readiness: providers.AssessIdentityReadiness(index),
+		Decisions:              make([]RouteDecision, 0, len(routes)),
+		Readiness:              providers.AssessIdentityReadiness(index),
+		AllowSyntheticIdentity: allowSyntheticIdentity,
 	}
 	for _, rt := range routes {
 		caps := index[rt.ProviderID]
@@ -89,8 +97,14 @@ func Reconcile(routes []Route, index map[string]providers.ProviderCapabilities) 
 			d.Valid = false
 			d.Reason = reconcileReasonUnregistered
 		case rt.RequiredCapability == "" ||
-			providers.CapabilitiesSatisfy(caps.Capabilities, providers.Capability(rt.RequiredCapability)):
+			providers.ProviderSatisfiesRoute(caps, providers.Capability(rt.RequiredCapability), allowSyntheticIdentity):
 			d.Valid = true
+		case caps.Synthetic && providers.CapabilitiesSatisfy(caps.Capabilities, providers.Capability(rt.RequiredCapability)):
+			// The provider's adapter COULD back this capability, but it is synthetic
+			// and synthetic identity is disabled in this environment — so the route is
+			// failed closed by policy, not by a true capability gap.
+			d.Valid = false
+			d.Reason = reconcileReasonSyntheticDisabled
 		default:
 			d.Valid = false
 			d.Reason = reconcileReasonCapabilityMismatch
@@ -150,12 +164,18 @@ func LogReconciliation(logger *slog.Logger, report ReconcileReport) {
 		"real_identity_providers", rd.RealProviders,
 		"synthetic_identity_capable_provider", rd.SyntheticIdentityCapable,
 		"synthetic_identity_providers", rd.SyntheticProviders,
+		"synthetic_identity_allowed", report.AllowSyntheticIdentity,
 		"invalid_routes", report.InvalidCount(),
 	}
-	if rd.RealIdentityCapable {
+	// Identity/pack work can be served only when a REAL identity-capable provider
+	// is configured, OR synthetic identity is explicitly allowed (dev/test) AND a
+	// synthetic provider satisfies identity. Anything else means character/pack
+	// requests fail closed — a warning, not merely informational.
+	identityServable := rd.RealIdentityCapable || (report.AllowSyntheticIdentity && rd.SyntheticIdentityCapable)
+	if identityServable {
 		logger.Info("provider capability readiness", summary...)
 	} else {
-		logger.Warn("provider capability readiness: no identity-capable provider configured", summary...)
+		logger.Warn("provider capability readiness: no identity-capable provider configured (character/pack requests fail closed)", summary...)
 	}
 }
 

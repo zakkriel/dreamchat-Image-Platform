@@ -72,6 +72,30 @@ func CapabilitiesSatisfy(have []Capability, need Capability) bool {
 	return false
 }
 
+// IsIdentityAxisCapability reports whether `need` is on the identity axis
+// (identity_capable / pack_capable / production_capable) as opposed to the
+// parallel scene/draft axis. production_capable satisfies exactly the identity
+// axis, so it is the cheapest oracle for "is this an identity-consistency
+// requirement".
+func IsIdentityAxisCapability(need Capability) bool {
+	return CapabilitySatisfies(CapabilityProductionCapable, need)
+}
+
+// ProviderSatisfiesRoute reports whether a provider may serve a route requiring
+// `need`, applying BOTH the §8.3 capability hierarchy AND the synthetic-provider
+// policy (PRD 03 §8): a SYNTHETIC provider (mock / fixture / test-only) does NOT
+// satisfy an identity-axis capability (identity/pack/production) unless
+// allowSynthetic is true. Scene/draft routes are unaffected by the synthetic
+// policy, so mock can still back scene work in any environment. This is what
+// makes character/pack generation fail closed in production-like environments
+// instead of silently producing synthetic placeholder grids.
+func ProviderSatisfiesRoute(caps ProviderCapabilities, need Capability, allowSynthetic bool) bool {
+	if caps.Synthetic && !allowSynthetic && IsIdentityAxisCapability(need) {
+		return false
+	}
+	return CapabilitiesSatisfy(caps.Capabilities, need)
+}
+
 // IdentityReadiness summarizes whether the configured providers can actually
 // serve recurring-character / pack work (§8 readiness). It distinguishes REAL
 // production providers from synthetic/test-only providers (mock): a synthetic

@@ -25,13 +25,26 @@ silently producing drifted recurring characters.
 
 ## 2. What it means
 
-- `route_capability_mismatch`: a `provider_routes` row claims a
-  `required_capability` (e.g. `pack_capable`) that the provider's adapter does
-  not actually advertise. The resolver dropped the route and failed closed.
+- `route_capability_mismatch`: the only route that matched the request claims a
+  `required_capability` (e.g. `pack_capable`) that its provider cannot back —
+  EITHER because the provider's adapter does not advertise it (config drift), OR
+  because the provider is **synthetic** (mock) and synthetic identity is disabled
+  in this environment (the default in live). The resolver dropped the route and
+  failed closed.
 - "no identity-capable provider configured": no **real** (non-synthetic) provider
   satisfies `identity_capable`. Today BFL `flux-pro-1.1` is `scene_capable` only
   (scenes/artifacts, not recurring characters), and mock is synthetic (dev/test
-  only). With mock disabled, nothing real can do identity/pack work.
+  only). With only BFL, nothing real can do identity/pack work.
+
+**Synthetic providers and the default-safe policy.** Mock is a synthetic/test
+provider. It advertises identity/pack so dev/CI can exercise routing, but it does
+**not** participate in identity/pack routing unless `ALLOW_SYNTHETIC_PROVIDERS` is
+on. That flag defaults **on in dev/test** and **off in live**, so a public/
+production deployment (e.g. Railway with `ENVIRONMENT=live`) fails character/pack
+requests closed instead of resolving mock and producing placeholder grids. Mock
+still backs scene/artifact routes in any environment. The readiness warning alone
+is not the safeguard — fail-closed routing excludes synthetic identity providers
+by default.
 
 Note: the current BFL `flux-pro-1.1` is **for scenes and artifacts**, not
 recurring characters. Recurring character consistency requires a
@@ -43,7 +56,19 @@ same one.
 
 Inspect the boot reconciliation logs (API and worker emit them). For each route
 they log: `route_id`, `provider_id`, `model_id`, `required_capability`,
-`provider_capabilities`, `decision`. Find the route with `decision=invalid`.
+`provider_capabilities`, `decision`. Find the route with `decision=invalid` and
+read its `reason`:
+
+- `provider_capability_mismatch` — the provider's adapter genuinely cannot back
+  the claimed capability (config drift). Fix the route or the config.
+- `synthetic_identity_disabled` — the provider COULD back it, but it is synthetic
+  and `ALLOW_SYNTHETIC_PROVIDERS` is off. Expected in live; configure a real
+  identity provider (or enable the flag in dev/test only).
+- `provider_not_registered` — the route points at a provider not wired in this
+  process.
+
+The readiness summary line also logs `synthetic_identity_allowed` so you can see
+the active policy.
 
 Cross-check the claimed capability against the adapter's `Capabilities()`:
 
@@ -69,9 +94,11 @@ Choose based on intent:
   it actually satisfies. Promote it only after it passes the §8.5 character/place
   consistency acceptance tests. Until then, character/pack jobs fail closed by
   design.
-- **Dev/test only.** Enable the mock provider (synthetic). Mock satisfies
-  identity/pack for local routing, but it will NOT make production readiness
-  report a real identity-capable provider.
+- **Dev/test only.** Set `ALLOW_SYNTHETIC_PROVIDERS=true` (the default in
+  dev/test). Mock then satisfies identity/pack for local routing — but it will
+  NOT make production readiness report a real identity-capable provider, and you
+  must never set this in a public/production (`live`) environment, where it would
+  re-enable synthetic placeholder grids for character packs.
 
 ## 5. Verify
 

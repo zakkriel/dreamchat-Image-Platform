@@ -448,11 +448,18 @@ before this is production-ready.**
   exclusion with loud WARN logs (the repo's fail-at-resolution pattern, not a
   boot abort). At resolution the resolver re-applies the check
   (`WithProviderCapabilities`) and fails closed with `route_capability_mismatch`
-  (HTTP 422). Because resolution runs **before** cost reservation in the handler,
-  a fail-closed rejection leaves **no dangling budget hold**. A `Synthetic`
-  marker on `ProviderCapabilities` (set by mock) keeps dev/test routing working
-  while ensuring a synthetic provider never makes production readiness report a
-  real identity-capable provider. Current real provider BFL `flux-pro-1.1` is
+  (HTTP 422). The provider-satisfies-route check runs **last**, only on routes
+  that survived every request-scoped filter (operation, availability, quality,
+  exact `required_capability`, preview), so an unrelated invalid route never
+  changes the error a request sees. Because resolution runs **before** cost
+  reservation in the handler, a fail-closed rejection leaves **no dangling budget
+  hold**. A `Synthetic` marker on `ProviderCapabilities` (set by mock) plus the
+  `ALLOW_SYNTHETIC_PROVIDERS` env var (default dev/test on, **live off**, via
+  `WithSyntheticIdentityAllowed`) means synthetic providers do **not** back
+  identity/pack routes in public/production envs — so character/pack requests fail
+  closed instead of resolving synthetic placeholder grids — while mock still backs
+  scene routes everywhere and never makes production readiness report a real
+  identity-capable provider. Current real provider BFL `flux-pro-1.1` is
   `scene_capable` only (scenes/artifacts, not recurring characters); recurring
   character consistency requires a reference/identity-capable provider and
   prompt-only retries do not solve it. **No migration, no provider integration,

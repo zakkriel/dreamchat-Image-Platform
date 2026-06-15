@@ -115,7 +115,8 @@ func main() {
 	routeSource := routing.NewDBRouteSource(systemDB.Pool())
 	capabilityIndex := bootstrap.CapabilityIndex(cfg)
 	resolver := routing.NewResolver(routeSource, cfg.AvailableProviders()).
-		WithProviderCapabilities(capabilityIndex)
+		WithProviderCapabilities(capabilityIndex).
+		WithSyntheticIdentityAllowed(cfg.AllowSyntheticProviders)
 
 	// PRD 03 §8: reconcile every configured route against the registered provider
 	// capabilities at boot and log the result (route id, provider, model, required
@@ -124,7 +125,7 @@ func main() {
 	// provider is visible in logs rather than silently producing inconsistent
 	// recurring characters. Reconciliation does not fail startup; the resolver
 	// fails the request closed, matching the repo's fail-at-resolution pattern.
-	reconcileRoutesAtBoot(context.Background(), logger, routeSource, capabilityIndex)
+	reconcileRoutesAtBoot(context.Background(), logger, routeSource, capabilityIndex, cfg.AllowSyntheticProviders)
 
 	deps := apphttp.Deps{
 		Logger: logger,
@@ -202,15 +203,15 @@ func main() {
 // failure to list routes (e.g. transient DB error) is logged but does not abort
 // startup — the route resolver still enforces the same provider-satisfies-route
 // check on every request as defense-in-depth.
-func reconcileRoutesAtBoot(ctx context.Context, logger *slog.Logger, source routing.RouteSource, index map[string]providers.ProviderCapabilities) {
+func reconcileRoutesAtBoot(ctx context.Context, logger *slog.Logger, source routing.RouteSource, index map[string]providers.ProviderCapabilities, allowSyntheticIdentity bool) {
 	routes, err := routing.GatherRoutes(ctx, source, reconcileOperations)
 	if err != nil {
 		logger.Warn("provider route reconciliation skipped: could not list routes", "error", err)
 		// Still log readiness from the capability index alone (no routes needed).
-		routing.LogReconciliation(logger, routing.Reconcile(nil, index))
+		routing.LogReconciliation(logger, routing.Reconcile(nil, index, allowSyntheticIdentity))
 		return
 	}
-	routing.LogReconciliation(logger, routing.Reconcile(routes, index))
+	routing.LogReconciliation(logger, routing.Reconcile(routes, index, allowSyntheticIdentity))
 }
 
 // reconcileOperations is the set of operation types boot reconciliation inspects;

@@ -67,8 +67,9 @@ func main() {
 	}
 	// PRD 03 §8 readiness: log whether a real identity-capable provider is
 	// configured, distinguishing real providers from synthetic/test-only ones, so
-	// the worker process surfaces the same honest signal as the API at boot.
-	routing.LogReconciliation(logger, routing.Reconcile(nil, registry.Capabilities()))
+	// the worker process surfaces the same honest signal as the API at boot. The
+	// synthetic-identity policy mirrors the resolver's so the logs agree.
+	routing.LogReconciliation(logger, routing.Reconcile(nil, registry.Capabilities(), cfg.AllowSyntheticProviders))
 
 	// Phase 7C-4: outbound webhooks. The worker owns the emitter (it emits at
 	// durable job-lifecycle transitions) and the deliverer (it runs the

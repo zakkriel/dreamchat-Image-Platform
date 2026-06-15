@@ -23,7 +23,10 @@ func TestReconcileFlagsOverstatedRoute(t *testing.T) {
 		"mock": {ProviderID: "mock", Capabilities: []providers.Capability{providers.CapabilityProductionCapable}, Synthetic: true},
 	}
 
-	report := Reconcile(routes, index)
+	// allowSyntheticIdentity=true so the mock pack route is judged on pure
+	// capability (this test is about detecting an overstated route, not the
+	// synthetic policy).
+	report := Reconcile(routes, index, true)
 
 	byID := map[string]RouteDecision{}
 	for _, d := range report.Decisions {
@@ -52,7 +55,7 @@ func TestReconcileReadinessNoRealIdentityProvider(t *testing.T) {
 		"bfl":  {ProviderID: "bfl", Capabilities: []providers.Capability{providers.CapabilityDraftOnly, providers.CapabilitySceneCapable}},
 		"mock": {ProviderID: "mock", Capabilities: []providers.Capability{providers.CapabilityProductionCapable}, Synthetic: true},
 	}
-	report := Reconcile(nil, index)
+	report := Reconcile(nil, index, true)
 	if report.Readiness.RealIdentityCapable {
 		t.Fatal("scene-only real provider + synthetic mock must NOT report real identity readiness")
 	}
@@ -65,8 +68,48 @@ func TestReconcileReadinessNoRealIdentityProvider(t *testing.T) {
 	onlyBFL := map[string]providers.ProviderCapabilities{
 		"bfl": index["bfl"],
 	}
-	r2 := Reconcile(nil, onlyBFL)
+	r2 := Reconcile(nil, onlyBFL, true)
 	if r2.Readiness.RealIdentityCapable || r2.Readiness.SyntheticIdentityCapable {
 		t.Fatal("scene-only provider alone must report no identity-capable provider configured")
+	}
+}
+
+// TestReconcileSyntheticPolicyMarksMockPackInvalidWhenDisabled proves the boot
+// reconciliation agrees with the resolver: with synthetic identity disabled, a
+// mock (synthetic) pack route is flagged invalid by POLICY (not a capability
+// gap), while a scene route on the same provider stays valid.
+func TestReconcileSyntheticPolicyMarksMockPackInvalidWhenDisabled(t *testing.T) {
+	routes := []Route{
+		{RouteID: "r_mock_scene", ProviderID: "mock", ModelID: "m_mock", OperationType: "text_to_image", RequiredCapability: "scene_capable", Enabled: true, ModelActive: true},
+		{RouteID: "r_mock_pack", ProviderID: "mock", ModelID: "m_mock", OperationType: "text_to_image", RequiredCapability: "pack_capable", Enabled: true, ModelActive: true},
+	}
+	index := map[string]providers.ProviderCapabilities{
+		// Mirrors the real mock adapter: scene + the full identity axis, synthetic.
+		"mock": {ProviderID: "mock", Capabilities: []providers.Capability{
+			providers.CapabilitySceneCapable, providers.CapabilityProductionCapable,
+		}, Synthetic: true},
+	}
+
+	disabled := Reconcile(routes, index, false)
+	byID := map[string]RouteDecision{}
+	for _, d := range disabled.Decisions {
+		byID[d.RouteID] = d
+	}
+	if !byID["r_mock_scene"].Valid {
+		t.Errorf("synthetic provider must still back scene routes: %+v", byID["r_mock_scene"])
+	}
+	if byID["r_mock_pack"].Valid {
+		t.Errorf("synthetic pack route must be invalid when synthetic identity disabled: %+v", byID["r_mock_pack"])
+	}
+	if byID["r_mock_pack"].Reason != reconcileReasonSyntheticDisabled {
+		t.Errorf("expected reason %q, got %q", reconcileReasonSyntheticDisabled, byID["r_mock_pack"].Reason)
+	}
+
+	// Enabling synthetic identity (dev/test) makes the same pack route valid.
+	enabled := Reconcile(routes, index, true)
+	for _, d := range enabled.Decisions {
+		if d.RouteID == "r_mock_pack" && !d.Valid {
+			t.Errorf("synthetic pack route should be valid when synthetic identity enabled: %+v", d)
+		}
 	}
 }
