@@ -39,12 +39,15 @@ silently producing drifted recurring characters.
 **Synthetic providers and the default-safe policy.** Mock is a synthetic/test
 provider. It advertises identity/pack so dev/CI can exercise routing, but it does
 **not** participate in identity/pack routing unless `ALLOW_SYNTHETIC_PROVIDERS` is
-on. That flag defaults **on in dev/test** and **off in live**, so a public/
-production deployment (e.g. Railway with `ENVIRONMENT=live`) fails character/pack
-requests closed instead of resolving mock and producing placeholder grids. Mock
-still backs scene/artifact routes in any environment. The readiness warning alone
-is not the safeguard — fail-closed routing excludes synthetic identity providers
-by default.
+on. That flag defaults **false in EVERY environment** — safety does not depend on
+`ENVIRONMENT` (a production deployment may run with `ENVIRONMENT=dev`). So any
+deployment that leaves it unset/false fails character/pack requests closed instead
+of resolving mock and producing placeholder grids. Local/dev/CI mock identity-pack
+tests must set `ALLOW_SYNTHETIC_PROVIDERS=true` deliberately; public/Railway
+deployments must leave it false unless intentionally testing mock placeholders.
+Mock still backs scene/artifact routes regardless of this flag. The readiness
+warning alone is not the safeguard — fail-closed routing excludes synthetic
+identity providers by default.
 
 Note: the current BFL `flux-pro-1.1` is **for scenes and artifacts**, not
 recurring characters. Recurring character consistency requires a
@@ -62,8 +65,9 @@ read its `reason`:
 - `provider_capability_mismatch` — the provider's adapter genuinely cannot back
   the claimed capability (config drift). Fix the route or the config.
 - `synthetic_identity_disabled` — the provider COULD back it, but it is synthetic
-  and `ALLOW_SYNTHETIC_PROVIDERS` is off. Expected in live; configure a real
-  identity provider (or enable the flag in dev/test only).
+  and `ALLOW_SYNTHETIC_PROVIDERS` is off (the default in every environment).
+  Expected for any real deployment; configure a real identity provider (or set
+  the flag true for local/dev/CI mock tests only).
 - `provider_not_registered` — the route points at a provider not wired in this
   process.
 
@@ -94,11 +98,12 @@ Choose based on intent:
   it actually satisfies. Promote it only after it passes the §8.5 character/place
   consistency acceptance tests. Until then, character/pack jobs fail closed by
   design.
-- **Dev/test only.** Set `ALLOW_SYNTHETIC_PROVIDERS=true` (the default in
-  dev/test). Mock then satisfies identity/pack for local routing — but it will
-  NOT make production readiness report a real identity-capable provider, and you
-  must never set this in a public/production (`live`) environment, where it would
-  re-enable synthetic placeholder grids for character packs.
+- **Dev/test only.** Set `ALLOW_SYNTHETIC_PROVIDERS=true` deliberately (it is
+  false by default in every environment). Mock then satisfies identity/pack for
+  local routing — but it will NOT make production readiness report a real
+  identity-capable provider, and you must never set this in a public/production
+  deployment (regardless of `ENVIRONMENT`), where it would re-enable synthetic
+  placeholder grids for character packs.
 
 ## 5. Verify
 

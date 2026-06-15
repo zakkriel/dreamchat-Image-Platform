@@ -115,7 +115,7 @@ func TestOpenAPIDocsEnabledDefaultsByEnvironment(t *testing.T) {
 	}
 }
 
-func TestAllowSyntheticProvidersDefaultsByEnvironment(t *testing.T) {
+func TestAllowSyntheticProvidersDefaultsFalseEverywhere(t *testing.T) {
 	requiredEnv := func(t *testing.T) {
 		t.Helper()
 		t.Setenv("POSTGRES_DSN", "postgres://localhost/test")
@@ -135,9 +135,13 @@ func TestAllowSyntheticProvidersDefaultsByEnvironment(t *testing.T) {
 		setFlag  bool
 		want     bool
 	}{
-		{name: "dev unset defaults on", env: "dev", want: true},
-		{name: "test unset defaults on", env: "test", want: true},
-		{name: "live unset defaults off (safe for public/Railway)", env: "live", want: false},
+		// Default is FALSE in EVERY environment — safety must not depend on
+		// ENVIRONMENT (production may run with ENVIRONMENT=dev).
+		{name: "dev unset defaults off", env: "dev", want: false},
+		{name: "test unset defaults off", env: "test", want: false},
+		{name: "live unset defaults off", env: "live", want: false},
+		{name: "dev override on", env: "dev", setFlag: true, override: "true", want: true},
+		{name: "test override on", env: "test", setFlag: true, override: "true", want: true},
 		{name: "live override on", env: "live", setFlag: true, override: "true", want: true},
 		{name: "dev override off respected", env: "dev", setFlag: true, override: "false", want: false},
 	}

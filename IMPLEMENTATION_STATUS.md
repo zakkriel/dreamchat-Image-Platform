@@ -454,9 +454,10 @@ before this is production-ready.**
   changes the error a request sees. Because resolution runs **before** cost
   reservation in the handler, a fail-closed rejection leaves **no dangling budget
   hold**. A `Synthetic` marker on `ProviderCapabilities` (set by mock) plus the
-  `ALLOW_SYNTHETIC_PROVIDERS` env var (default dev/test on, **live off**, via
+  `ALLOW_SYNTHETIC_PROVIDERS` env var (**default false in every environment** —
+  safety does not key off `ENVIRONMENT`, since prod may run `ENVIRONMENT=dev`; via
   `WithSyntheticIdentityAllowed`) means synthetic providers do **not** back
-  identity/pack routes in public/production envs — so character/pack requests fail
+  identity/pack routes unless explicitly opted in — so character/pack requests fail
   closed instead of resolving synthetic placeholder grids — while mock still backs
   scene routes everywhere and never makes production readiness report a real
   identity-capable provider. Current real provider BFL `flux-pro-1.1` is

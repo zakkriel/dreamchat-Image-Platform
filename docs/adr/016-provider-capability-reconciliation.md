@@ -61,11 +61,13 @@ adapters actually advertise, and fail closed:
    `Synthetic` marker on `ProviderCapabilities`; mock sets it). **Synthetic
    providers do not participate in identity/pack routing by default.** A synthetic
    provider satisfies identity-axis routes (identity/pack/production) only when
-   `ALLOW_SYNTHETIC_PROVIDERS` is on — defaulting on in dev/test and **off in
-   live** (mirrors the `OPENAPI_DOCS_ENABLED` env-default precedent). So a
-   public/production deployment with only a scene-capable real provider fails
-   character/pack requests closed instead of resolving synthetic placeholder
-   grids. Synthetic providers still back scene/draft routes in any environment.
+   `ALLOW_SYNTHETIC_PROVIDERS` is on — defaulting **false in every environment**.
+   Safety must not depend on `ENVIRONMENT` (a production deployment may run with
+   `ENVIRONMENT=dev`), so the default does not key off it. So a deployment with
+   only a scene-capable real provider fails character/pack requests closed instead
+   of resolving synthetic placeholder grids; local/dev/CI mock identity-pack tests
+   set the flag true deliberately. Synthetic providers still back scene/draft
+   routes in any environment.
    The readiness warning alone is **not** the control — fail-closed routing
    excludes synthetic identity providers by default; the warning is observability.
 
@@ -118,7 +120,7 @@ reservation.
   the synthetic policy and is shared by the resolver and the reconciler so boot
   logs and resolution decisions never diverge.
 - `ProviderCapabilities.Synthetic` marks mock/fixture providers; the
-  `ALLOW_SYNTHETIC_PROVIDERS` env var (default dev/test on, live off) gates
+  `ALLOW_SYNTHETIC_PROVIDERS` env var (default false in every environment) gates
   whether they back identity/pack routes, wired via
   `Resolver.WithSyntheticIdentityAllowed`.
 - `routing.Reconcile` / `GatherRoutes` / `LogReconciliation` run at API and
