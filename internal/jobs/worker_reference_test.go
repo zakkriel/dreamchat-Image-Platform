@@ -6,8 +6,10 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/identities"
 	"github.com/zakkriel/drchat-image-platform/internal/providers"
+	"github.com/zakkriel/drchat-image-platform/internal/storage"
 )
 
 // referenceProvider is a reference-conditioned stub: it advertises a real
@@ -117,15 +119,26 @@ func newFalRegistry(p providers.ImageProvider) *providers.Registry {
 // TestPackWithReferenceAssetsBuildsReferenceURLs proves a pack routed to the
 // reference-conditioned provider builds each provider request with the identity's
 // anchor assets presigned into ReferenceURLs.
+// readyAnchor builds a ready visual asset with a canonical high-res object,
+// the shape referenceURLsForIdentity validates and presigns.
+func readyAnchor(id, tenantID string) assets.VisualAsset {
+	high := "s3://bucket/" + storage.ObjectKey(id, storage.VariantHigh, "png")
+	return assets.VisualAsset{ID: id, TenantID: tenantID, Status: "ready", HighResUrl: &high}
+}
+
 func TestPackWithReferenceAssetsBuildsReferenceURLs(t *testing.T) {
 	repo := newFakeJobsRepo()
 	provider := &referenceProvider{}
 	variants := []string{"neutral_front_portrait", "side_angle_portrait"}
 	seedFalPackJob(repo, "job_fal1", "pack_fal1", variants)
 
+	assetsRepo := &fakeAssetsRepo{}
+	assetsRepo.seedAsset(readyAnchor("va_anchor_1", "tenant_a"))
+	assetsRepo.seedAsset(readyAnchor("va_anchor_2", "tenant_a"))
+
 	w := &Worker{
 		Jobs:      repo,
-		Assets:    &fakeAssetsRepo{},
+		Assets:    assetsRepo,
 		Storage:   &fakeStorage{},
 		Providers: newFalRegistry(provider),
 		Identities: &fakeIdentityReader{identity: identities.VisualIdentity{
@@ -227,5 +240,70 @@ func TestPackWithMockProviderIgnoresReferences(t *testing.T) {
 	}
 	if job := repo.jobs["job_mock_ref"]; job.Status != "completed" {
 		t.Fatalf("expected completed pack, got %q", job.Status)
+	}
+}
+
+// runFalPackWithAnchor seeds a fal pack job whose identity references anchorID,
+// seeds the given anchor asset (or none if zero value), runs ProcessPack, and
+// returns the terminal job + whether the provider was called.
+func runFalPackWithAnchor(t *testing.T, anchorID string, seeded *assets.VisualAsset) (Job, int) {
+	t.Helper()
+	repo := newFakeJobsRepo()
+	provider := &referenceProvider{}
+	seedFalPackJob(repo, "job_inv", "pack_inv", []string{"neutral_front_portrait"})
+
+	assetsRepo := &fakeAssetsRepo{}
+	if seeded != nil {
+		assetsRepo.seedAsset(*seeded)
+	}
+	w := &Worker{
+		Jobs:      repo,
+		Assets:    assetsRepo,
+		Storage:   &fakeStorage{},
+		Providers: newFalRegistry(provider),
+		Identities: &fakeIdentityReader{identity: identities.VisualIdentity{
+			ID:             "vi_test",
+			TenantID:       "tenant_a",
+			AnchorAssetIds: []string{anchorID},
+		}},
+	}
+	if err := w.ProcessPack(context.Background(), "job_inv"); err != nil {
+		t.Fatalf("ProcessPack infra error: %v", err)
+	}
+	return repo.jobs["job_inv"], len(provider.calls())
+}
+
+// TestPackInvalidAnchorsFailClosed proves each unusable-anchor case fails the
+// pack closed with invalid_reference_asset and never calls the provider — the
+// hardened referenceURLsForIdentity never presigns a guessed/foreign object.
+func TestPackInvalidAnchorsFailClosed(t *testing.T) {
+	high := "s3://bucket/" + storage.ObjectKey("va_x", storage.VariantHigh, "png")
+	noURL := assets.VisualAsset{ID: "va_x", TenantID: "tenant_a", Status: "ready"}
+	notReady := assets.VisualAsset{ID: "va_x", TenantID: "tenant_a", Status: "preview_ready", HighResUrl: &high}
+	wrongTenant := assets.VisualAsset{ID: "va_x", TenantID: "tenant_b", Status: "ready", HighResUrl: &high}
+
+	cases := []struct {
+		name   string
+		anchor string
+		seeded *assets.VisualAsset
+	}{
+		{"missing/stale anchor (not in store)", "va_missing", nil},
+		{"non-ready anchor", "va_x", &notReady},
+		{"anchor without high-res object", "va_x", &noURL},
+		{"wrong-tenant anchor", "va_x", &wrongTenant},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			job, calls := runFalPackWithAnchor(t, tc.anchor, tc.seeded)
+			if calls != 0 {
+				t.Fatalf("provider must not be called with an invalid anchor; got %d calls", calls)
+			}
+			if job.Status != "failed" {
+				t.Fatalf("expected failed pack, got %q", job.Status)
+			}
+			if job.ErrorCode == nil || *job.ErrorCode != errorCodeInvalidReference {
+				t.Fatalf("expected error code %q, got %v", errorCodeInvalidReference, job.ErrorCode)
+			}
+		})
 	}
 }

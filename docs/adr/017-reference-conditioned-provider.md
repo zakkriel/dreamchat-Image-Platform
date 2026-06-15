@@ -130,14 +130,35 @@ requests carry none, so BFL keeps serving all scene/artifact work unchanged.
 - Migration `0011_fal_provider_seed.up.sql` seeds the fal model, a `pack_capable`
   text_to_image route (priority 200), and a $0.04/image active price.
 
+### Operational hardening (post-review, PR #29)
+
+- **Attach anchors over the API.** `POST /v1/characters/{character_id}/visual-
+  identity/anchors` (`AttachAnchorAssetsRequest`) sets a character identity's
+  `anchor_asset_ids`. It validates each asset (tenant ownership, status `ready`,
+  a high-res object, and binding to this identity or unassigned) before
+  persisting, and rejects with `422 invalid_anchor_asset` otherwise. So a client
+  can create an identity, attach anchors, and run a pack with **no manual SQL**.
+  Backed by `identities.Repository.SetAnchorAssets` (tenant-scoped, atomic; does
+  not bump identity version — anchors are reference provenance).
+- **Hardened reference resolution.** `referenceURLsForIdentity` no longer presigns
+  a guessed `assets/<id>/high.png`. It LOADS each anchor through the assets
+  repository, validates tenant/status/high-res, presigns the asset's ACTUAL
+  stored high-res key (`storage.KeyFromCanonicalURL`), and fails the pack closed
+  with `invalid_reference_asset` (a bad attached anchor) vs `missing_reference_
+  assets` (no anchors at all).
+- **fal timeout/cancellation.** The adapter captures `cancel_url` from submit and,
+  on a local timeout/context-cancellation after submit, best-effort `PUT`s the
+  cancel URL (fresh bounded context) and logs `request_id` + cancel status, so a
+  worker timeout does not leave an orphaned, still-billing fal request.
+
 ## Revisit when
 
 - An acceptance/quality benchmark validates recurring-character consistency →
   promote fal to `production_capable` and seed higher tiers / [max].
 - A dedicated single-character (non-pack) identity generation endpoint is added →
   seed an `identity_capable` fal route and wire references on that path too.
-- Anchors can be externally ingested under a non-standard key → resolve reference
-  URLs from the stored asset row instead of the deterministic key scheme.
+- Place identities also need reference-conditioned packs → add a places anchors
+  endpoint mirroring the characters one (intentionally character-only for now).
 - Reference TTL proves too short under backlog → mint per-item or raise the
   reference-specific TTL.
 

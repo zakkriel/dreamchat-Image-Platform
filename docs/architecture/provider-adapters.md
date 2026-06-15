@@ -103,11 +103,20 @@ renders the *same* subject in the prompted variation. It is registered only when
 A provider that cannot hold a character from a prompt alone declares
 `ProviderCapabilities.RequiresReferenceImage = true`. When the resolved provider
 for a pack sets it, the worker gathers the visual identity's `anchor_asset_ids`,
-mints a presigned high-res URL per anchor, and threads them into
-`ProviderGenerateRequest.ReferenceURLs` for every role. **If the identity has no
-reference assets, the pack fails closed** with `missing_reference_assets` — no
-provider call, never a different character. Prompt-only providers (mock, BFL)
-leave the flag false, so this path is a no-op for them.
+**loads and validates each anchor** (tenant ownership, status `ready`, a high-res
+object), presigns the anchor's actual stored high-res key, and threads the URLs
+into `ProviderGenerateRequest.ReferenceURLs` for every role. **If the identity has
+no anchors the pack fails closed** with `missing_reference_assets`; **a bad anchor
+fails with `invalid_reference_asset`** — no provider call, never a different
+character. Prompt-only providers (mock, BFL) leave the flag false, so this path is
+a no-op for them.
+
+Anchors are attached over the API (`POST /v1/characters/{character_id}/visual-
+identity/anchors`), which validates each candidate asset before persisting the
+set — so a recurring-character pack runs with no manual SQL. Reference-conditioned
+adapters also handle local timeout/cancellation: on a post-submit timeout the fal
+adapter best-effort cancels the queued request (`cancel_url`) so a worker timeout
+never leaves an orphaned, billing job.
 
 Only the `pack_capable` fal route is seeded (migration `0011`): pack generation is
 the recurring-character path wired with references in this slice. fal has no

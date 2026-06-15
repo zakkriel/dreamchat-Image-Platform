@@ -28,10 +28,15 @@ const (
 	errorCodeInvalidResolvedRoute = "invalid_resolved_route"
 	// errorCodeMissingReference is the terminal failure code when a
 	// reference-conditioned provider is selected for identity/pack generation but
-	// the visual identity has no anchor/reference assets to condition on. The
+	// the visual identity has NO anchor/reference assets to condition on. The
 	// worker fails the job closed instead of generating a different character
 	// (PRD 03 §8 / recurring-character consistency).
 	errorCodeMissingReference = "missing_reference_assets"
+	// errorCodeInvalidReference is the terminal failure code when the identity DOES
+	// reference anchors but one cannot be used (wrong tenant, missing, not ready, or
+	// no resolvable high-res object). Distinct from missing_reference_assets so an
+	// operator can tell "no anchors attached" from "an attached anchor is bad".
+	errorCodeInvalidReference = "invalid_reference_asset"
 
 	// deliveryRenderEdge is the square edge (px) the worker asks the provider
 	// to produce so the "final" tier is genuinely higher resolution than the
@@ -721,22 +726,41 @@ func artifactSlotFor(job Job, p assets.InsertParams) assets.ArtifactSlot {
 // submit/poll window, so a few minutes is ample.
 const defaultRefPresignTTL = 10 * time.Minute
 
+// assetStatusReady is the visual_assets.status a reference anchor must have to be
+// usable: a non-ready (preview/archived/failed) asset is not a stable reference.
+const assetStatusReady = "ready"
+
+// errInvalidReference marks a reference anchor that exists in the identity record
+// but cannot be used: wrong tenant, missing, not ready, or with no resolvable
+// high-res object. The caller maps it to the invalid_reference_asset failure code
+// (distinct from missing_reference_assets, which is "the identity has no anchors
+// at all"). Both fail the job closed rather than generating a different character.
+var errInvalidReference = errors.New("invalid_reference_asset")
+
 // referenceURLsForIdentity gathers the reference image URLs a reference-
 // conditioned provider needs to hold a recurring character: it loads the visual
-// identity, reads its anchor asset ids (the canonical reference set), and mints a
-// presigned, externally-fetchable URL for each anchor's high-res object. The URLs
-// are returned in anchor order.
+// identity, then for each anchor asset id LOADS the asset through the assets
+// repository and validates it before minting a presigned URL for its ACTUAL
+// high-res object.
+//
+// Each anchor is validated: it must belong to the tenant (GetByIDForTenant is
+// tenant-scoped, so a wrong-tenant/missing id surfaces as a load error),
+// status=ready, and carry a high-res object whose canonical key is parseable. A
+// stale/missing/non-ready/foreign anchor fails with errInvalidReference rather
+// than silently presigning a guessed key that may 404 or point at the wrong
+// object. The presigned URL is derived from the asset's stored high_res_url, not
+// from a reconstructed key.
 //
 // It returns an empty slice (no error) when the identity exists but has no anchor
-// assets — the caller fails the job closed in that case rather than generating a
-// different character. A nil Identities dependency or a missing identity is a
-// real error the caller surfaces. The high-res object key is derived
-// deterministically from the asset id (the same scheme uploadImages writes), so
-// no extra asset read is required; all platform-generated assets are stored as
-// PNG under that scheme.
+// assets — the caller fails the job closed (missing_reference_assets) in that
+// case. A nil Identities dependency or a failed identity load is a real error the
+// caller surfaces.
 func (w *Worker) referenceURLsForIdentity(ctx context.Context, identityID, tenantID string) ([]string, error) {
 	if w.Identities == nil {
 		return nil, fmt.Errorf("worker: identity reader not configured for reference-conditioned generation")
+	}
+	if w.Assets == nil {
+		return nil, fmt.Errorf("worker: assets repository not configured for reference-conditioned generation")
 	}
 	if identityID == "" {
 		return nil, nil
@@ -754,10 +778,24 @@ func (w *Worker) referenceURLsForIdentity(ctx context.Context, identityID, tenan
 		if anchorID == "" {
 			continue
 		}
-		key := storage.ObjectKey(anchorID, storage.VariantHigh, "png")
+		asset, err := w.Assets.GetByIDForTenant(ctx, anchorID, tenantID)
+		if err != nil {
+			// Wrong-tenant or missing anchor: tenant-scoped lookup fails closed.
+			return nil, fmt.Errorf("%w: anchor %q: %v", errInvalidReference, anchorID, err)
+		}
+		if asset.Status != assetStatusReady {
+			return nil, fmt.Errorf("%w: anchor %q is not ready (status %q)", errInvalidReference, anchorID, asset.Status)
+		}
+		if asset.HighResUrl == nil || *asset.HighResUrl == "" {
+			return nil, fmt.Errorf("%w: anchor %q has no high-res object", errInvalidReference, anchorID)
+		}
+		key, ok := storage.KeyFromCanonicalURL(*asset.HighResUrl)
+		if !ok {
+			return nil, fmt.Errorf("%w: anchor %q has an unparseable high-res url", errInvalidReference, anchorID)
+		}
 		signed, err := w.Storage.Presign(ctx, key, ttl)
 		if err != nil {
-			return nil, fmt.Errorf("worker: presign reference asset %q: %w", anchorID, err)
+			return nil, fmt.Errorf("worker: presign reference anchor %q: %w", anchorID, err)
 		}
 		urls = append(urls, signed)
 	}

@@ -181,6 +181,119 @@ func TestGenerateSubmitShapeAndSuccess(t *testing.T) {
 	}
 }
 
+// routingDoer dispatches by method+URL substring (not call sequence) so a test
+// can model an indefinitely-running request plus a cancel call.
+type routingDoer struct {
+	mu        sync.Mutex
+	cancelHit int
+	cancelReq []*http.Request
+}
+
+func (d *routingDoer) Do(req *http.Request) (*http.Response, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	url := req.URL.String()
+	switch {
+	case req.Method == http.MethodPost && strings.HasSuffix(url, "/"+modelPath):
+		return jsonResp(200, `{"request_id":"req_t","status_url":"https://fal.test/status/req_t","response_url":"https://fal.test/result/req_t","cancel_url":"https://fal.test/cancel/req_t"}`), nil
+	case strings.Contains(url, "/status/"):
+		// Never completes → forces the bounded context to time out.
+		return jsonResp(200, `{"status":"IN_PROGRESS"}`), nil
+	case strings.Contains(url, "/cancel/"):
+		d.cancelHit++
+		d.cancelReq = append(d.cancelReq, req)
+		return jsonResp(200, `{"status":"CANCELLED"}`), nil
+	default:
+		return jsonResp(200, `{}`), nil
+	}
+}
+
+func (d *routingDoer) cancels() (int, []*http.Request) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.cancelHit, append([]*http.Request(nil), d.cancelReq...)
+}
+
+// TestCancelCalledAfterPostSubmitTimeout proves that when the request times out
+// AFTER a successful submit, the adapter best-effort cancels the orphaned fal
+// request (PUT cancel_url) rather than leaving it queued and billing.
+func TestCancelCalledAfterPostSubmitTimeout(t *testing.T) {
+	doer := &routingDoer{}
+	p := New("test-key",
+		WithHTTPClient(doer),
+		WithBaseURL("https://fal.test"),
+		WithPollInterval(time.Millisecond),
+		WithTimeout(10*time.Millisecond), // expires while status stays IN_PROGRESS
+	)
+
+	_, err := p.Generate(context.Background(), providers.ProviderGenerateRequest{
+		Prompt:        "Captain Mira",
+		ReferenceURLs: []string{"https://ref.test/anchor-1.png"},
+	})
+	if err == nil {
+		t.Fatal("expected a timeout error")
+	}
+
+	hits, reqs := doer.cancels()
+	if hits != 1 {
+		t.Fatalf("expected exactly 1 cancel call, got %d", hits)
+	}
+	if reqs[0].Method != http.MethodPut {
+		t.Fatalf("cancel method = %s, want PUT", reqs[0].Method)
+	}
+	if reqs[0].Header.Get("Authorization") != "Key test-key" {
+		t.Fatalf("cancel missing auth header: %q", reqs[0].Header.Get("Authorization"))
+	}
+	if reqs[0].URL.String() != "https://fal.test/cancel/req_t" {
+		t.Fatalf("cancel url = %s", reqs[0].URL.String())
+	}
+}
+
+// TestProviderErrorDoesNotCancel proves a genuine provider error (not a local
+// timeout) does NOT trigger a cancel — there is nothing orphaned to cancel.
+func TestProviderErrorDoesNotCancel(t *testing.T) {
+	doer := &routingDoer2{}
+	p := New("test-key",
+		WithHTTPClient(doer),
+		WithBaseURL("https://fal.test"),
+		WithPollInterval(time.Millisecond),
+		WithTimeout(2*time.Second),
+	)
+	_, err := p.Generate(context.Background(), providers.ProviderGenerateRequest{
+		Prompt:        "x",
+		ReferenceURLs: []string{"https://ref.test/a.png"},
+	})
+	if err == nil {
+		t.Fatal("expected provider error")
+	}
+	if doer.cancelHit != 0 {
+		t.Fatalf("provider error must not trigger cancel; got %d", doer.cancelHit)
+	}
+}
+
+// routingDoer2 returns a terminal provider error status on poll (not a timeout).
+type routingDoer2 struct {
+	mu        sync.Mutex
+	cancelHit int
+}
+
+func (d *routingDoer2) Do(req *http.Request) (*http.Response, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	url := req.URL.String()
+	switch {
+	case req.Method == http.MethodPost && strings.HasSuffix(url, "/"+modelPath):
+		return jsonResp(200, `{"request_id":"req_e","status_url":"https://fal.test/status/req_e","response_url":"https://fal.test/result/req_e","cancel_url":"https://fal.test/cancel/req_e"}`), nil
+	case strings.Contains(url, "/status/"):
+		return jsonResp(500, `{"detail":"boom"}`), nil // provider error, not a timeout
+	case strings.Contains(url, "/cancel/"):
+		d.cancelHit++
+		return jsonResp(200, `{}`), nil
+	default:
+		return jsonResp(200, `{}`), nil
+	}
+}
+
 func TestGenerateMissingAPIKey(t *testing.T) {
 	p := New("", WithHTTPClient(&stubDoer{handlers: []func(*http.Request) (*http.Response, error){
 		func(*http.Request) (*http.Response, error) { return jsonResp(200, "{}"), nil },

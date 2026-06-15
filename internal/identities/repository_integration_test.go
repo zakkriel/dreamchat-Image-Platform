@@ -169,6 +169,59 @@ func TestUpsertInsertAndVersionBump(t *testing.T) {
 	}
 }
 
+func TestSetAnchorAssets(t *testing.T) {
+	pool := openTestPool(t)
+	defer pool.Close()
+	cleanup(t, pool)
+	defer cleanup(t, pool)
+
+	seedStyle(t, pool)
+
+	repo := identities.NewRepository(pool)
+	ctx := context.Background()
+
+	created, err := repo.Upsert(ctx, identities.UpsertParams{
+		NewID:                 itIdentityID,
+		TenantID:              itTenantID,
+		WorldID:               itWorldID,
+		OwnerType:             "character",
+		OwnerID:               itOwnerID,
+		DisplayName:           "Alice",
+		CanonicalVisualTraits: map[string]any{},
+		StyleProfileID:        itStyleID,
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	// Set the anchor set; the text[] column round-trips through the raw UPDATE.
+	updated, err := repo.SetAnchorAssets(ctx, created.ID, itTenantID, []string{"va_a", "va_b"})
+	if err != nil {
+		t.Fatalf("SetAnchorAssets: %v", err)
+	}
+	if len(updated.AnchorAssetIds) != 2 || updated.AnchorAssetIds[0] != "va_a" || updated.AnchorAssetIds[1] != "va_b" {
+		t.Fatalf("anchor_asset_ids = %v, want [va_a va_b]", updated.AnchorAssetIds)
+	}
+	// Version is NOT bumped by an anchor change (anchors are reference provenance).
+	if updated.CurrentVersion != created.CurrentVersion {
+		t.Fatalf("anchor set must not bump version: was %d, now %d", created.CurrentVersion, updated.CurrentVersion)
+	}
+
+	// A fresh read returns the anchors (what pack generation consumes).
+	got, err := repo.GetByIDForTenant(ctx, created.ID, itTenantID)
+	if err != nil {
+		t.Fatalf("GetByIDForTenant: %v", err)
+	}
+	if len(got.AnchorAssetIds) != 2 {
+		t.Fatalf("read-back anchor_asset_ids = %v, want 2", got.AnchorAssetIds)
+	}
+
+	// Tenant scoping: another tenant cannot set anchors on this identity.
+	if _, err := repo.SetAnchorAssets(ctx, created.ID, "tenant_other", []string{"va_x"}); err == nil {
+		t.Fatal("expected ErrNotFound setting anchors as the wrong tenant")
+	}
+}
+
 func TestUpsertInvalidStyleProfile(t *testing.T) {
 	pool := openTestPool(t)
 	defer pool.Close()

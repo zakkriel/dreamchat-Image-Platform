@@ -27,6 +27,27 @@ func CanonicalURL(bucket, key string) string {
 	return "s3://" + bucket + "/" + strings.TrimPrefix(key, "/")
 }
 
+// KeyFromCanonicalURL extracts the object key from an s3://<bucket>/<key> URL as
+// produced by CanonicalURL. It returns ok=false for any URL not in that form
+// (empty, a presigned https URL, or missing a key segment), so callers presign
+// the ACTUAL stored object rather than a guessed key — or fail clearly.
+func KeyFromCanonicalURL(canonical string) (string, bool) {
+	const scheme = "s3://"
+	if !strings.HasPrefix(canonical, scheme) {
+		return "", false
+	}
+	rest := canonical[len(scheme):]
+	slash := strings.IndexByte(rest, '/')
+	if slash < 0 {
+		return "", false
+	}
+	key := rest[slash+1:]
+	if key == "" {
+		return "", false
+	}
+	return key, true
+}
+
 // AssetVariant identifies a single output for an asset's S3 object key.
 type AssetVariant string
 

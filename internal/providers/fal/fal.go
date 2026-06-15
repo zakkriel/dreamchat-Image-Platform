@@ -47,6 +47,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -65,6 +66,10 @@ const (
 	defaultBaseURL      = "https://queue.fal.run"
 	defaultPollInterval = 1 * time.Second
 	defaultTimeout      = 120 * time.Second
+	// cancelTimeout bounds the best-effort cancel call made after a local
+	// timeout/cancellation. It uses a fresh context (the request context is
+	// already done), so it must carry its own short deadline.
+	cancelTimeout = 5 * time.Second
 
 	statusInQueue    = "IN_QUEUE"
 	statusInProgress = "IN_PROGRESS"
@@ -89,6 +94,7 @@ type Provider struct {
 	httpClient   Doer
 	pollInterval time.Duration
 	timeout      time.Duration
+	logger       *slog.Logger
 }
 
 // Option configures a Provider (used to inject the HTTP client, base URL, and
@@ -110,6 +116,10 @@ func WithPollInterval(d time.Duration) Option { return func(p *Provider) { p.pol
 // WithTimeout overrides the bounded submit+poll deadline (default 120s).
 func WithTimeout(d time.Duration) Option { return func(p *Provider) { p.timeout = d } }
 
+// WithLogger injects the structured logger used for cancel/orphan observability
+// (default slog.Default()).
+func WithLogger(l *slog.Logger) Option { return func(p *Provider) { p.logger = l } }
+
 // New builds a fal.ai adapter. apiKey is the FAL_KEY; opts inject the HTTP
 // client / endpoints / timing for tests.
 func New(apiKey string, opts ...Option) *Provider {
@@ -123,6 +133,9 @@ func New(apiKey string, opts ...Option) *Provider {
 	}
 	for _, opt := range opts {
 		opt(p)
+	}
+	if p.logger == nil {
+		p.logger = slog.Default()
 	}
 	return p
 }
@@ -156,6 +169,7 @@ type submitResponse struct {
 	RequestID   string `json:"request_id"`
 	StatusURL   string `json:"status_url"`
 	ResponseURL string `json:"response_url"`
+	CancelURL   string `json:"cancel_url"`
 }
 
 // statusResponse is the fal queue status body.
@@ -202,12 +216,14 @@ func (p *Provider) Generate(ctx context.Context, req providers.ProviderGenerateR
 		return providers.ProviderGenerateResult{}, err
 	}
 
-	if err := p.poll(ctx, submitted); err != nil {
-		return providers.ProviderGenerateResult{}, err
-	}
-
-	result, err := p.fetchResult(ctx, submitted)
+	result, err := p.awaitResult(ctx, submitted)
 	if err != nil {
+		// If the failure was a LOCAL timeout/cancellation (not a provider error),
+		// the fal request is still queued/running and would keep billing — best-
+		// effort cancel it so we never pay for an orphaned job.
+		if ctx.Err() != nil {
+			p.cancel(submitted)
+		}
 		return providers.ProviderGenerateResult{}, err
 	}
 	if len(result.Images) == 0 || result.Images[0].URL == "" {
@@ -241,6 +257,47 @@ func (p *Provider) Generate(ctx context.Context, req providers.ProviderGenerateR
 		Seed:     seed,
 		Metadata: map[string]any{"provider": ProviderID, "model": ModelName},
 	}, nil
+}
+
+// awaitResult polls until the request is COMPLETED, then fetches the result body.
+// Split out of Generate so the timeout/cancellation cancel path wraps the whole
+// post-submit phase.
+func (p *Provider) awaitResult(ctx context.Context, submitted submitResponse) (resultResponse, error) {
+	if err := p.poll(ctx, submitted); err != nil {
+		return resultResponse{}, err
+	}
+	return p.fetchResult(ctx, submitted)
+}
+
+// cancel best-effort cancels an orphaned fal request after a local
+// timeout/cancellation. It uses a FRESH bounded context (the request context is
+// already done) and never returns an error — it only logs the outcome so an
+// orphaned, still-billing request is observable. fal exposes cancellation as
+// PUT {cancel_url} (https://docs.fal.ai/model-endpoints/queue/).
+func (p *Provider) cancel(submitted submitResponse) {
+	if submitted.CancelURL == "" {
+		p.logger.Warn("fal: cannot cancel request (no cancel_url)", "request_id", submitted.RequestID)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), cancelTimeout)
+	defer cancel()
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPut, submitted.CancelURL, nil)
+	if err != nil {
+		p.logger.Warn("fal: build cancel request failed", "request_id", submitted.RequestID, "error", err)
+		return
+	}
+	p.setAuth(httpReq)
+	httpReq.Header.Set("Accept", "application/json")
+
+	resp, err := p.httpClient.Do(httpReq)
+	if err != nil {
+		p.logger.Warn("fal: cancel request failed", "request_id", submitted.RequestID, "error", err)
+		return
+	}
+	defer drainClose(resp.Body)
+	p.logger.Info("fal: cancelled orphaned request after local timeout/cancellation",
+		"request_id", submitted.RequestID, "cancel_status", resp.StatusCode)
 }
 
 func (p *Provider) submit(ctx context.Context, req providers.ProviderGenerateRequest) (submitResponse, error) {

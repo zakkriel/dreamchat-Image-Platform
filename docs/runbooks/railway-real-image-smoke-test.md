@@ -380,24 +380,33 @@ Prerequisites, in addition to §2:
 - `FAL_KEY` set on **both** API and worker; `IMAGE_PROVIDER=fal` (so the resolver
   prefers fal for `pack_capable`). Leave `ALLOW_SYNTHETIC_PROVIDERS=false`.
 - A visual identity with at least one **anchor asset** (`anchor_asset_ids`). The
-  worker presigns each anchor's high-res object and passes it to fal as
-  `image_urls`. **An identity with no anchor assets fails the pack closed** with
-  `missing_reference_assets` — that is the correct, designed behavior, not a bug.
+  worker loads each anchor, validates it (tenant/ready/high-res), presigns its
+  high-res object, and passes it to fal as `image_urls`. **An identity with no
+  anchor assets fails the pack closed** with `missing_reference_assets`; a bad
+  anchor fails with `invalid_reference_asset` — both are correct, designed
+  behavior, not bugs.
 
-Steps:
+Steps (no manual SQL):
 
-1. Create/seed a character visual identity in your tenant and attach anchor
-   asset(s) (a previously generated/ingested portrait of the character).
-2. `POST /v1/characters/{character_id}/generate-pack` with a `world_id` and
+1. Create the character visual identity:
+   `POST /v1/characters/{character_id}/visual-identity`.
+2. Generate at least one portrait of the character (an artifact/pack job) so a
+   ready asset with a high-res object exists, then attach it as an anchor:
+   `POST /v1/characters/{character_id}/visual-identity/anchors`
+   with `{ "world_id": "...", "anchor_asset_ids": ["<asset_id>"] }`. A non-ready,
+   foreign, or high-res-less asset is rejected `422 invalid_anchor_asset`.
+3. `POST /v1/characters/{character_id}/generate-pack` with a `world_id` and
    `style_profile_id` (see `docs/api/jobs.md`). The route resolves to
    `route_fal_text_to_image_pack`.
-3. Poll the job (§6.4) and fetch pack items; confirm the rendered roles are the
+4. Poll the job (§6.4) and fetch pack items; confirm the rendered roles are the
    **same character** in different poses/roles (consistency is the whole point).
 
 Failure triage:
 
-- `missing_reference_assets` → the identity has no anchor assets; add one. The
-  worker never silently generates a different character.
+- `missing_reference_assets` → the identity has no anchor assets; attach one via
+  the anchors endpoint. The worker never silently generates a different character.
+- `invalid_reference_asset` → an attached anchor is stale/non-ready/foreign or has
+  no high-res object; re-attach a valid ready asset.
 - The fal route never selected (request fails closed / resolves mock) → `FAL_KEY`
   not set on the **worker/API**, or `IMAGE_PROVIDER` not `fal`.
 - fal `provider_failure` → check worker logs for the fal status/result; a presign

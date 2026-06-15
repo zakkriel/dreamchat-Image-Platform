@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -117,8 +118,15 @@ func (w *Worker) ProcessPack(ctx context.Context, jobID string) error {
 	if provider.Capabilities().RequiresReferenceImage {
 		refs, refErr := w.referenceURLsForIdentity(ctx, plan.visualIdentityID, job.TenantID)
 		if refErr != nil {
+			// An attached anchor is unusable (wrong tenant / missing / not ready /
+			// bad object) → invalid_reference_asset; any other gather failure is also
+			// surfaced clearly. Either way the pack fails closed.
+			code := errorCodeInvalidReference
+			if !errors.Is(refErr, errInvalidReference) {
+				code = errorCodeMissingReference
+			}
 			w.log().Error("worker: gather reference assets (pack)", "job_id", jobID, "identity_id", plan.visualIdentityID, "error", refErr)
-			return w.failPackTerminal(ctx, job, plan.packID, errorCodeMissingReference, refErr.Error())
+			return w.failPackTerminal(ctx, job, plan.packID, code, refErr.Error())
 		}
 		if len(refs) == 0 {
 			msg := fmt.Sprintf("visual identity %q has no reference assets for reference-conditioned provider %q", plan.visualIdentityID, resolved.providerID)

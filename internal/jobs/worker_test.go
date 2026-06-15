@@ -422,6 +422,21 @@ type fakeAssetsRepo struct {
 	// routing/slot assertions.
 	table                 []assets.VisualAsset
 	supersedeArtifactCall []supersedeArtifactCall
+
+	// byID backs GetByIDForTenant for tests that need a lookup to succeed (e.g.
+	// reference-anchor resolution). Keyed by asset id; the value's TenantID is
+	// checked so a wrong-tenant lookup fails closed like the real repo.
+	byID map[string]assets.VisualAsset
+}
+
+// seedAsset registers an asset so GetByIDForTenant can return it.
+func (r *fakeAssetsRepo) seedAsset(a assets.VisualAsset) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.byID == nil {
+		r.byID = map[string]assets.VisualAsset{}
+	}
+	r.byID[a.ID] = a
 }
 
 type supersedeArtifactCall struct {
@@ -429,8 +444,14 @@ type supersedeArtifactCall struct {
 	slot   assets.ArtifactSlot
 }
 
-func (r *fakeAssetsRepo) GetByIDForTenant(context.Context, string, string) (assets.VisualAsset, error) {
-	return assets.VisualAsset{}, assets.ErrNotFound
+func (r *fakeAssetsRepo) GetByIDForTenant(_ context.Context, id, tenantID string) (assets.VisualAsset, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	a, ok := r.byID[id]
+	if !ok || a.TenantID != tenantID {
+		return assets.VisualAsset{}, assets.ErrNotFound
+	}
+	return a, nil
 }
 
 func (r *fakeAssetsRepo) FindExact(context.Context, assets.RetrievalQuery) (assets.VisualAsset, error) {
