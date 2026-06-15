@@ -1309,6 +1309,9 @@ type PostV1PlacesPlaceIdGeneratePackJSONRequestBody = GeneratePlacePackRequest
 // PostV1PlacesPlaceIdVisualIdentityJSONRequestBody defines body for PostV1PlacesPlaceIdVisualIdentity for application/json ContentType.
 type PostV1PlacesPlaceIdVisualIdentityJSONRequestBody = CreateVisualIdentityRequest
 
+// PostV1PlacesPlaceIdVisualIdentityAnchorsJSONRequestBody defines body for PostV1PlacesPlaceIdVisualIdentityAnchors for application/json ContentType.
+type PostV1PlacesPlaceIdVisualIdentityAnchorsJSONRequestBody = AttachAnchorAssetsRequest
+
 // PostV1StylesJSONRequestBody defines body for PostV1Styles for application/json ContentType.
 type PostV1StylesJSONRequestBody = CreateStyleProfileRequest
 

@@ -133,10 +133,13 @@ requests carry none, so BFL keeps serving all scene/artifact work unchanged.
 ### Operational hardening (post-review, PR #29)
 
 - **Attach anchors over the API.** `POST /v1/characters/{character_id}/visual-
-  identity/anchors` (`AttachAnchorAssetsRequest`) sets a character identity's
-  `anchor_asset_ids`. It validates each asset (tenant ownership, status `ready`,
-  a high-res object, and binding to this identity or unassigned) before
-  persisting, and rejects with `422 invalid_anchor_asset` otherwise. So a client
+  identity/anchors` AND `POST /v1/places/{place_id}/visual-identity/anchors`
+  (`AttachAnchorAssetsRequest`) set an identity's `anchor_asset_ids`. Both share
+  one validated handler: each asset must be tenant-owned, status `ready`, carry a
+  high-res object, and be bound to this identity or unassigned — otherwise
+  `422 invalid_anchor_asset`. Character and place are symmetric because BOTH pack
+  kinds request `pack_capable` and may resolve the reference-conditioned fal
+  route; a character-only anchor flow would let fal break place packs. So a client
   can create an identity, attach anchors, and run a pack with **no manual SQL**.
   Backed by `identities.Repository.SetAnchorAssets` (tenant-scoped, atomic; does
   not bump identity version — anchors are reference provenance).
@@ -157,8 +160,6 @@ requests carry none, so BFL keeps serving all scene/artifact work unchanged.
   promote fal to `production_capable` and seed higher tiers / [max].
 - A dedicated single-character (non-pack) identity generation endpoint is added →
   seed an `identity_capable` fal route and wire references on that path too.
-- Place identities also need reference-conditioned packs → add a places anchors
-  endpoint mirroring the characters one (intentionally character-only for now).
 - Reference TTL proves too short under backlog → mint per-item or raise the
   reference-specific TTL.
 

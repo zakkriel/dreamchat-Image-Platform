@@ -135,6 +135,37 @@ paths:
                 $ref: '#/components/schemas/VisualIdentity'
         default:
           $ref: '#/components/responses/ErrorResponse'
+  /v1/characters/{character_id}/visual-identity/anchors:
+    post:
+      tags: [Characters]
+      summary: Attach anchor (reference) assets to a character visual identity
+      description: |
+        Sets the character visual identity's `anchor_asset_ids` — the reference
+        images a reference-conditioned provider (ADR-017) uses to hold the
+        recurring character. Replaces the existing anchor set. Each asset must
+        belong to the tenant, be status `ready`, carry a high-res object, and be
+        either unassigned or already bound to this identity. After a successful
+        call the identity (and `GET .../visual-identity`) returns the new
+        `anchor_asset_ids`, so pack generation can use them with no manual SQL.
+      security:
+        - BearerAuth: [images:write]
+      parameters:
+        - $ref: '#/components/parameters/CharacterId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AttachAnchorAssetsRequest'
+      responses:
+        '200':
+          description: Updated visual identity
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VisualIdentity'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
   /v1/characters/{character_id}/generate-pack:
     post:
       tags: [Characters]
@@ -205,6 +236,37 @@ paths:
       responses:
         '200':
           description: Visual identity
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VisualIdentity'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/places/{place_id}/visual-identity/anchors:
+    post:
+      tags: [Places]
+      summary: Attach anchor (reference) assets to a place visual identity
+      description: |
+        Sets the place visual identity's `anchor_asset_ids` — the reference
+        images a reference-conditioned provider (ADR-017) uses to hold the
+        recurring place. Replaces the existing anchor set. Each asset must
+        belong to the tenant, be status `ready`, carry a high-res object, and be
+        either unassigned or already bound to this identity. After a successful
+        call the identity (and `GET .../visual-identity`) returns the new
+        `anchor_asset_ids`, so pack generation can use them with no manual SQL.
+      security:
+        - BearerAuth: [images:write]
+      parameters:
+        - $ref: '#/components/parameters/PlaceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AttachAnchorAssetsRequest'
+      responses:
+        '200':
+          description: Updated visual identity
           content:
             application/json:
               schema:
@@ -1524,6 +1586,18 @@ components:
           additionalProperties: true
         style_profile_id: { type: string }
         consistency_key: { type: string }
+    AttachAnchorAssetsRequest:
+      type: object
+      required: [world_id, anchor_asset_ids]
+      properties:
+        world_id: { type: string }
+        anchor_asset_ids:
+          type: array
+          items: { type: string }
+          description: |
+            The reference asset ids to set as the identity's anchors. Replaces
+            the existing set. Each must be a ready, tenant-owned asset with a
+            high-res object, unassigned or already bound to this identity.
     VisualIdentity:
       type: object
       required: [id, world_id, owner_type, owner_id, display_name, style_profile_id, current_version, status]

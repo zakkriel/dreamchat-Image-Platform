@@ -152,13 +152,27 @@ func (h *IdentitiesHandler) get(w http.ResponseWriter, r *http.Request, pathPara
 	writeJSON(w, http.StatusOK, toVisualIdentityAPI(row))
 }
 
-// AttachCharacterAnchors sets a character visual identity's anchor_asset_ids —
-// the reference images a reference-conditioned provider uses to hold the
-// recurring character (ADR-017). It validates each candidate asset (tenant
-// ownership, ready status, a high-res object, and binding to this identity or
-// unassigned) before persisting the set, so pack generation can use the anchors
-// with no manual SQL. The set is replaced wholesale.
+// AttachCharacterAnchors sets a character visual identity's anchor_asset_ids.
 func (h *IdentitiesHandler) AttachCharacterAnchors(w http.ResponseWriter, r *http.Request) {
+	h.attachAnchors(w, r, "character_id", apigen.OwnerTypeCharacter)
+}
+
+// AttachPlaceAnchors sets a place visual identity's anchor_asset_ids. Place packs
+// also request pack_capable and so may resolve the reference-conditioned fal
+// route; a symmetric anchor flow keeps place packs from failing closed once fal
+// is enabled (ADR-017).
+func (h *IdentitiesHandler) AttachPlaceAnchors(w http.ResponseWriter, r *http.Request) {
+	h.attachAnchors(w, r, "place_id", apigen.OwnerTypePlace)
+}
+
+// attachAnchors sets a visual identity's anchor_asset_ids — the reference images
+// a reference-conditioned provider uses to hold the recurring character/place
+// (ADR-017). It validates each candidate asset (tenant ownership, ready status, a
+// high-res object, and binding to this identity or unassigned) before persisting
+// the set, so pack generation can use the anchors with no manual SQL. The set is
+// replaced wholesale. Shared by the character and place endpoints so their
+// validation can never drift.
+func (h *IdentitiesHandler) attachAnchors(w http.ResponseWriter, r *http.Request, pathParam string, ownerType apigen.OwnerType) {
 	principal := auth.PrincipalFromContext(r.Context())
 	if principal == nil {
 		httperr.Write(w, r, http.StatusInternalServerError, httperr.CodeInternalError, "missing principal")
@@ -169,9 +183,9 @@ func (h *IdentitiesHandler) AttachCharacterAnchors(w http.ResponseWriter, r *htt
 		return
 	}
 
-	ownerID := chi.URLParam(r, "character_id")
+	ownerID := chi.URLParam(r, pathParam)
 	if ownerID == "" {
-		httperr.Write(w, r, http.StatusBadRequest, httperr.CodeInvalidRequest, "character_id is required")
+		httperr.Write(w, r, http.StatusBadRequest, httperr.CodeInvalidRequest, pathParam+" is required")
 		return
 	}
 
@@ -189,7 +203,7 @@ func (h *IdentitiesHandler) AttachCharacterAnchors(w http.ResponseWriter, r *htt
 	}
 
 	// The anchors hang off an existing identity; this endpoint never creates one.
-	identity, err := h.Repo.GetByOwner(r.Context(), principal.TenantID, req.WorldId, string(apigen.OwnerTypeCharacter), ownerID)
+	identity, err := h.Repo.GetByOwner(r.Context(), principal.TenantID, req.WorldId, string(ownerType), ownerID)
 	if err != nil {
 		if errors.Is(err, identities.ErrNotFound) {
 			httperr.Write(w, r, http.StatusNotFound, httperr.CodeNotFound, "visual identity not found")

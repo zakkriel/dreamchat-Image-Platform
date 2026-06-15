@@ -20,6 +20,9 @@ func newAnchorRouter(idents *stubIdentitiesRepo, assetsRepo *stubAssetsRepo) chi
 	r.Post("/v1/characters/{character_id}/visual-identity", h.UpsertCharacter)
 	r.Get("/v1/characters/{character_id}/visual-identity", h.GetCharacter)
 	r.Post("/v1/characters/{character_id}/visual-identity/anchors", h.AttachCharacterAnchors)
+	r.Post("/v1/places/{place_id}/visual-identity", h.UpsertPlace)
+	r.Get("/v1/places/{place_id}/visual-identity", h.GetPlace)
+	r.Post("/v1/places/{place_id}/visual-identity/anchors", h.AttachPlaceAnchors)
 	return r
 }
 
@@ -74,6 +77,77 @@ func TestAttachCharacterAnchorsNormalFlow(t *testing.T) {
 	got := decode[apigen.VisualIdentity](t, rec)
 	if got.AnchorAssetIds == nil || len(*got.AnchorAssetIds) != 1 || (*got.AnchorAssetIds)[0] != "va_1" {
 		t.Fatalf("get identity anchor_asset_ids = %v, want [va_1]", got.AnchorAssetIds)
+	}
+}
+
+// TestAttachPlaceAnchorsNormalFlow proves the symmetric place endpoint works the
+// same as the character one: a place identity can attach anchors over the API and
+// then returns them, so place packs routed to fal do not fail closed.
+func TestAttachPlaceAnchorsNormalFlow(t *testing.T) {
+	idents := newStubIdentitiesRepo()
+	idents.registerStyle("tenant_a", "sty_1")
+	assetsRepo := newStubAssetsRepo()
+	r := newAnchorRouter(idents, assetsRepo)
+
+	create := apigen.CreateVisualIdentityRequest{
+		WorldId:               "w1",
+		OwnerType:             apigen.OwnerTypePlace,
+		OwnerId:               "place_1",
+		DisplayName:           "The Tavern",
+		StyleProfileId:        "sty_1",
+		CanonicalVisualTraits: map[string]interface{}{"mood": "cozy"},
+	}
+	rec := sendJSON(t, r, "POST", "/v1/places/place_1/visual-identity", "tenant_a", create)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create place identity: status %d, body %s", rec.Code, rec.Body.String())
+	}
+
+	assetsRepo.seed(readyAnchorAsset("va_p1", "tenant_a", "w1"))
+
+	rec = sendJSON(t, r, "POST", "/v1/places/place_1/visual-identity/anchors", "tenant_a",
+		apigen.AttachAnchorAssetsRequest{WorldId: "w1", AnchorAssetIds: []string{"va_p1"}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("attach place anchors: status %d, body %s", rec.Code, rec.Body.String())
+	}
+	vi := decode[apigen.VisualIdentity](t, rec)
+	if vi.AnchorAssetIds == nil || len(*vi.AnchorAssetIds) != 1 || (*vi.AnchorAssetIds)[0] != "va_p1" {
+		t.Fatalf("place anchor_asset_ids = %v, want [va_p1]", vi.AnchorAssetIds)
+	}
+
+	rec = sendJSON(t, r, "GET", "/v1/places/place_1/visual-identity?world_id=w1", "tenant_a", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get place identity: status %d, body %s", rec.Code, rec.Body.String())
+	}
+	got := decode[apigen.VisualIdentity](t, rec)
+	if got.AnchorAssetIds == nil || len(*got.AnchorAssetIds) != 1 {
+		t.Fatalf("get place anchor_asset_ids = %v, want [va_p1]", got.AnchorAssetIds)
+	}
+}
+
+// TestAttachPlaceAnchorsRejectsInvalid proves the place endpoint shares the
+// character validation (a non-ready asset is rejected, nothing persisted).
+func TestAttachPlaceAnchorsRejectsInvalid(t *testing.T) {
+	idents := newStubIdentitiesRepo()
+	idents.byOwner[identityKey{"tenant_a", "w1", "place", "place_1"}] = identities.VisualIdentity{
+		ID: "vi_p", TenantID: "tenant_a", WorldID: "w1", OwnerType: "place", OwnerID: "place_1",
+		DisplayName: "The Tavern", StyleProfileID: "sty_1", CurrentVersion: 1, Status: "active",
+	}
+	assetsRepo := newStubAssetsRepo()
+	high := "s3://bucket/assets/va_p1/high.png"
+	assetsRepo.seed(assets.VisualAsset{ID: "va_p1", TenantID: "tenant_a", WorldID: "w1", Status: "preview_ready", HighResUrl: &high})
+	r := newAnchorRouter(idents, assetsRepo)
+
+	rec := sendJSON(t, r, "POST", "/v1/places/place_1/visual-identity/anchors", "tenant_a",
+		apigen.AttachAnchorAssetsRequest{WorldId: "w1", AnchorAssetIds: []string{"va_p1"}})
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422 (body %s)", rec.Code, rec.Body.String())
+	}
+	body := decode[map[string]any](t, rec)
+	if code, _ := body["code"].(string); code != "invalid_anchor_asset" {
+		t.Fatalf("error code = %q, want invalid_anchor_asset", code)
+	}
+	if vi := idents.byOwner[identityKey{"tenant_a", "w1", "place", "place_1"}]; len(vi.AnchorAssetIds) != 0 {
+		t.Fatalf("anchors must not be persisted on rejection, got %v", vi.AnchorAssetIds)
 	}
 }
 

@@ -111,9 +111,11 @@ fails with `invalid_reference_asset`** — no provider call, never a different
 character. Prompt-only providers (mock, BFL) leave the flag false, so this path is
 a no-op for them.
 
-Anchors are attached over the API (`POST /v1/characters/{character_id}/visual-
-identity/anchors`), which validates each candidate asset before persisting the
-set — so a recurring-character pack runs with no manual SQL. Reference-conditioned
+Anchors are attached over the API — `POST /v1/characters/{character_id}/visual-
+identity/anchors` and the symmetric `POST /v1/places/{place_id}/visual-identity/
+anchors` — which validate each candidate asset before persisting the set, so a
+recurring-character/place pack runs with no manual SQL. Both pack kinds request
+`pack_capable` and may resolve the fal route, so both have an anchor flow. Reference-conditioned
 adapters also handle local timeout/cancellation: on a post-submit timeout the fal
 adapter best-effort cancels the queued request (`cancel_url`) so a worker timeout
 never leaves an orphaned, billing job.

@@ -414,3 +414,8 @@ Failure triage:
   `S3_PRESIGN_TTL`).
 - **Stop spend:** unset `FAL_KEY` (or set `IMAGE_PROVIDER=mock` with
   `ALLOW_SYNTHETIC_PROVIDERS` left false → packs fail closed, no real calls).
+
+> Place packs behave identically: attach anchors via
+> `POST /v1/places/{place_id}/visual-identity/anchors` (same validation), then
+> `POST /v1/places/{place_id}/generate-pack`. Both pack kinds request
+> `pack_capable` and resolve the same fal route, so both require anchors.
