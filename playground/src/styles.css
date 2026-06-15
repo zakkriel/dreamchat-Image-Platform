@@ -358,3 +358,12 @@ pre {
 code {
   font-family: var(--mono);
 }
+
+.scenario-errors {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.scenario-errors li {
+  margin: 2px 0;
+}

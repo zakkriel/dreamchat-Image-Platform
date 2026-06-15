@@ -15,6 +15,9 @@ adds **no** backend features: every button maps 1:1 to an endpoint already in
 
 A single page with stacked panels:
 
+0. **Scenario import** — load a JSON scenario (file upload or pasted text) to
+   pre-fill the panels below. Dev/local-only; nothing is uploaded, stored
+   server-side, or auto-submitted. See [Scenario import](#scenario-import).
 1. **Connection** — base URL + tenant/admin bearer tokens (saved to
    localStorage), `GET /health`, and the OpenAPI version from `GET /openapi.json`.
 2. **Styles** — `POST /v1/styles`, `GET /v1/styles`, and an "active style"
@@ -83,6 +86,7 @@ Connection panel's base URL defaults to `/api`, which is proxied to
 npm install
 npm run build     # tsc --noEmit && vite build
 npm run lint      # eslint .
+npm run test      # vitest run (scenario import validation)
 ```
 
 ## Typical flow
@@ -108,6 +112,118 @@ npm run lint      # eslint .
 9. **Admin job controls** → retry a failed job or cancel a live one (admin
    token).
 10. **Request log** → expand any call and **Copy curl** to replay from a shell.
+
+## Scenario import
+
+The **Scenario import** panel (panel 0) loads a JSON document that pre-fills the
+other panels' form fields so a predefined test case can be repeated without
+retyping everything. It is strictly a dev/local convenience:
+
+- Import only **fills form fields and active config** — it never submits an API
+  call. You still press each panel's button to actually call the backend.
+- Nothing is uploaded or stored server-side; the file is read in-browser only.
+- Manual editing still works afterward — change any field before calling the API.
+- Re-importing re-applies the scenario; fields not present in the scenario, and
+  any section you omit, are left untouched.
+
+You can either **choose a `.json` file** or **paste JSON** into the textarea,
+then press **Import scenario**. Malformed JSON, unknown sections/fields, and
+badly typed values are reported as validation errors and abort the import. On
+success the panel lists which panels were filled.
+
+### Format
+
+The top level may contain optional `version` / `name` metadata plus any of these
+**optional** sections. Every field within a section is optional — only the
+fields you include are applied.
+
+| Section | Fills panel | Notable fields |
+| --- | --- | --- |
+| `connection` | Connection | `baseUrl`; `token` / `adminToken` only when explicitly present |
+| `style` | Styles | `name`, `styleMode`, `positivePrompt`, `negativePrompt`, `defaultQualityTier` |
+| `visualIdentity` | Visual identity | `ownerType` (`character`\|`place`), `worldId`, `ownerId`, `displayName`, `canonicalVisualTraits` (object), `styleProfileId`, `consistencyKey` |
+| `artifact` | Artifact generation | `artifactId`, `worldId`, `styleProfileId`, `description`, `qualityTier`, `latencyTier`, `deliveryMode`, `forceRegenerate`, `idempotencyKey` |
+| `pack` | Pack generation | `character` / `place` objects with `entityId`, `worldId`, `styleProfileId`, `packTemplate`, `qualityTier`, `forceRegenerate` |
+| `assetSearch` | Asset search | `worldId`, `ownerType`, `visualIdentityId`, `variantKey`, `styleProfileId`, `stateVersion` (int), `qualityTier`, `fallbackPolicy` |
+| `webhook` | Webhook endpoint | `url` |
+| `admin` | Admin job controls | `jobId` |
+
+> **Never commit raw bearer tokens** in a scenario file. The example below fills
+> only the base URL; paste tenant/admin tokens into the Connection panel by hand.
+
+### Example scenario
+
+This canonical sample is also committed at
+[`examples/example-scenario.json`](examples/example-scenario.json) so you can
+upload it directly via **Choose .json file…**.
+
+```json
+{
+  "version": 1,
+  "name": "Playground smoke test",
+  "connection": {
+    "baseUrl": "/api"
+  },
+  "style": {
+    "name": "Storybook Soft",
+    "styleMode": "open_prompt",
+    "positivePrompt": "clean flat illustration, soft lighting, storybook",
+    "negativePrompt": "harsh shadows, photorealistic",
+    "defaultQualityTier": "standard"
+  },
+  "visualIdentity": {
+    "ownerType": "character",
+    "worldId": "world_dev",
+    "ownerId": "character_play_1",
+    "displayName": "Playground Hero",
+    "canonicalVisualTraits": {
+      "hair": "black",
+      "outfit": "blue cloak"
+    },
+    "consistencyKey": ""
+  },
+  "artifact": {
+    "artifactId": "artifact_play_1",
+    "worldId": "world_dev",
+    "description": "a brass compass resting on an old map",
+    "qualityTier": "standard",
+    "latencyTier": "balanced",
+    "deliveryMode": "final_only",
+    "forceRegenerate": false
+  },
+  "pack": {
+    "character": {
+      "entityId": "character_play_1",
+      "worldId": "world_dev",
+      "packTemplate": "character_minimal_portrait_pack",
+      "qualityTier": "standard"
+    },
+    "place": {
+      "entityId": "place_play_1",
+      "worldId": "world_dev",
+      "packTemplate": "place_minimal_scene_pack",
+      "qualityTier": "standard"
+    }
+  },
+  "assetSearch": {
+    "worldId": "world_dev",
+    "ownerType": "character",
+    "variantKey": "neutral",
+    "stateVersion": 1
+  },
+  "webhook": {
+    "url": "https://webhook.site/your-id"
+  },
+  "admin": {
+    "jobId": "job_play_1"
+  }
+}
+```
+
+After importing this scenario, the Connection panel shows base URL `/api` (token
+fields untouched), and the Styles, Visual identity, Artifact generation, Pack
+generation, Asset search, Webhook endpoint, and Admin job controls panels are
+pre-filled. Press each panel's button to drive the API as usual.
 
 ## Sample assets without generating
 

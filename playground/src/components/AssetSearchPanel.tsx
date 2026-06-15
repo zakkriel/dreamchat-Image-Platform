@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { apiRequest, type ApiResult } from '../api/client'
 import { useConfig } from '../state/config'
+import { getScenario, useScenarioSeq } from '../scenario/store'
 import {
   FALLBACK_POLICIES,
   QUALITY_TIERS,
@@ -27,6 +28,21 @@ export function AssetSearchPanel() {
   const [quality, setQuality] = useState<QualityTier | ''>('')
   const [fallbackPolicy, setFallbackPolicy] = useState<FallbackPolicy | ''>('')
   const [result, setResult] = useState<ApiResult<AssetSearchResponse> | null>(null)
+
+  const seq = useScenarioSeq()
+  useEffect(() => {
+    if (seq === 0) return
+    const s = getScenario()?.assetSearch
+    if (!s) return
+    if (s.worldId !== undefined) setWorldId(s.worldId)
+    if (s.ownerType !== undefined) setOwnerType(s.ownerType)
+    if (s.visualIdentityId !== undefined) setVisualIdentityId(s.visualIdentityId)
+    if (s.variantKey !== undefined) setVariantKey(s.variantKey)
+    if (s.styleProfileId !== undefined) setStyleProfileId(s.styleProfileId)
+    if (s.stateVersion !== undefined) setStateVersion(String(s.stateVersion))
+    if (s.qualityTier !== undefined) setQuality(s.qualityTier)
+    if (s.fallbackPolicy !== undefined) setFallbackPolicy(s.fallbackPolicy)
+  }, [seq])
 
   const effectiveVI = visualIdentityId || cfg.activeVisualIdentityId
   const effectiveStyle = styleProfileId || cfg.activeStyleId
