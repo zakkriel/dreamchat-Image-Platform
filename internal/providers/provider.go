@@ -57,6 +57,12 @@ type ProviderCapabilities struct {
 	SupportsHighRes   bool
 	MaxBatchSize      int
 	SupportedAspects  []string
+	// Synthetic marks a non-production provider (mock / fixture / test-only).
+	// A synthetic provider may satisfy capability tests in dev/test, but it must
+	// not make production readiness report that a real identity-capable provider
+	// is configured (PRD 03 §8 readiness). Real provider adapters leave this
+	// false.
+	Synthetic bool
 }
 
 type ProviderGenerateRequest struct {

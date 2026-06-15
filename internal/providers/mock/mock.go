@@ -44,6 +44,11 @@ func (p *Provider) Capabilities() providers.ProviderCapabilities {
 		SupportsHighRes:   true,
 		MaxBatchSize:      4,
 		SupportedAspects:  []string{"1:1", "16:9", "9:16", "4:3", "3:4"},
+		// Mock is a synthetic/test provider: it advertises the full capability set
+		// so dev/CI can exercise identity/pack routing without a real provider key,
+		// but it must never make production readiness report a real identity-capable
+		// provider (PRD 03 §8 readiness).
+		Synthetic: true,
 	}
 }
 

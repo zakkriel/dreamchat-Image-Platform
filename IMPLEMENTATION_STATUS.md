@@ -432,6 +432,34 @@ before this is production-ready.**
   endpoint config + a delivery log). OpenAPI `0.10.0 → 0.11.0` (strictly
   additive, api + docs mirrored).
 
+- **Provider capability reconciliation + fail-closed routing** (Done):
+  implements **PRD 03 §8 (Provider Capability Floor)** and is captured in
+  **ADR-016**. Config (`provider_routes`) is no longer trusted to state a
+  provider's real capability. A single helper
+  (`providers.CapabilitySatisfies` / `CapabilitiesSatisfy`) encodes the §8.3
+  hierarchy (`production_capable` ⊇ `pack_capable` ⊇ `identity_capable`;
+  `scene_capable`/`draft_only` parallel, satisfy only themselves) and is used
+  **only** for provider-satisfies-route validation — **request-to-route matching
+  stays exact** on `route.required_capability`, so cheap `scene_capable` work is
+  never routed to identity/pack routes. At boot, `routing.Reconcile` checks every
+  route against the registered adapters' `Capabilities()` and logs each decision
+  (route id, provider id, model id, required capability, provider capabilities,
+  decision) plus an identity-readiness summary; invalid routes are disabled by
+  exclusion with loud WARN logs (the repo's fail-at-resolution pattern, not a
+  boot abort). At resolution the resolver re-applies the check
+  (`WithProviderCapabilities`) and fails closed with `route_capability_mismatch`
+  (HTTP 422). Because resolution runs **before** cost reservation in the handler,
+  a fail-closed rejection leaves **no dangling budget hold**. A `Synthetic`
+  marker on `ProviderCapabilities` (set by mock) keeps dev/test routing working
+  while ensuring a synthetic provider never makes production readiness report a
+  real identity-capable provider. Current real provider BFL `flux-pro-1.1` is
+  `scene_capable` only (scenes/artifacts, not recurring characters); recurring
+  character consistency requires a reference/identity-capable provider and
+  prompt-only retries do not solve it. **No migration, no provider integration,
+  no cost-model change.** New shared seam `internal/providers/bootstrap` so API
+  and worker agree on the provider set. Runbook:
+  `docs/runbooks/provider-capability-misconfiguration.md`.
+
 ## Remaining
 
 - **None for the Phase 7 implementation track.** Phase 7C-3 (RLS / tenant

@@ -56,6 +56,35 @@ place scene, high_quality -> provider B
 artifact icon, cheap -> provider C
 ```
 
+## Capability Reconciliation (PRD 03 §8)
+
+Request-to-route matching is **exact** on `route.required_capability`: a
+`scene_capable` request resolves only `scene_capable` routes and never collapses
+onto an identity/pack route (that would route cheap scene work to expensive
+identity providers).
+
+Separately, the platform never trusts a route's claimed capability blindly. A
+`provider_routes` row is mutable config and can claim a capability its provider
+adapter does not actually support. So provider-satisfies-route is validated using
+the §8.3 hierarchy (`production_capable` ⊇ `pack_capable` ⊇ `identity_capable`;
+`scene_capable`/`draft_only` are parallel and satisfy only themselves):
+
+- **At boot**, every route is reconciled against the registered adapters'
+  `Capabilities()`; invalid routes are disabled with loud structured logs (route
+  id, provider id, model id, required capability, provider capabilities,
+  decision), and a readiness line reports whether a **real** (non-synthetic)
+  identity-capable provider is configured.
+- **At resolution**, the resolver re-applies the check as defense-in-depth and
+  fails closed with `route_capability_mismatch` (HTTP 422) when the only matching
+  route's provider cannot back its claimed capability.
+
+The mock provider is synthetic: it satisfies identity/pack for dev/test routing
+but never makes production readiness report a real identity-capable provider. The
+current real provider, BFL `flux-pro-1.1`, is `scene_capable` only — suitable for
+scenes/artifacts, not recurring characters. Recurring character consistency
+requires a reference/identity-capable provider; prompt-only retries do not solve
+recurring identity. See `docs/adr/016-provider-capability-reconciliation.md`.
+
 ## Error Normalization
 
 Provider-specific errors should be converted into platform errors:

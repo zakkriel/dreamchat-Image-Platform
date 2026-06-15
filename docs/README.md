@@ -88,6 +88,7 @@ It owns visual asset generation and visual asset lifecycle only.
 /runbooks
   local-development.md
   provider-failure.md
+  provider-capability-misconfiguration.md
   failed-jobs.md
   token-rotation.md
   cost-spike.md
