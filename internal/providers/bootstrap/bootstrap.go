@@ -14,18 +14,24 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/config"
 	"github.com/zakkriel/drchat-image-platform/internal/providers"
 	"github.com/zakkriel/drchat-image-platform/internal/providers/bfl"
+	"github.com/zakkriel/drchat-image-platform/internal/providers/fal"
 	"github.com/zakkriel/drchat-image-platform/internal/providers/mock"
 )
 
 // Registry registers exactly the providers configured in this process: mock is
 // always available (synthetic/test provider); bfl is registered only when a
-// BFL_API_KEY is set. This mirrors config.AvailableProviders so the route
-// resolver, the boot reconciler, and the worker all see the same provider set.
+// BFL_API_KEY is set; fal (reference-conditioned, identity/pack-capable) is
+// registered only when a FAL_KEY is set. This mirrors config.AvailableProviders
+// so the route resolver, the boot reconciler, and the worker all see the same
+// provider set.
 func Registry(cfg *config.Config) *providers.Registry {
 	reg := providers.NewRegistry()
 	reg.Register(mock.ProviderID, mock.New())
 	if cfg.BFLAPIKey != "" {
 		reg.Register(bfl.ProviderID, bfl.New(cfg.BFLAPIKey))
+	}
+	if cfg.FalKey != "" {
+		reg.Register(fal.ProviderID, fal.New(cfg.FalKey))
 	}
 	return reg
 }

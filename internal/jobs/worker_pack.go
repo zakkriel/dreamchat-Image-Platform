@@ -106,6 +106,28 @@ func (w *Worker) ProcessPack(ctx context.Context, jobID string) error {
 		return w.failPackTerminal(ctx, job, plan.packID, errorCodeProviderUnavailable, msg)
 	}
 
+	// Reference-conditioned providers (e.g. fal FLUX.1 Kontext) cannot hold a
+	// recurring character from the role prompt alone — they must be given the
+	// identity's reference images. Gather them ONCE for the whole pack (every role
+	// conditions on the same anchors) and fail the pack closed if the identity has
+	// no anchor assets, rather than fanning out and generating a different
+	// character per role (PRD 03 §8). Prompt-only providers (mock, BFL scene) leave
+	// RequiresReferenceImage false, so this is a no-op and the pack runs unchanged.
+	var referenceURLs []string
+	if provider.Capabilities().RequiresReferenceImage {
+		refs, refErr := w.referenceURLsForIdentity(ctx, plan.visualIdentityID, job.TenantID)
+		if refErr != nil {
+			w.log().Error("worker: gather reference assets (pack)", "job_id", jobID, "identity_id", plan.visualIdentityID, "error", refErr)
+			return w.failPackTerminal(ctx, job, plan.packID, errorCodeMissingReference, refErr.Error())
+		}
+		if len(refs) == 0 {
+			msg := fmt.Sprintf("visual identity %q has no reference assets for reference-conditioned provider %q", plan.visualIdentityID, resolved.providerID)
+			w.log().Error("worker: no reference assets (pack)", "job_id", jobID, "identity_id", plan.visualIdentityID, "provider_id", resolved.providerID)
+			return w.failPackTerminal(ctx, job, plan.packID, errorCodeMissingReference, msg)
+		}
+		referenceURLs = refs
+	}
+
 	if _, err := w.Jobs.MarkRunning(ctx, job.ID, job.TenantID); err != nil {
 		w.log().Error("worker: mark pack running", "job_id", jobID, "error", err)
 		return err
@@ -147,7 +169,7 @@ func (w *Worker) ProcessPack(ctx context.Context, jobID string) error {
 			deliveredKeys = append(deliveredKeys, variantKey)
 			continue
 		}
-		assetID, itemErr := w.generatePackItem(ctx, job, plan, provider, resolved, variantKey, i)
+		assetID, itemErr := w.generatePackItem(ctx, job, plan, provider, resolved, variantKey, i, referenceURLs)
 		if itemErr != nil {
 			// Per-item failure (provider/storage/persistence): record it and
 			// continue with the next variant — never abort the batch.
@@ -245,7 +267,7 @@ func (w *Worker) ProcessPack(ctx context.Context, jobID string) error {
 // generatePackItem runs one variant end to end: provider attempt row,
 // provider call, image upload, visual_assets insert, asset_pack_items
 // insert. Returns the new asset id, or the per-item error.
-func (w *Worker) generatePackItem(ctx context.Context, job Job, plan packPlan, provider providers.ImageProvider, resolved resolvedRoute, variantKey string, index int) (string, error) {
+func (w *Worker) generatePackItem(ctx context.Context, job Job, plan packPlan, provider providers.ImageProvider, resolved resolvedRoute, variantKey string, index int, referenceURLs []string) (string, error) {
 	attempt, err := w.Jobs.InsertProviderAttempt(ctx, ProviderAttemptInsertParams{
 		ID:              ids.NewProviderAttemptID(),
 		GenerationJobID: job.ID,
@@ -262,11 +284,12 @@ func (w *Worker) generatePackItem(ctx context.Context, job Job, plan packPlan, p
 
 	start := time.Now()
 	result, providerErr := provider.Generate(ctx, providers.ProviderGenerateRequest{
-		JobID:     job.ID,
-		Operation: providers.OperationTextToImage,
-		Prompt:    prompt,
-		Width:     deliveryRenderEdge,
-		Height:    deliveryRenderEdge,
+		JobID:         job.ID,
+		Operation:     providers.OperationTextToImage,
+		Prompt:        prompt,
+		Width:         deliveryRenderEdge,
+		Height:        deliveryRenderEdge,
+		ReferenceURLs: referenceURLs,
 		Metadata: map[string]any{
 			"world_id":    plan.worldID,
 			"job_type":    job.JobType,

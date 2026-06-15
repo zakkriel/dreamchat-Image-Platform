@@ -11,7 +11,7 @@ var envVars = []string{
 	"POSTGRES_DSN", "REDIS_ADDR", "REDIS_PASSWORD",
 	"S3_BUCKET", "S3_REGION", "S3_ENDPOINT",
 	"S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "S3_USE_PATH_STYLE",
-	"IMAGE_PROVIDER", "BFL_API_KEY",
+	"IMAGE_PROVIDER", "BFL_API_KEY", "FAL_KEY",
 	"API_TOKEN_PEPPER", "OPENAPI_DOCS_ENABLED",
 }
 
@@ -182,5 +182,37 @@ func TestBFLProviderRequiresAPIKey(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "BFL_API_KEY") {
 		t.Fatalf("expected BFL_API_KEY in error, got %v", err)
+	}
+}
+
+func TestFalProviderRequiresAPIKey(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("POSTGRES_DSN", "postgres://localhost/test")
+	t.Setenv("REDIS_ADDR", "localhost:6379")
+	t.Setenv("S3_BUCKET", "test")
+	t.Setenv("S3_REGION", "us-east-1")
+	t.Setenv("S3_ENDPOINT", "http://localhost:9000")
+	t.Setenv("S3_ACCESS_KEY_ID", "x")
+	t.Setenv("S3_SECRET_ACCESS_KEY", "y")
+	t.Setenv("API_TOKEN_PEPPER", "pepper")
+	t.Setenv("IMAGE_PROVIDER", "fal")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error when fal provider selected but FAL_KEY missing")
+	}
+	if !strings.Contains(err.Error(), "FAL_KEY") {
+		t.Fatalf("expected FAL_KEY in error, got %v", err)
+	}
+}
+
+// TestFalAvailableOnlyWithKey proves fal joins the available-provider set (so its
+// routes become resolvable) only when FAL_KEY is configured.
+func TestFalAvailableOnlyWithKey(t *testing.T) {
+	if (&Config{}).AvailableProviders()[string(ProviderFal)] {
+		t.Fatal("fal must not be available without FAL_KEY")
+	}
+	if !(&Config{FalKey: "k"}).AvailableProviders()[string(ProviderFal)] {
+		t.Fatal("fal must be available when FAL_KEY is set")
 	}
 }

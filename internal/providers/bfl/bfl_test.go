@@ -68,15 +68,29 @@ func TestCapabilitiesFloor(t *testing.T) {
 	if caps.SupportsHighRes {
 		t.Fatalf("must not claim high-res")
 	}
+	if caps.Synthetic {
+		t.Fatalf("bfl is a real provider, not synthetic")
+	}
+	if caps.RequiresReferenceImage {
+		t.Fatalf("bfl flux-pro-1.1 is prompt-only and must not require reference images")
+	}
 	forbidden := map[providers.Capability]bool{
 		providers.CapabilityIdentityCapable:   true,
 		providers.CapabilityPackCapable:       true,
 		providers.CapabilityProductionCapable: true,
 	}
+	has := map[providers.Capability]bool{}
 	for _, c := range caps.Capabilities {
 		if forbidden[c] {
 			t.Fatalf("must not advertise %q without benchmark evidence", c)
 		}
+		has[c] = true
+	}
+	// BFL remains scene_capable only: it must positively advertise scene_capable
+	// (so it keeps serving scene/artifact generation) and nothing on the identity
+	// axis.
+	if !has[providers.CapabilitySceneCapable] {
+		t.Fatalf("bfl must advertise scene_capable")
 	}
 }
 

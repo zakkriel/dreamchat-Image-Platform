@@ -83,8 +83,9 @@ reference with `${{ Postgres.DATABASE_URL }}` style references.
 | `S3_SECRET_ACCESS_KEY` | ✅ | ✅ | |
 | `S3_USE_PATH_STYLE` | ✅ | ✅ | `true` for MinIO/most non-AWS providers; `false` for AWS S3 virtual-hosted style. |
 | `S3_PRESIGN_TTL` | ✅ | ✅ | Presigned read-URL lifetime, e.g. `15m`. Make it generous enough to click. |
-| `IMAGE_PROVIDER` | ✅ | ✅ | **`bfl`** — this is what makes the image real. |
+| `IMAGE_PROVIDER` | ✅ | ✅ | **`bfl`** for the scene/artifact smoke test; **`fal`** to prefer the reference-conditioned provider for character packs. |
 | `BFL_API_KEY` | ✅ | ✅ | Black Forest Labs API key. Required when `IMAGE_PROVIDER=bfl`. |
+| `FAL_KEY` | ⚠️ | ⚠️ | fal.ai API key. Required when `IMAGE_PROVIDER=fal`; set it (on both services) to smoke-test recurring-character **pack** generation — see §9. |
 | `API_TOKEN_PEPPER` | ✅ | ✅ | Must be **identical** on both services and on the seed-token run, or auth fails. |
 | `OPENAPI_DOCS_ENABLED` | ✅ | – | `true` for the smoke test. |
 
@@ -365,3 +366,42 @@ files. Nothing in the running API/worker code paths changes.
   and the API service, or the token's `environment` ≠ the API's `ENVIRONMENT`.
 - Presigned URL won't open → `S3_ENDPOINT` is not publicly reachable, or
   `S3_PRESIGN_TTL` already expired (re-fetch §6.5).
+
+---
+
+## 9. Recurring-character pack smoke test (fal / FLUX.1 Kontext)
+
+This exercises the first **real reference-conditioned** path (ADR-017). It is
+distinct from §6 (BFL scene/artifact): character packs require a provider that can
+hold a recurring character from **reference images**.
+
+Prerequisites, in addition to §2:
+
+- `FAL_KEY` set on **both** API and worker; `IMAGE_PROVIDER=fal` (so the resolver
+  prefers fal for `pack_capable`). Leave `ALLOW_SYNTHETIC_PROVIDERS=false`.
+- A visual identity with at least one **anchor asset** (`anchor_asset_ids`). The
+  worker presigns each anchor's high-res object and passes it to fal as
+  `image_urls`. **An identity with no anchor assets fails the pack closed** with
+  `missing_reference_assets` — that is the correct, designed behavior, not a bug.
+
+Steps:
+
+1. Create/seed a character visual identity in your tenant and attach anchor
+   asset(s) (a previously generated/ingested portrait of the character).
+2. `POST /v1/characters/{character_id}/generate-pack` with a `world_id` and
+   `style_profile_id` (see `docs/api/jobs.md`). The route resolves to
+   `route_fal_text_to_image_pack`.
+3. Poll the job (§6.4) and fetch pack items; confirm the rendered roles are the
+   **same character** in different poses/roles (consistency is the whole point).
+
+Failure triage:
+
+- `missing_reference_assets` → the identity has no anchor assets; add one. The
+  worker never silently generates a different character.
+- The fal route never selected (request fails closed / resolves mock) → `FAL_KEY`
+  not set on the **worker/API**, or `IMAGE_PROVIDER` not `fal`.
+- fal `provider_failure` → check worker logs for the fal status/result; a presign
+  TTL shorter than the provider backlog can make `image_urls` 403 (raise
+  `S3_PRESIGN_TTL`).
+- **Stop spend:** unset `FAL_KEY` (or set `IMAGE_PROVIDER=mock` with
+  `ALLOW_SYNTHETIC_PROVIDERS` left false → packs fail closed, no real calls).

@@ -63,3 +63,39 @@ func TestBFLGatedByKeyAndSceneOnly(t *testing.T) {
 		t.Fatal("bfl (scene-only) + mock (synthetic) must report no real identity-capable provider")
 	}
 }
+
+// TestFalGatedByKeyAndRealIdentityCapable proves fal is only configured when
+// FAL_KEY is set and, when present, is a real (non-synthetic) reference-
+// conditioned provider that flips real identity/pack readiness on — the first
+// real provider that lets recurring-character work resolve in production.
+func TestFalGatedByKeyAndRealIdentityCapable(t *testing.T) {
+	if _, ok := CapabilityIndex(&config.Config{})["fal"]; ok {
+		t.Fatal("fal must not be configured without FAL_KEY")
+	}
+
+	cfg := &config.Config{FalKey: "test-key"}
+	index := CapabilityIndex(cfg)
+	falCaps, ok := index["fal"]
+	if !ok {
+		t.Fatal("fal must be configured when FAL_KEY is set")
+	}
+	if falCaps.Synthetic {
+		t.Fatal("fal is a real provider, not synthetic")
+	}
+	if !falCaps.RequiresReferenceImage {
+		t.Fatal("fal must require reference images")
+	}
+	if !providers.CapabilitiesSatisfy(falCaps.Capabilities, providers.CapabilityPackCapable) {
+		t.Fatal("fal must satisfy pack_capable")
+	}
+	if providers.CapabilitiesSatisfy(falCaps.Capabilities, providers.CapabilityProductionCapable) {
+		t.Fatal("fal must NOT claim production_capable without benchmark evidence")
+	}
+
+	// fal flips REAL identity readiness on even with ALLOW_SYNTHETIC_PROVIDERS=false:
+	// it is a real provider, so character/pack requests resolve in production.
+	readiness := providers.AssessIdentityReadiness(index)
+	if !readiness.RealIdentityCapable {
+		t.Fatal("fal must report a real identity-capable provider")
+	}
+}

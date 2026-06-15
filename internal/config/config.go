@@ -14,6 +14,7 @@ type Provider string
 const (
 	ProviderMock Provider = "mock"
 	ProviderBFL  Provider = "bfl"
+	ProviderFal  Provider = "fal"
 )
 
 type Environment string
@@ -53,6 +54,12 @@ type Config struct {
 
 	ImageProvider Provider
 	BFLAPIKey     string
+	// FalKey is the fal.ai API key (FAL_KEY). When set, the reference-conditioned
+	// fal provider (FLUX.1 Kontext multi) is registered and its identity/pack
+	// routes become resolvable; when empty, fal is not registered and its routes
+	// are unselectable, so character/pack requests continue to fail closed unless
+	// another real identity-capable provider is configured.
+	FalKey string
 
 	APITokenPepper     string
 	OpenAPIDocsEnabled bool
@@ -92,6 +99,7 @@ func Load() (*Config, error) {
 
 		ImageProvider: Provider(getEnv("IMAGE_PROVIDER", string(ProviderMock))),
 		BFLAPIKey:     getEnv("BFL_API_KEY", ""),
+		FalKey:        getEnv("FAL_KEY", ""),
 
 		APITokenPepper:     getEnv("API_TOKEN_PEPPER", ""),
 		OpenAPIDocsEnabled: getEnvBool("OPENAPI_DOCS_ENABLED", defaultDocsEnabled(env)),
@@ -121,6 +129,9 @@ func (c *Config) AvailableProviders() map[string]bool {
 	available := map[string]bool{string(ProviderMock): true}
 	if c.BFLAPIKey != "" {
 		available[string(ProviderBFL)] = true
+	}
+	if c.FalKey != "" {
+		available[string(ProviderFal)] = true
 	}
 	return available
 }
@@ -153,8 +164,12 @@ func (c *Config) validate() error {
 		if c.BFLAPIKey == "" {
 			missing = append(missing, "BFL_API_KEY")
 		}
+	case ProviderFal:
+		if c.FalKey == "" {
+			missing = append(missing, "FAL_KEY")
+		}
 	default:
-		return fmt.Errorf("invalid IMAGE_PROVIDER %q (expected mock|bfl)", c.ImageProvider)
+		return fmt.Errorf("invalid IMAGE_PROVIDER %q (expected mock|bfl|fal)", c.ImageProvider)
 	}
 
 	if c.PostgresDSN == "" {

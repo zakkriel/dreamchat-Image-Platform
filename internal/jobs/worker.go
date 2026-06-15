@@ -12,6 +12,7 @@ import (
 
 	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/cost"
+	"github.com/zakkriel/drchat-image-platform/internal/identities"
 	"github.com/zakkriel/drchat-image-platform/internal/ids"
 	"github.com/zakkriel/drchat-image-platform/internal/imaging"
 	"github.com/zakkriel/drchat-image-platform/internal/providers"
@@ -25,6 +26,12 @@ const (
 	errorCodeStorageFailure       = "storage_failure"
 	errorCodeProviderUnavailable  = "provider_unavailable"
 	errorCodeInvalidResolvedRoute = "invalid_resolved_route"
+	// errorCodeMissingReference is the terminal failure code when a
+	// reference-conditioned provider is selected for identity/pack generation but
+	// the visual identity has no anchor/reference assets to condition on. The
+	// worker fails the job closed instead of generating a different character
+	// (PRD 03 §8 / recurring-character consistency).
+	errorCodeMissingReference = "missing_reference_assets"
 
 	// deliveryRenderEdge is the square edge (px) the worker asks the provider
 	// to produce so the "final" tier is genuinely higher resolution than the
@@ -54,6 +61,15 @@ type ProviderRegistry interface {
 	Get(providerID string) (providers.ImageProvider, bool)
 }
 
+// IdentityReader is the narrow read view the worker needs to gather a recurring
+// character's reference assets for a reference-conditioned provider. It is
+// satisfied by *identities.Repository; tests supply a fake. Optional/nil-safe:
+// when unset (or the provider does not require references) the worker never
+// gathers references and the existing prompt-only paths are unchanged.
+type IdentityReader interface {
+	GetByIDForTenant(ctx context.Context, id, tenantID string) (identities.VisualIdentity, error)
+}
+
 // WebhookEmitter emits job-lifecycle webhook events (Phase 7C-4). The worker
 // depends on this narrow interface rather than the concrete *webhooks.Emitter
 // so it stays unit-testable (nil in tests; *webhooks.Emitter in production).
@@ -75,6 +91,18 @@ type Worker struct {
 	Storage   storage.Storage
 	Providers ProviderRegistry
 	Logger    *slog.Logger
+
+	// Identities resolves a visual identity's anchor/reference assets so the
+	// worker can build ReferenceURLs for a reference-conditioned provider. Optional
+	// (nil in unit tests that don't exercise reference generation); required in
+	// production when a reference-conditioned provider (e.g. fal) is configured.
+	Identities IdentityReader
+
+	// RefPresignTTL bounds how long the presigned reference image URLs handed to a
+	// reference-conditioned provider stay valid. They are minted at generation time
+	// and consumed within the provider's submit/poll window, so a short TTL is
+	// sufficient. Zero falls back to a built-in default.
+	RefPresignTTL time.Duration
 
 	// Finalizer commits the cost reservation on success and releases it on
 	// terminal failure (docs/architecture/cost-control.md §3 steps 9–10).
@@ -686,6 +714,54 @@ func artifactSlotFor(job Job, p assets.InsertParams) assets.ArtifactSlot {
 		QualityTier:    p.QualityTier,
 		PromptHash:     promptHash,
 	}
+}
+
+// defaultRefPresignTTL bounds reference image URLs when RefPresignTTL is unset.
+// References are minted at generation time and consumed within the provider's
+// submit/poll window, so a few minutes is ample.
+const defaultRefPresignTTL = 10 * time.Minute
+
+// referenceURLsForIdentity gathers the reference image URLs a reference-
+// conditioned provider needs to hold a recurring character: it loads the visual
+// identity, reads its anchor asset ids (the canonical reference set), and mints a
+// presigned, externally-fetchable URL for each anchor's high-res object. The URLs
+// are returned in anchor order.
+//
+// It returns an empty slice (no error) when the identity exists but has no anchor
+// assets — the caller fails the job closed in that case rather than generating a
+// different character. A nil Identities dependency or a missing identity is a
+// real error the caller surfaces. The high-res object key is derived
+// deterministically from the asset id (the same scheme uploadImages writes), so
+// no extra asset read is required; all platform-generated assets are stored as
+// PNG under that scheme.
+func (w *Worker) referenceURLsForIdentity(ctx context.Context, identityID, tenantID string) ([]string, error) {
+	if w.Identities == nil {
+		return nil, fmt.Errorf("worker: identity reader not configured for reference-conditioned generation")
+	}
+	if identityID == "" {
+		return nil, nil
+	}
+	identity, err := w.Identities.GetByIDForTenant(ctx, identityID, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("worker: load identity for references: %w", err)
+	}
+	ttl := w.RefPresignTTL
+	if ttl <= 0 {
+		ttl = defaultRefPresignTTL
+	}
+	urls := make([]string, 0, len(identity.AnchorAssetIds))
+	for _, anchorID := range identity.AnchorAssetIds {
+		if anchorID == "" {
+			continue
+		}
+		key := storage.ObjectKey(anchorID, storage.VariantHigh, "png")
+		signed, err := w.Storage.Presign(ctx, key, ttl)
+		if err != nil {
+			return nil, fmt.Errorf("worker: presign reference asset %q: %w", anchorID, err)
+		}
+		urls = append(urls, signed)
+	}
+	return urls, nil
 }
 
 type uploadedURLs struct {

@@ -13,6 +13,7 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/config"
 	"github.com/zakkriel/drchat-image-platform/internal/cost"
+	"github.com/zakkriel/drchat-image-platform/internal/identities"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
 	"github.com/zakkriel/drchat-image-platform/internal/providers/bootstrap"
 	"github.com/zakkriel/drchat-image-platform/internal/providers/routing"
@@ -86,14 +87,20 @@ func main() {
 	}
 	webhookDeliverer := webhooks.NewDeliverer(webhooksRepo, nil, logger)
 
+	if cfg.FalKey != "" {
+		logger.Info("fal provider registered (reference-conditioned identity/pack)")
+	}
+
 	worker := &jobs.Worker{
-		Jobs:      jobs.NewRepository(pool),
-		Assets:    assets.NewRepository(pool),
-		Storage:   store,
-		Providers: registry,
-		Logger:    logger,
-		Finalizer: cost.NewLifecycle(pool, logger),
-		Webhooks:  webhookEmitter,
+		Jobs:          jobs.NewRepository(pool),
+		Assets:        assets.NewRepository(pool),
+		Storage:       store,
+		Providers:     registry,
+		Logger:        logger,
+		Finalizer:     cost.NewLifecycle(pool, logger),
+		Webhooks:      webhookEmitter,
+		Identities:    identities.NewRepository(pool),
+		RefPresignTTL: cfg.S3PresignTTL,
 	}
 
 	redisOpt := asynq.RedisClientOpt{
