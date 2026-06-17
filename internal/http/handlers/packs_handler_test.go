@@ -421,6 +421,40 @@ func TestPackPassesPackCapability(t *testing.T) {
 	}
 }
 
+// A per-request provider_id is threaded onto the pack resolve request as the
+// HARD pin (ProviderID) and persisted on the payload for observability.
+func TestPackThreadsProviderPreference(t *testing.T) {
+	resolver := okResolver()
+	creator := newStubCreator()
+	router := newPacksRouterWithResolver(creator, seededPackIdentities(), resolver)
+	body := map[string]any{"world_id": packWorldID, "style_profile_id": "sty_ok", "provider_id": "fal"}
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/characters/char_hero/generate-pack",
+		tenantA, []string{"images:write"}, body, nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if resolver.lastReq.ProviderID != "fal" {
+		t.Fatalf("expected ProviderID pin fal, got %q", resolver.lastReq.ProviderID)
+	}
+	if creator.calls[0].InputPayload["requested_provider_id"] != "fal" {
+		t.Fatalf("requested_provider_id not persisted: %+v", creator.calls[0].InputPayload)
+	}
+}
+
+// A pack pinned to a provider not configured in this process fails closed with
+// 422 provider_preference_unavailable before any cost reservation / job create.
+func TestPackUnavailableProviderPreferenceReturns422(t *testing.T) {
+	creator := newStubCreator()
+	router := newPacksRouterWithResolver(creator, seededPackIdentities(), &fakeResolver{err: routing.ErrRequestedProviderUnavailable})
+	body := map[string]any{"world_id": packWorldID, "style_profile_id": "sty_ok", "provider_id": "fal"}
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/characters/char_hero/generate-pack",
+		tenantA, []string{"images:write"}, body, nil)
+	assertError(t, rec, http.StatusUnprocessableEntity, "provider_preference_unavailable")
+	if len(creator.calls) != 0 {
+		t.Fatalf("expected zero service calls on routing failure, got %d", len(creator.calls))
+	}
+}
+
 // Pack generation with an unsupported capability fails 422 before any cost
 // reservation / job create / enqueue.
 func TestPackUnsupportedCapabilityReturns422BeforeWrites(t *testing.T) {

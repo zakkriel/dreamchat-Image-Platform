@@ -5,10 +5,12 @@ import { getScenario, useScenarioSeq } from '../scenario/store'
 import {
   DELIVERY_MODES,
   LATENCY_TIERS,
+  PROVIDER_IDS,
   QUALITY_TIERS,
   type DeliveryMode,
   type GenerationJobAccepted,
   type LatencyTier,
+  type ProviderId,
   type QualityTier,
 } from '../api/types'
 import { Button, Checkbox, Field, JsonBlock, Panel, Select, StatusBanner, TextInput } from './ui'
@@ -22,6 +24,7 @@ export function ArtifactPanel() {
   const [quality, setQuality] = useState<QualityTier | ''>('standard')
   const [latency, setLatency] = useState<LatencyTier | ''>('balanced')
   const [deliveryMode, setDeliveryMode] = useState<DeliveryMode | ''>('final_only')
+  const [providerId, setProviderId] = useState<ProviderId | ''>('')
   const [forceRegenerate, setForceRegenerate] = useState(false)
   const [idempotencyKey, setIdempotencyKey] = useState('')
   const [result, setResult] = useState<ApiResult<GenerationJobAccepted> | null>(null)
@@ -38,6 +41,7 @@ export function ArtifactPanel() {
     if (s.qualityTier !== undefined) setQuality(s.qualityTier)
     if (s.latencyTier !== undefined) setLatency(s.latencyTier)
     if (s.deliveryMode !== undefined) setDeliveryMode(s.deliveryMode)
+    if (s.providerId !== undefined) setProviderId(s.providerId as ProviderId | '')
     if (s.forceRegenerate !== undefined) setForceRegenerate(s.forceRegenerate)
     if (s.idempotencyKey !== undefined) setIdempotencyKey(s.idempotencyKey)
   }, [seq])
@@ -54,6 +58,7 @@ export function ArtifactPanel() {
     if (quality) body.quality_tier = quality
     if (latency) body.latency_tier = latency
     if (deliveryMode) body.delivery_mode = deliveryMode
+    if (providerId) body.provider_id = providerId
     setResult(
       await apiRequest<GenerationJobAccepted>({
         method: 'POST',
@@ -90,6 +95,9 @@ export function ArtifactPanel() {
         </Field>
         <Field label="delivery_mode">
           <Select value={deliveryMode} options={DELIVERY_MODES} onChange={setDeliveryMode} allowEmpty />
+        </Field>
+        <Field label="provider_id (preference)">
+          <Select value={providerId} options={PROVIDER_IDS} onChange={setProviderId} allowEmpty />
         </Field>
         <Field label="idempotency key (header)">
           <TextInput value={idempotencyKey} onChange={setIdempotencyKey} placeholder="optional" />

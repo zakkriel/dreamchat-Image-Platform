@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -158,6 +159,16 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 	// two-phase lifecycle. Default/final_only is the unchanged Phase 7A path.
 	previewFirst := req.DeliveryMode != nil && *req.DeliveryMode == apigen.PreviewFirst
 
+	// Per-request provider preference (provider_id): a HARD routing pin validated
+	// by the resolver (must be a configured provider AND able to serve this
+	// scene/artifact operation), not a silent tie-break. Empty/absent preserves
+	// the deployment-default route resolution. Trimmed so a stray "" is treated as
+	// absent.
+	requestedProvider := ""
+	if req.ProviderId != nil {
+		requestedProvider = strings.TrimSpace(*req.ProviderId)
+	}
+
 	payload := map[string]any{
 		"artifact_id":      artifactID,
 		"world_id":         req.WorldId,
@@ -166,6 +177,12 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		"fallback_policy":  fallback,
 		"quality_tier":     qualityTier,
 		"prompt_hash":      renderHash,
+	}
+	// Persist the requested provider preference for observability (what the caller
+	// asked for, alongside the resolved provider applyResolvedRoute stamps). Only
+	// set when present, so a default request's payload keeps its prior shape.
+	if requestedProvider != "" {
+		payload["requested_provider_id"] = requestedProvider
 	}
 	if req.LatencyTier != nil {
 		payload["latency_tier"] = string(*req.LatencyTier)
@@ -239,6 +256,7 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		LatencyTier:        latencyTier,
 		RequiredCapability: capabilitySceneCapable,
 		ProviderPreference: h.ProviderPreference,
+		ProviderID:         requestedProvider,
 	}
 	// Phase 7B: preview_first is a HARD true_preview requirement. If no enabled
 	// true_preview route can serve the request the resolver returns

@@ -45,6 +45,14 @@ const (
 	CodeUnsupportedCapability       = "unsupported_capability"
 	CodeProviderUnavailableForRoute = "provider_unavailable_for_route"
 
+	// CodeProviderPreferenceUnavailable surfaces (HTTP 422) when a request pins a
+	// provider via provider_id (the per-request provider preference) that is not
+	// configured/available in this process. Distinct from
+	// provider_unavailable_for_route (a route's provider not being wired): here the
+	// caller named a provider the deployment does not run, so the request fails
+	// closed instead of silently resolving the default provider.
+	CodeProviderPreferenceUnavailable = "provider_preference_unavailable"
+
 	// Provider capability reconciliation (PRD 03 §8). Surfaces as HTTP 422: a
 	// route matched the request but its provider adapter cannot actually back the
 	// capability the route claims (config drift), so the platform fails closed

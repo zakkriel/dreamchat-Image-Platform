@@ -18,8 +18,11 @@ export function VisualIdentityPanel() {
   const [consistencyKey, setConsistencyKey] = useState('')
   const [traitsError, setTraitsError] = useState<string | null>(null)
 
+  const [anchorIds, setAnchorIds] = useState('')
+
   const [createResult, setCreateResult] = useState<ApiResult<VisualIdentity> | null>(null)
   const [getResult, setGetResult] = useState<ApiResult<VisualIdentity> | null>(null)
+  const [attachResult, setAttachResult] = useState<ApiResult<VisualIdentity> | null>(null)
 
   const seq = useScenarioSeq()
   useEffect(() => {
@@ -36,7 +39,17 @@ export function VisualIdentityPanel() {
     }
     if (s.styleProfileId !== undefined) setStyleProfileId(s.styleProfileId)
     if (s.consistencyKey !== undefined) setConsistencyKey(s.consistencyKey)
+    if (s.anchorAssetIds !== undefined) setAnchorIds(s.anchorAssetIds.join('\n'))
   }, [seq])
+
+  // Anchor ids are entered comma- or newline-separated; split, trim, drop empties.
+  function parseAnchorIds(raw: string): string[] {
+    return raw
+      .split(/[\n,]/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+  }
+  const parsedAnchorIds = parseAnchorIds(anchorIds)
 
   const effectiveStyle = styleProfileId || cfg.activeStyleId
   const basePath = entity === 'character' ? 'characters' : 'places'
@@ -84,6 +97,19 @@ export function VisualIdentityPanel() {
       query: { world_id: worldId },
     })
     setGetResult(res)
+    if (res.data) rememberActive(res.data)
+  }
+
+  // Attach reference (anchor) assets to the identity (ADR-017). Replaces the
+  // existing anchor set; the response is the updated identity carrying
+  // anchor_asset_ids, which the fal pack route requires.
+  async function attachAnchors() {
+    const res = await apiRequest<VisualIdentity>({
+      method: 'POST',
+      path: `/v1/${basePath}/${encodeURIComponent(ownerId)}/visual-identity/anchors`,
+      body: { world_id: worldId, anchor_asset_ids: parsedAnchorIds },
+    })
+    setAttachResult(res)
     if (res.data) rememberActive(res.data)
   }
 
@@ -155,6 +181,34 @@ export function VisualIdentityPanel() {
       <JsonBlock label="created/updated identity" value={createResult?.data} />
       <StatusBanner result={getResult} />
       <JsonBlock label="fetched identity" value={getResult?.data} />
+
+      <div className="subpanel">
+        <h3>Attach anchor (reference) assets</h3>
+        <p className="muted note">
+          Sets the identity's <code>anchor_asset_ids</code> (ADR-017) — the reference images a
+          reference-conditioned provider (e.g. fal) uses to hold a recurring character. Each id must be
+          a <strong>ready</strong>, tenant-owned asset with a high-res object. Generate a portrait first
+          (panel 4), then paste its asset id here. Replaces the existing anchor set.
+        </p>
+        <Field label="anchor_asset_ids (comma or newline separated)">
+          <TextArea
+            value={anchorIds}
+            onChange={setAnchorIds}
+            rows={3}
+            placeholder={'asset_abc123\nasset_def456'}
+          />
+        </Field>
+        <div className="row">
+          <Button onClick={() => void attachAnchors()} disabled={parsedAnchorIds.length === 0}>
+            POST /v1/{basePath}/{'{id}'}/visual-identity/anchors
+          </Button>
+          {parsedAnchorIds.length > 0 && (
+            <span className="muted">→ {parsedAnchorIds.length} anchor id(s)</span>
+          )}
+        </div>
+        <StatusBanner result={attachResult} />
+        <JsonBlock label="identity after attach" value={attachResult?.data} />
+      </div>
     </Panel>
   )
 }

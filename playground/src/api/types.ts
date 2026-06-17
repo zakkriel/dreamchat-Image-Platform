@@ -15,6 +15,10 @@ export type AssetType =
   | 'angle_variant'
 export type StyleMode = 'open_prompt' | 'preset_style' | 'creator_style' | 'provider_native'
 export type MatchType = 'exact_match' | 'compatible_match' | 'preview_fallback' | 'generated_required'
+// Per-request provider preference (provider_id). The configured set is
+// deployment-dependent; these are the providers wired today. Empty means "use
+// the deployment default route resolution".
+export type ProviderId = 'bfl' | 'fal' | 'mock'
 
 export const QUALITY_TIERS: QualityTier[] = ['draft', 'standard', 'high']
 export const LATENCY_TIERS: LatencyTier[] = ['fast', 'balanced', 'quality']
@@ -39,6 +43,7 @@ export const STYLE_MODES: StyleMode[] = [
   'creator_style',
   'provider_native',
 ]
+export const PROVIDER_IDS: ProviderId[] = ['bfl', 'fal', 'mock']
 
 export interface StyleProfile {
   id: string

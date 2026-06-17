@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "name": "Seren recurring-character (BFL anchor → fal pack)",
+  "connection": {
+    "baseUrl": "/api"
+  },
+  "style": {
+    "name": "Seren Storybook",
+    "styleMode": "open_prompt",
+    "positivePrompt": "clean flat illustration, soft lighting, storybook portrait",
+    "negativePrompt": "harsh shadows, photorealistic",
+    "defaultQualityTier": "standard"
+  },
+  "visualIdentity": {
+    "ownerType": "character",
+    "worldId": "world_seren",
+    "ownerId": "character_seren",
+    "displayName": "Seren",
+    "canonicalVisualTraits": {
+      "hair": "silver, shoulder-length",
+      "eyes": "pale blue",
+      "outfit": "teal traveler's cloak"
+    },
+    "consistencyKey": ""
+  },
+  "artifact": {
+    "artifactId": "artifact_seren_anchor",
+    "worldId": "world_seren",
+    "description": "front-facing portrait of Seren, silver hair, pale blue eyes, teal cloak",
+    "qualityTier": "standard",
+    "providerId": "bfl"
+  },
+  "pack": {
+    "character": {
+      "entityId": "character_seren",
+      "worldId": "world_seren",
+      "packTemplate": "character_minimal_portrait_pack",
+      "qualityTier": "standard",
+      "providerId": "fal"
+    }
+  }
+}

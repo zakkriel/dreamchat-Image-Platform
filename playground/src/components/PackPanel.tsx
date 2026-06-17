@@ -2,7 +2,13 @@ import { useEffect, useState } from 'react'
 import { apiRequest, type ApiResult } from '../api/client'
 import { useConfig } from '../state/config'
 import { getScenario, useScenarioSeq } from '../scenario/store'
-import { QUALITY_TIERS, type GenerationJobAccepted, type QualityTier } from '../api/types'
+import {
+  PROVIDER_IDS,
+  QUALITY_TIERS,
+  type GenerationJobAccepted,
+  type ProviderId,
+  type QualityTier,
+} from '../api/types'
 import { Button, Checkbox, Field, JsonBlock, Panel, Select, StatusBanner, TextInput } from './ui'
 
 interface PackFormProps {
@@ -23,6 +29,7 @@ function PackForm({ kind, defaultEntityId, defaultTemplate, activeStyleId, activ
   const [styleProfileId, setStyleProfileId] = useState('')
   const [packTemplate, setPackTemplate] = useState(defaultTemplate)
   const [quality, setQuality] = useState<QualityTier | ''>('standard')
+  const [providerId, setProviderId] = useState<ProviderId | ''>('')
   const [forceRegenerate, setForceRegenerate] = useState(false)
   const [result, setResult] = useState<ApiResult<GenerationJobAccepted> | null>(null)
 
@@ -36,6 +43,7 @@ function PackForm({ kind, defaultEntityId, defaultTemplate, activeStyleId, activ
     if (s.styleProfileId !== undefined) setStyleProfileId(s.styleProfileId)
     if (s.packTemplate !== undefined) setPackTemplate(s.packTemplate)
     if (s.qualityTier !== undefined) setQuality(s.qualityTier)
+    if (s.providerId !== undefined) setProviderId(s.providerId as ProviderId | '')
     if (s.forceRegenerate !== undefined) setForceRegenerate(s.forceRegenerate)
   }, [seq, kind])
 
@@ -56,6 +64,7 @@ function PackForm({ kind, defaultEntityId, defaultTemplate, activeStyleId, activ
     }
     if (packTemplate) body.pack_template = packTemplate
     if (quality) body.quality_tier = quality
+    if (providerId) body.provider_id = providerId
     setResult(
       await apiRequest<GenerationJobAccepted>({
         method: 'POST',
@@ -89,6 +98,9 @@ function PackForm({ kind, defaultEntityId, defaultTemplate, activeStyleId, activ
         </Field>
         <Field label="quality_tier">
           <Select value={quality} options={QUALITY_TIERS} onChange={setQuality} allowEmpty />
+        </Field>
+        <Field label="provider_id (preference)">
+          <Select value={providerId} options={PROVIDER_IDS} onChange={setProviderId} allowEmpty />
         </Field>
       </div>
       <div className="row">

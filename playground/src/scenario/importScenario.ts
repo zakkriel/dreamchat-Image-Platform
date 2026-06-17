@@ -77,6 +77,17 @@ class Checker {
     return v
   }
 
+  // An array all of whose elements are strings.
+  strArray(obj: Record<string, unknown>, field: string): string[] | undefined {
+    const v = obj[field]
+    if (v === undefined) return undefined
+    if (!Array.isArray(v) || v.some((e) => typeof e !== 'string')) {
+      this.errors.push(`${this.at(field)} must be an array of strings`)
+      return undefined
+    }
+    return v as string[]
+  }
+
   obj(obj: Record<string, unknown>, field: string): Record<string, unknown> | undefined {
     const v = obj[field]
     if (v === undefined) return undefined
@@ -234,6 +245,7 @@ export function importScenario(text: string): ImportResult {
         'canonicalVisualTraits',
         'styleProfileId',
         'consistencyKey',
+        'anchorAssetIds',
       ])
       const section = {
         ownerType: c.enumStrict(raw.visualIdentity, 'ownerType', PACK_ENTITIES),
@@ -243,6 +255,7 @@ export function importScenario(text: string): ImportResult {
         canonicalVisualTraits: c.obj(raw.visualIdentity, 'canonicalVisualTraits'),
         styleProfileId: c.str(raw.visualIdentity, 'styleProfileId'),
         consistencyKey: c.str(raw.visualIdentity, 'consistencyKey'),
+        anchorAssetIds: c.strArray(raw.visualIdentity, 'anchorAssetIds'),
       }
       errors.push(...c.errors)
       scenario.visualIdentity = {}
@@ -263,6 +276,7 @@ export function importScenario(text: string): ImportResult {
         'qualityTier',
         'latencyTier',
         'deliveryMode',
+        'providerId',
         'forceRegenerate',
         'idempotencyKey',
       ])
@@ -274,6 +288,7 @@ export function importScenario(text: string): ImportResult {
         qualityTier: c.enum(raw.artifact, 'qualityTier', QUALITY_TIERS),
         latencyTier: c.enum(raw.artifact, 'latencyTier', LATENCY_TIERS),
         deliveryMode: c.enum(raw.artifact, 'deliveryMode', DELIVERY_MODES),
+        providerId: c.str(raw.artifact, 'providerId'),
         forceRegenerate: c.bool(raw.artifact, 'forceRegenerate'),
         idempotencyKey: c.str(raw.artifact, 'idempotencyKey'),
       }
@@ -304,6 +319,7 @@ export function importScenario(text: string): ImportResult {
           'styleProfileId',
           'packTemplate',
           'qualityTier',
+          'providerId',
           'forceRegenerate',
         ])
         const section = {
@@ -312,6 +328,7 @@ export function importScenario(text: string): ImportResult {
           styleProfileId: ec.str(sub, 'styleProfileId'),
           packTemplate: ec.str(sub, 'packTemplate'),
           qualityTier: ec.enum(sub, 'qualityTier', QUALITY_TIERS),
+          providerId: ec.str(sub, 'providerId'),
           forceRegenerate: ec.bool(sub, 'forceRegenerate'),
         }
         errors.push(...ec.errors)
