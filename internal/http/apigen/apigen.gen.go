@@ -627,6 +627,12 @@ type GenerateArtifactRequest struct {
 	// LatencyTier Latency preference for provider routing.
 	LatencyTier *LatencyTier `json:"latency_tier,omitempty"`
 
+	// ProviderId Optional per-request provider preference. See
+	// GenerateCharacterPackRequest.provider_id for semantics. Artifact
+	// generation requests `scene_capable`, so pinning `bfl` resolves the
+	// BFL scene route; pinning a pack-only provider fails closed.
+	ProviderId *string `json:"provider_id,omitempty"`
+
 	// QualityTier Output quality tier requested for generation.
 	QualityTier    *QualityTier `json:"quality_tier,omitempty"`
 	StyleProfileId string       `json:"style_profile_id"`
@@ -665,6 +671,22 @@ type GenerateCharacterPackRequest struct {
 	// rejected with `400 invalid_request`.
 	PackTemplate *string `json:"pack_template,omitempty"`
 
+	// ProviderId Optional per-request provider preference. When set, route
+	// resolution is pinned to this provider id (e.g. `fal`, `bfl`,
+	// `mock`) instead of the deployment-wide `IMAGE_PROVIDER` default,
+	// so a single deployment can serve a BFL anchor and a fal pack
+	// without changing environment variables. It is a HARD preference,
+	// validated before cost reservation:
+	// * the provider must be configured/available in this process,
+	//   else `422 provider_preference_unavailable`;
+	// * the provider must have an active route that satisfies the
+	//   operation and required capability, else the matching
+	//   `422 no_route` / `unsupported_capability`.
+	// It never silently falls back to a different provider — pinning a
+	// scene-only provider (e.g. `bfl`) to a pack request fails closed.
+	// Omit it to keep the existing default route resolution.
+	ProviderId *string `json:"provider_id,omitempty"`
+
 	// QualityTier Output quality tier requested for generation.
 	QualityTier    *QualityTier `json:"quality_tier,omitempty"`
 	StyleProfileId string       `json:"style_profile_id"`
@@ -691,6 +713,12 @@ type GeneratePlacePackRequest struct {
 	// GenerateCharacterPackRequest.pack_template for precedence and
 	// error semantics; the custom pack type is `place_custom_pack`.
 	PackTemplate *string `json:"pack_template,omitempty"`
+
+	// ProviderId Optional per-request provider preference. See
+	// GenerateCharacterPackRequest.provider_id for semantics; place
+	// packs also request `pack_capable` and resolve the same
+	// reference-conditioned route.
+	ProviderId *string `json:"provider_id,omitempty"`
 
 	// QualityTier Output quality tier requested for generation.
 	QualityTier    *QualityTier `json:"quality_tier,omitempty"`

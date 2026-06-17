@@ -142,8 +142,8 @@ fields you include are applied.
 | `connection` | Connection | `baseUrl`; `token` / `adminToken` only when explicitly present |
 | `style` | Styles | `name`, `styleMode`, `positivePrompt`, `negativePrompt`, `defaultQualityTier` |
 | `visualIdentity` | Visual identity | `ownerType` (`character`\|`place`), `worldId`, `ownerId`, `displayName`, `canonicalVisualTraits` (object), `styleProfileId`, `consistencyKey` |
-| `artifact` | Artifact generation | `artifactId`, `worldId`, `styleProfileId`, `description`, `qualityTier`, `latencyTier`, `deliveryMode`, `forceRegenerate`, `idempotencyKey` |
-| `pack` | Pack generation | `character` / `place` objects with `entityId`, `worldId`, `styleProfileId`, `packTemplate`, `qualityTier`, `forceRegenerate` |
+| `artifact` | Artifact generation | `artifactId`, `worldId`, `styleProfileId`, `description`, `qualityTier`, `latencyTier`, `deliveryMode`, `providerId`, `forceRegenerate`, `idempotencyKey` |
+| `pack` | Pack generation | `character` / `place` objects with `entityId`, `worldId`, `styleProfileId`, `packTemplate`, `qualityTier`, `providerId`, `forceRegenerate` |
 | `assetSearch` | Asset search | `worldId`, `ownerType`, `visualIdentityId`, `variantKey`, `styleProfileId`, `stateVersion` (int), `qualityTier`, `fallbackPolicy` |
 | `webhook` | Webhook endpoint | `url` |
 | `admin` | Admin job controls | `jobId` |
@@ -224,6 +224,32 @@ After importing this scenario, the Connection panel shows base URL `/api` (token
 fields untouched), and the Styles, Visual identity, Artifact generation, Pack
 generation, Asset search, Webhook endpoint, and Admin job controls panels are
 pre-filled. Press each panel's button to drive the API as usual.
+
+### Per-request provider preference (`providerId`)
+
+Both the Artifact and Pack panels expose an optional **`provider_id` (preference)**
+select. It maps to the request body's `provider_id` field, which pins route
+resolution to a single provider **for that one request** instead of the
+deployment-wide `IMAGE_PROVIDER` default. This is what lets one stable
+deployment generate a **BFL** anchor portrait and then a **fal** character pack
+without touching any Railway variable.
+
+- It is a **hard** preference, validated before cost reservation:
+  - an unconfigured provider → `422 provider_preference_unavailable`;
+  - a provider with no route for the operation/capability → `422 no_route` /
+    `unsupported_capability`.
+- It never silently falls back. Pinning a scene-only provider (e.g. `bfl`) to a
+  pack request fails closed rather than quietly resolving fal/mock.
+- Leave it unset (`(unset)`) to keep the existing default route resolution.
+
+The committed [`examples/seren-recurring-character.json`](examples/seren-recurring-character.json)
+sample demonstrates the recurring-character flow end to end: the **artifact**
+section pins `providerId: "bfl"` (the Seren anchor portrait) and the
+**character pack** section pins `providerId: "fal"` (the reference-conditioned
+pack). Import it, generate the anchor, attach it as the character's anchor asset
+(Visual identity panel), then generate the pack — all against a deployment whose
+`IMAGE_PROVIDER` never changes. See
+[`docs/runbooks/railway-real-image-smoke-test.md`](../docs/runbooks/railway-real-image-smoke-test.md) §9.
 
 ## Sample assets without generating
 

@@ -54,6 +54,9 @@ export interface ArtifactScenario {
   qualityTier?: QualityTier | ''
   latencyTier?: LatencyTier | ''
   deliveryMode?: DeliveryMode | ''
+  // Optional per-request provider preference (provider_id). Free string so it
+  // stays deployment-agnostic; the panel renders it as a select of known providers.
+  providerId?: string
   forceRegenerate?: boolean
   idempotencyKey?: string
 }
@@ -64,6 +67,8 @@ export interface PackEntityScenario {
   styleProfileId?: string
   packTemplate?: string
   qualityTier?: QualityTier | ''
+  // Optional per-request provider preference (provider_id) for this pack kind.
+  providerId?: string
   forceRegenerate?: boolean
 }
 

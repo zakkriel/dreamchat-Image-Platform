@@ -493,6 +493,61 @@ func TestArtifactGeneratePassesSceneCapability(t *testing.T) {
 	}
 }
 
+// A per-request provider_id is threaded onto the resolve request as the HARD
+// pin (ProviderID) and persisted on the payload for observability, without
+// disturbing the soft deployment preference.
+func TestArtifactGenerateThreadsProviderPreference(t *testing.T) {
+	resolver := okResolver()
+	creator := newStubCreator()
+	router := newArtifactsRouterWithResolver(creator, seededStyles(), resolver, "mock", nil)
+	body := map[string]any{"world_id": "w1", "style_profile_id": "sty_ok", "description": "x", "provider_id": "bfl"}
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/artifacts/art_1/generate", tenantA, []string{"images:write"}, body, nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if resolver.lastReq.ProviderID != "bfl" {
+		t.Fatalf("expected ProviderID pin bfl, got %q", resolver.lastReq.ProviderID)
+	}
+	// The soft deployment preference is unchanged by the per-request pin.
+	if resolver.lastReq.ProviderPreference != "mock" {
+		t.Fatalf("expected soft preference mock preserved, got %q", resolver.lastReq.ProviderPreference)
+	}
+	if creator.calls[0].InputPayload["requested_provider_id"] != "bfl" {
+		t.Fatalf("requested_provider_id not persisted: %+v", creator.calls[0].InputPayload)
+	}
+}
+
+// An absent provider_id leaves the pin empty and omits requested_provider_id —
+// byte-for-byte the prior default-resolution payload shape.
+func TestArtifactGenerateNoProviderPreferencePreservesDefault(t *testing.T) {
+	resolver := okResolver()
+	creator := newStubCreator()
+	router := newArtifactsRouterWithResolver(creator, seededStyles(), resolver, "mock", nil)
+	body := map[string]any{"world_id": "w1", "style_profile_id": "sty_ok", "description": "x"}
+	if rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/artifacts/art_1/generate", tenantA, []string{"images:write"}, body, nil); rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if resolver.lastReq.ProviderID != "" {
+		t.Fatalf("expected empty ProviderID pin, got %q", resolver.lastReq.ProviderID)
+	}
+	if _, ok := creator.calls[0].InputPayload["requested_provider_id"]; ok {
+		t.Fatalf("requested_provider_id should be absent when no provider_id given: %+v", creator.calls[0].InputPayload)
+	}
+}
+
+// A request pinning a provider not configured in this process fails closed with
+// 422 provider_preference_unavailable, not a silent fallback.
+func TestArtifactGenerateUnavailableProviderPreferenceReturns422(t *testing.T) {
+	creator := newStubCreator()
+	router := newArtifactsRouterWithResolver(creator, seededStyles(), &fakeResolver{err: routing.ErrRequestedProviderUnavailable}, "mock", nil)
+	body := map[string]any{"world_id": "w1", "style_profile_id": "sty_ok", "description": "x", "provider_id": "fal"}
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/artifacts/art_1/generate", tenantA, []string{"images:write"}, body, nil)
+	assertError(t, rec, http.StatusUnprocessableEntity, "provider_preference_unavailable")
+	if len(creator.calls) != 0 {
+		t.Fatalf("expected no create call on routing failure, got %d", len(creator.calls))
+	}
+}
+
 // An unsupported capability fails 422 before any cost reservation / job create.
 func TestArtifactGenerateUnsupportedCapabilityReturns422BeforeWrites(t *testing.T) {
 	creator := newStubCreator()

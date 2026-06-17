@@ -44,6 +44,12 @@ var (
 	// configured for the requested capability): here a route exists but its
 	// provider cannot back the capability it claims.
 	ErrRouteProviderCapabilityMismatch = errors.New("routing: route requires a capability its provider does not support")
+	// ErrRequestedProviderUnavailable: the request pinned a specific provider
+	// (ProviderID, the per-request hard preference) that is not configured/
+	// available in this process. Unlike the soft ProviderPreference tie-break, a
+	// requested provider fails closed (clear 422) rather than silently resolving a
+	// different provider.
+	ErrRequestedProviderUnavailable = errors.New("routing: requested provider is not configured/available")
 )
 
 // ResolveRequest is the routing input derived from a generation request.
@@ -65,6 +71,15 @@ type ResolveRequest struct {
 	// others during tie-break (e.g. from IMAGE_PROVIDER). It is a preference, not
 	// a hard filter: an unavailable preferred provider is simply skipped.
 	ProviderPreference string
+	// ProviderID, when non-empty, pins resolution to a single provider (the
+	// per-request provider preference, e.g. from a request's provider_id field).
+	// Unlike ProviderPreference it is a HARD filter that fails closed: an
+	// unavailable provider returns ErrRequestedProviderUnavailable, and a provider
+	// whose routes cannot satisfy the operation/capability returns the matching
+	// no_route/unsupported_capability error rather than silently resolving a
+	// different provider. This lets a caller force the BFL scene route or the fal
+	// pack route per request without changing the deployment-wide default.
+	ProviderID string
 }
 
 // ResolvedRoute is the single route chosen for a request.
@@ -155,6 +170,7 @@ func (r *Resolver) WithSyntheticIdentityAllowed(allow bool) *Resolver {
 // Filter / tie-break precedence (explicit and tested):
 //
 //	active route + active model + operation match   (hard filter; else no_route)
+//	requested provider pin (when given)              (hard filter; else requested_provider_unavailable / no_route)
 //	provider availability                            (hard filter; else provider_unavailable_for_route)
 //	quality tier match (when requested)              (hard filter; else no_route)
 //	required_capability match (when requested)       (hard filter; else unsupported_capability)
@@ -235,6 +251,7 @@ func (r *Resolver) ResolveChain(ctx context.Context, req ResolveRequest) ([]Reso
 // Filter / tie-break precedence (explicit and tested):
 //
 //	active route + active model + operation match   (hard filter; else no_route)
+//	requested provider pin (when given)              (hard filter; else requested_provider_unavailable / no_route)
 //	provider availability                            (hard filter; else provider_unavailable_for_route)
 //	quality tier match (when requested)              (hard filter; else no_route)
 //	required_capability match (when requested)       (hard filter; else unsupported_capability)
@@ -255,6 +272,33 @@ func (r *Resolver) candidates(ctx context.Context, req ResolveRequest) ([]Route,
 	}
 	if len(active) == 0 {
 		return nil, ErrNoRoute
+	}
+
+	// Stage 1b: requested provider hard filter (per-request provider preference).
+	// A request-level ProviderID is a HARD constraint, distinct from the soft
+	// ProviderPreference tie-break: the request fails closed with a clear error
+	// rather than silently resolving a different provider. The provider must be
+	// configured/available in this process AND have an active route that survives
+	// the operation/quality/capability filters below. Capability is still matched
+	// EXACTLY downstream, so pinning a provider can never make a request resolve a
+	// route for a capability it did not ask for (e.g. an artifact/scene request
+	// pinned to fal does not resolve fal's pack route — it fails closed instead).
+	if req.ProviderID != "" {
+		if !r.available[req.ProviderID] {
+			return nil, ErrRequestedProviderUnavailable
+		}
+		pinned := make([]Route, 0, len(active))
+		for _, rt := range active {
+			if rt.ProviderID == req.ProviderID {
+				pinned = append(pinned, rt)
+			}
+		}
+		if len(pinned) == 0 {
+			// The provider is configured but has no active route for this
+			// operation at all → no route can serve the request.
+			return nil, ErrNoRoute
+		}
+		active = pinned
 	}
 
 	// Stage 2: provider availability. A route whose provider is not configured

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -285,6 +286,16 @@ func (h *PacksHandler) generate(w http.ResponseWriter, r *http.Request, kind pac
 	// carries only job_id (same contract as artifacts). variant_keys stays the
 	// FULL required role set: the worker's existing-items skip then naturally
 	// generates only the roles not already present as reused asset_pack_items.
+	// Per-request provider preference (provider_id): a HARD routing pin validated
+	// by the resolver (must be a configured provider AND pack_capable), not a
+	// silent tie-break. A pack pinned to a scene-only provider (e.g. bfl) fails
+	// closed 422 rather than resolving the fal/mock pack route. Empty/absent
+	// preserves deployment-default resolution.
+	requestedProvider := ""
+	if req.ProviderId != nil {
+		requestedProvider = strings.TrimSpace(*req.ProviderId)
+	}
+
 	payload := map[string]any{
 		kind.payloadIDKey:    ownerID,
 		"world_id":           req.WorldId,
@@ -293,6 +304,11 @@ func (h *PacksHandler) generate(w http.ResponseWriter, r *http.Request, kind pac
 		"visual_identity_id": identity.ID,
 		"display_name":       identity.DisplayName,
 		"fallback_policy":    fallback,
+	}
+	// Persist the requested provider preference for observability (alongside the
+	// resolved provider applyResolvedRoute stamps). Only when present.
+	if requestedProvider != "" {
+		payload["requested_provider_id"] = requestedProvider
 	}
 	if req.QualityTier != nil {
 		payload["quality_tier"] = quality
@@ -386,6 +402,7 @@ func (h *PacksHandler) generate(w http.ResponseWriter, r *http.Request, kind pac
 		LatencyTier:        latencyTier,
 		RequiredCapability: capabilityPackCapable,
 		ProviderPreference: h.ProviderPreference,
+		ProviderID:         requestedProvider,
 	}
 	resolved, err := h.Resolver.Resolve(r.Context(), resolveReq)
 	if err != nil {

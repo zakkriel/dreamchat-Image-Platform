@@ -83,9 +83,9 @@ reference with `${{ Postgres.DATABASE_URL }}` style references.
 | `S3_SECRET_ACCESS_KEY` | ✅ | ✅ | |
 | `S3_USE_PATH_STYLE` | ✅ | ✅ | `true` for MinIO/most non-AWS providers; `false` for AWS S3 virtual-hosted style. |
 | `S3_PRESIGN_TTL` | ✅ | ✅ | Presigned read-URL lifetime, e.g. `15m`. Make it generous enough to click. |
-| `IMAGE_PROVIDER` | ✅ | ✅ | **`bfl`** for the scene/artifact smoke test; **`fal`** to prefer the reference-conditioned provider for character packs. |
-| `BFL_API_KEY` | ✅ | ✅ | Black Forest Labs API key. Required when `IMAGE_PROVIDER=bfl`. |
-| `FAL_KEY` | ⚠️ | ⚠️ | fal.ai API key. Required when `IMAGE_PROVIDER=fal`; set it (on both services) to smoke-test recurring-character **pack** generation — see §9. |
+| `IMAGE_PROVIDER` | ✅ | ✅ | Deployment-wide **default** route preference. Keep it at a safe default such as **`bfl`** (scene/artifact) for the whole smoke test. You do **not** flip it to run the fal pack: pass a per-request `provider_id` instead (see §9). The default still applies to any request that omits `provider_id`. |
+| `BFL_API_KEY` | ✅ | ✅ | Black Forest Labs API key. Required for the BFL scene route (the §6 smoke test and the §9 anchor). |
+| `FAL_KEY` | ⚠️ | ⚠️ | fal.ai API key. Set it (on **both** services) to make the fal `pack_capable` route resolvable; the §9 pack smoke then selects fal **per request** via `provider_id: "fal"` — no `IMAGE_PROVIDER` change. Without it the fal route is unselectable and packs fail closed. |
 | `API_TOKEN_PEPPER` | ✅ | ✅ | Must be **identical** on both services and on the seed-token run, or auth fails. |
 | `OPENAPI_DOCS_ENABLED` | ✅ | – | `true` for the smoke test. |
 
@@ -377,8 +377,12 @@ hold a recurring character from **reference images**.
 
 Prerequisites, in addition to §2:
 
-- `FAL_KEY` set on **both** API and worker; `IMAGE_PROVIDER=fal` (so the resolver
-  prefers fal for `pack_capable`). Leave `ALLOW_SYNTHETIC_PROVIDERS=false`.
+- `FAL_KEY` set on **both** API and worker so the fal `pack_capable` route is
+  resolvable. **Leave `IMAGE_PROVIDER` at its safe default (e.g. `bfl`)** — do
+  **not** switch it to `fal`. The pack request below selects fal explicitly with
+  a per-request `provider_id: "fal"`, so the same deployment serves the BFL
+  anchor (§6 / step 2 below) and the fal pack with no Railway variable change.
+  Leave `ALLOW_SYNTHETIC_PROVIDERS=false`.
 - A visual identity with at least one **anchor asset** (`anchor_asset_ids`). The
   worker loads each anchor, validates it (tenant/ready/high-res), presigns its
   high-res object, and passes it to fal as `image_urls`. **An identity with no
@@ -390,16 +394,49 @@ Steps (no manual SQL):
 
 1. Create the character visual identity:
    `POST /v1/characters/{character_id}/visual-identity`.
-2. Generate at least one portrait of the character (an artifact/pack job) so a
-   ready asset with a high-res object exists, then attach it as an anchor:
+2. Generate at least one portrait of the character so a ready asset with a
+   high-res object exists. Pin it to BFL with a per-request `provider_id`:
+
+   ```bash
+   curl -sS -X POST "$API/v1/artifacts/seren-anchor-1/generate" \
+     -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+     -d "{
+       \"world_id\": \"world_seren\",
+       \"style_profile_id\": \"$STYLE_ID\",
+       \"description\": \"front-facing portrait of Seren, silver hair, teal cloak\",
+       \"quality_tier\": \"standard\",
+       \"provider_id\": \"bfl\"
+     }"
+   ```
+
+   Then attach the ready asset as an anchor:
    `POST /v1/characters/{character_id}/visual-identity/anchors`
    with `{ "world_id": "...", "anchor_asset_ids": ["<asset_id>"] }`. A non-ready,
    foreign, or high-res-less asset is rejected `422 invalid_anchor_asset`.
-3. `POST /v1/characters/{character_id}/generate-pack` with a `world_id` and
-   `style_profile_id` (see `docs/api/jobs.md`). The route resolves to
-   `route_fal_text_to_image_pack`.
+3. Generate the pack, selecting fal **per request** (no `IMAGE_PROVIDER` change):
+
+   ```bash
+   curl -sS -X POST "$API/v1/characters/{character_id}/generate-pack" \
+     -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+     -d "{
+       \"world_id\": \"world_seren\",
+       \"style_profile_id\": \"$STYLE_ID\",
+       \"provider_id\": \"fal\"
+     }"
+   ```
+
+   With `provider_id: "fal"` the route resolves to `route_fal_text_to_image_pack`.
+   Pinning a scene-only provider here (e.g. `provider_id: "bfl"`) fails closed
+   with `422 unsupported_capability` — it never silently resolves a different
+   provider.
 4. Poll the job (§6.4) and fetch pack items; confirm the rendered roles are the
    **same character** in different poses/roles (consistency is the whole point).
+
+> **Playground equivalent.** Import
+> [`playground/examples/seren-recurring-character.json`](../../playground/examples/seren-recurring-character.json):
+> its artifact section pins `providerId: "bfl"` and its character-pack section
+> pins `providerId: "fal"`, so you can drive this whole flow from the Artifact
+> and Pack panels without editing the request bodies by hand.
 
 Failure triage:
 
@@ -407,8 +444,10 @@ Failure triage:
   the anchors endpoint. The worker never silently generates a different character.
 - `invalid_reference_asset` → an attached anchor is stale/non-ready/foreign or has
   no high-res object; re-attach a valid ready asset.
-- The fal route never selected (request fails closed / resolves mock) → `FAL_KEY`
-  not set on the **worker/API**, or `IMAGE_PROVIDER` not `fal`.
+- The fal route never selected (request fails closed) → `FAL_KEY` not set on the
+  **worker/API** (so the fal route is unavailable → `422 provider_preference_unavailable`
+  when pinned), or the request omitted `provider_id: "fal"` while
+  `IMAGE_PROVIDER` is not fal (so the default route was used instead).
 - fal `provider_failure` → check worker logs for the fal status/result; a presign
   TTL shorter than the provider backlog can make `image_urls` 403 (raise
   `S3_PRESIGN_TTL`).

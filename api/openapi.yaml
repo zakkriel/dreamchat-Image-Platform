@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: DreamChat Image Platform API
-  version: 0.11.0
+  version: 0.12.0
   description: |
     Standalone API for generating, storing, retrieving, and versioning persistent visual assets for DreamChat worlds.
 
@@ -1627,6 +1627,23 @@ components:
       properties:
         world_id: { type: string }
         style_profile_id: { type: string }
+        provider_id:
+          type: string
+          description: |
+            Optional per-request provider preference. When set, route
+            resolution is pinned to this provider id (e.g. `fal`, `bfl`,
+            `mock`) instead of the deployment-wide `IMAGE_PROVIDER` default,
+            so a single deployment can serve a BFL anchor and a fal pack
+            without changing environment variables. It is a HARD preference,
+            validated before cost reservation:
+            * the provider must be configured/available in this process,
+              else `422 provider_preference_unavailable`;
+            * the provider must have an active route that satisfies the
+              operation and required capability, else the matching
+              `422 no_route` / `unsupported_capability`.
+            It never silently falls back to a different provider — pinning a
+            scene-only provider (e.g. `bfl`) to a pack request fails closed.
+            Omit it to keep the existing default route resolution.
         pack_template:
           type: string
           description: |
@@ -1673,6 +1690,13 @@ components:
       properties:
         world_id: { type: string }
         style_profile_id: { type: string }
+        provider_id:
+          type: string
+          description: |
+            Optional per-request provider preference. See
+            GenerateCharacterPackRequest.provider_id for semantics; place
+            packs also request `pack_capable` and resolve the same
+            reference-conditioned route.
         pack_template:
           type: string
           description: |
@@ -1704,6 +1728,13 @@ components:
         world_id: { type: string }
         style_profile_id: { type: string }
         description: { type: string }
+        provider_id:
+          type: string
+          description: |
+            Optional per-request provider preference. See
+            GenerateCharacterPackRequest.provider_id for semantics. Artifact
+            generation requests `scene_capable`, so pinning `bfl` resolves the
+            BFL scene route; pinning a pack-only provider fails closed.
         quality_tier:
           $ref: '#/components/schemas/QualityTier'
         latency_tier:
@@ -2405,6 +2436,23 @@ components:
 # Confidence to Implement
 #
 # Score: 94/100 — Very High
+#
+# v0.12.0 — per-request provider preference (additive):
+#   * `GenerateArtifactRequest.provider_id`,
+#     `GenerateCharacterPackRequest.provider_id`, and
+#     `GeneratePlacePackRequest.provider_id` — optional string. When set, route
+#     resolution is pinned to the named provider for that one request instead of
+#     the deployment-wide `IMAGE_PROVIDER` default, so a single deployment can
+#     generate a BFL anchor (`provider_id: "bfl"`) and a fal pack
+#     (`provider_id: "fal"`) without flipping a Railway variable. It is a HARD
+#     preference validated before cost reservation: an unconfigured provider
+#     returns `422 provider_preference_unavailable` (new code); a provider with no
+#     active route satisfying the operation/capability returns the matching
+#     `422 no_route` / `unsupported_capability`. It never silently falls back, so
+#     pinning a scene-only provider to a pack request fails closed. Capability
+#     matching stays EXACT — pinning a provider cannot resolve a route for a
+#     capability the request did not ask for. Omitted/empty is byte-for-byte the
+#     prior default-resolution behavior; no field is removed or made required.
 #
 # v0.10.0 — Phase 7C-2 rate limiting + hard concurrent job caps (additive):
 #   * New shared 429 response (components.responses.TooManyRequests) documenting

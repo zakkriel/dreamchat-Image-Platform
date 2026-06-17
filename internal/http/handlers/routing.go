@@ -75,6 +75,8 @@ type RouteResolver interface {
 // replaces the pre-7A 503 provider_unavailable gate.
 func writeRouteError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case errors.Is(err, routing.ErrRequestedProviderUnavailable):
+		httperr.Write(w, r, http.StatusUnprocessableEntity, httperr.CodeProviderPreferenceUnavailable, "the requested provider_id is not configured for this deployment")
 	case errors.Is(err, routing.ErrRouteProviderCapabilityMismatch):
 		httperr.Write(w, r, http.StatusUnprocessableEntity, httperr.CodeRouteCapabilityMismatch, "no identity-capable provider configured for this route's required capability")
 	case errors.Is(err, routing.ErrUnsupportedCapability):

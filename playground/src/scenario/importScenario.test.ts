@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { importScenario } from './importScenario'
 
@@ -132,6 +133,51 @@ describe('importScenario', () => {
     if (res.ok) return
     expect(res.errors.some((e) => e.includes('assetSearch.stateVersion'))).toBe(true)
     expect(res.errors.some((e) => e.includes('assetSearch.worldId'))).toBe(true)
+  })
+
+  it('accepts the committed Seren recurring-character example (BFL anchor → fal pack)', () => {
+    const text = readFileSync(
+      new URL('../../examples/seren-recurring-character.json', import.meta.url),
+      'utf8',
+    )
+    const res = importScenario(text)
+    expect(res.ok).toBe(true)
+    if (!res.ok) return
+    expect(res.scenario.artifact?.providerId).toBe('bfl')
+    expect(res.scenario.pack?.character?.providerId).toBe('fal')
+  })
+
+  it('accepts per-request provider preference fields on artifact and pack', () => {
+    const res = importScenario(
+      JSON.stringify({
+        artifact: { providerId: 'bfl' },
+        pack: {
+          character: { providerId: 'fal' },
+          place: { providerId: 'fal' },
+        },
+      }),
+    )
+    expect(res.ok).toBe(true)
+    if (!res.ok) return
+    expect(res.scenario.artifact?.providerId).toBe('bfl')
+    expect(res.scenario.pack?.character?.providerId).toBe('fal')
+    expect(res.scenario.pack?.place?.providerId).toBe('fal')
+  })
+
+  it('rejects an unknown provider preference field name', () => {
+    const res = importScenario(JSON.stringify({ artifact: { provider: 'bfl' } }))
+    expect(res.ok).toBe(false)
+    if (res.ok) return
+    expect(res.errors.some((e) => e.includes('artifact.provider'))).toBe(true)
+  })
+
+  it('rejects a non-string provider preference value', () => {
+    const res = importScenario(
+      JSON.stringify({ pack: { character: { providerId: 123 } } }),
+    )
+    expect(res.ok).toBe(false)
+    if (res.ok) return
+    expect(res.errors.some((e) => e.includes('pack.character.providerId'))).toBe(true)
   })
 
   it('allows empty string for optional select enums but not strict ones', () => {
