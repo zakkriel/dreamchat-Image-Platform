@@ -141,7 +141,7 @@ fields you include are applied.
 | --- | --- | --- |
 | `connection` | Connection | `baseUrl`; `token` / `adminToken` only when explicitly present |
 | `style` | Styles | `name`, `styleMode`, `positivePrompt`, `negativePrompt`, `defaultQualityTier` |
-| `visualIdentity` | Visual identity | `ownerType` (`character`\|`place`), `worldId`, `ownerId`, `displayName`, `canonicalVisualTraits` (object), `styleProfileId`, `consistencyKey` |
+| `visualIdentity` | Visual identity | `ownerType` (`character`\|`place`), `worldId`, `ownerId`, `displayName`, `canonicalVisualTraits` (object), `styleProfileId`, `consistencyKey`, `anchorAssetIds` (string array — pre-fills the anchor-attach control) |
 | `artifact` | Artifact generation | `artifactId`, `worldId`, `styleProfileId`, `description`, `qualityTier`, `latencyTier`, `deliveryMode`, `providerId`, `forceRegenerate`, `idempotencyKey` |
 | `pack` | Pack generation | `character` / `place` objects with `entityId`, `worldId`, `styleProfileId`, `packTemplate`, `qualityTier`, `providerId`, `forceRegenerate` |
 | `assetSearch` | Asset search | `worldId`, `ownerType`, `visualIdentityId`, `variantKey`, `styleProfileId`, `stateVersion` (int), `qualityTier`, `fallbackPolicy` |
@@ -246,10 +246,20 @@ The committed [`examples/seren-recurring-character.json`](examples/seren-recurri
 sample demonstrates the recurring-character flow end to end: the **artifact**
 section pins `providerId: "bfl"` (the Seren anchor portrait) and the
 **character pack** section pins `providerId: "fal"` (the reference-conditioned
-pack). Import it, generate the anchor, attach it as the character's anchor asset
-(Visual identity panel), then generate the pack — all against a deployment whose
-`IMAGE_PROVIDER` never changes. See
-[`docs/runbooks/railway-real-image-smoke-test.md`](../docs/runbooks/railway-real-image-smoke-test.md) §9.
+pack). The whole flow is drivable from the playground, against a deployment whose
+`IMAGE_PROVIDER` never changes:
+
+1. Import the scenario.
+2. **Artifact generation** panel → generate the BFL anchor portrait (`provider_id`
+   already `bfl`). Poll it to `completed` (Job monitor panel) and copy the ready
+   asset id (Job monitor / Asset search panel).
+3. **Visual identity** panel → paste that id into **Attach anchor (reference)
+   assets** and press the anchors button. The response shows the identity now
+   carrying `anchor_asset_ids`.
+4. **Pack generation** panel → generate the character pack (`provider_id` already
+   `fal`). With anchors attached it resolves the fal pack route.
+
+See [`docs/runbooks/railway-real-image-smoke-test.md`](../docs/runbooks/railway-real-image-smoke-test.md) §9.
 
 ## Sample assets without generating
 

@@ -1,6 +1,6 @@
-import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { importScenario } from './importScenario'
+import serenExample from '../../examples/seren-recurring-character.json'
 
 // The canonical example scenario also documented in playground/README.md.
 const EXAMPLE = {
@@ -136,15 +136,27 @@ describe('importScenario', () => {
   })
 
   it('accepts the committed Seren recurring-character example (BFL anchor → fal pack)', () => {
-    const text = readFileSync(
-      new URL('../../examples/seren-recurring-character.json', import.meta.url),
-      'utf8',
-    )
-    const res = importScenario(text)
+    const res = importScenario(JSON.stringify(serenExample))
     expect(res.ok).toBe(true)
     if (!res.ok) return
     expect(res.scenario.artifact?.providerId).toBe('bfl')
     expect(res.scenario.pack?.character?.providerId).toBe('fal')
+  })
+
+  it('accepts visualIdentity.anchorAssetIds as a string array', () => {
+    const res = importScenario(
+      JSON.stringify({ visualIdentity: { anchorAssetIds: ['asset_a', 'asset_b'] } }),
+    )
+    expect(res.ok).toBe(true)
+    if (!res.ok) return
+    expect(res.scenario.visualIdentity?.anchorAssetIds).toEqual(['asset_a', 'asset_b'])
+  })
+
+  it('rejects visualIdentity.anchorAssetIds that is not an array of strings', () => {
+    const res = importScenario(JSON.stringify({ visualIdentity: { anchorAssetIds: [1, 2] } }))
+    expect(res.ok).toBe(false)
+    if (res.ok) return
+    expect(res.errors.some((e) => e.includes('visualIdentity.anchorAssetIds'))).toBe(true)
   })
 
   it('accepts per-request provider preference fields on artifact and pack', () => {

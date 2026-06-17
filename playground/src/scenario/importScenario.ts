@@ -77,6 +77,17 @@ class Checker {
     return v
   }
 
+  // An array all of whose elements are strings.
+  strArray(obj: Record<string, unknown>, field: string): string[] | undefined {
+    const v = obj[field]
+    if (v === undefined) return undefined
+    if (!Array.isArray(v) || v.some((e) => typeof e !== 'string')) {
+      this.errors.push(`${this.at(field)} must be an array of strings`)
+      return undefined
+    }
+    return v as string[]
+  }
+
   obj(obj: Record<string, unknown>, field: string): Record<string, unknown> | undefined {
     const v = obj[field]
     if (v === undefined) return undefined
@@ -234,6 +245,7 @@ export function importScenario(text: string): ImportResult {
         'canonicalVisualTraits',
         'styleProfileId',
         'consistencyKey',
+        'anchorAssetIds',
       ])
       const section = {
         ownerType: c.enumStrict(raw.visualIdentity, 'ownerType', PACK_ENTITIES),
@@ -243,6 +255,7 @@ export function importScenario(text: string): ImportResult {
         canonicalVisualTraits: c.obj(raw.visualIdentity, 'canonicalVisualTraits'),
         styleProfileId: c.str(raw.visualIdentity, 'styleProfileId'),
         consistencyKey: c.str(raw.visualIdentity, 'consistencyKey'),
+        anchorAssetIds: c.strArray(raw.visualIdentity, 'anchorAssetIds'),
       }
       errors.push(...c.errors)
       scenario.visualIdentity = {}

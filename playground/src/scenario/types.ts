@@ -44,6 +44,9 @@ export interface VisualIdentityScenario {
   canonicalVisualTraits?: Record<string, unknown>
   styleProfileId?: string
   consistencyKey?: string
+  // Reference (anchor) asset ids to pre-fill the anchor-attach control. Filling
+  // the field never auto-submits; press the panel's button to attach.
+  anchorAssetIds?: string[]
 }
 
 export interface ArtifactScenario {

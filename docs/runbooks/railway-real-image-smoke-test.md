@@ -435,8 +435,12 @@ Steps (no manual SQL):
 > **Playground equivalent.** Import
 > [`playground/examples/seren-recurring-character.json`](../../playground/examples/seren-recurring-character.json):
 > its artifact section pins `providerId: "bfl"` and its character-pack section
-> pins `providerId: "fal"`, so you can drive this whole flow from the Artifact
-> and Pack panels without editing the request bodies by hand.
+> pins `providerId: "fal"`. The whole flow is drivable from the playground — the
+> Visual identity panel now exposes an **Attach anchor (reference) assets**
+> control (POST `.../visual-identity/anchors`), so you can generate the BFL
+> anchor (Artifact panel), paste its ready asset id into that control to attach
+> it, then generate the fal pack (Pack panel) — without editing request bodies or
+> running curl by hand.
 
 Failure triage:
 
