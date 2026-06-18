@@ -1,77 +1,67 @@
-// Command migrate applies the embedded up-migrations to a Postgres database in
-// filename order. It is a deliberately minimal runner for staging / Railway
-// smoke testing — NOT a full migration framework:
-//
-//   - reads POSTGRES_DSN
-//   - applies migrations/0*.up.sql (embedded) in filename order
-//   - prints each migration filename before applying it
-//   - fails fast on the first migration error and exits non-zero
-//   - needs no Docker Compose and no local psql
-//
-// It does not track applied migrations, so it is intended for a fresh database
-// (the first deploy of a staging environment). Re-running against an already
-// migrated database will fail on the first CREATE that already exists — that is
-// the intended fail-fast behavior, not a bug.
+// Command migrate is the single migration runner for local dev, CI, and Railway
+// deploy-from-image. It drives goose over the embedded migrations FS via
+// internal/migrate. Subcommands: up, down, down-to <version>, status, version,
+// bootstrap. See docs/adr/ADR-P001-migration-tooling.md.
 package main
 
 import (
-	"context"
+	"database/sql"
 	"fmt"
-	"io/fs"
 	"os"
-	"sort"
-	"time"
+	"strconv"
 
-	"github.com/jackc/pgx/v5"
+	_ "github.com/jackc/pgx/v5/stdlib"
 
-	"github.com/zakkriel/drchat-image-platform/migrations"
+	"github.com/zakkriel/drchat-image-platform/internal/migrate"
 )
 
 func main() {
-	if err := run(); err != nil {
+	if err := run(os.Args[1:], os.Getenv); err != nil {
 		fmt.Fprintln(os.Stderr, "migrate: "+err.Error())
 		os.Exit(1)
 	}
 }
 
-func run() error {
-	dsn := os.Getenv("POSTGRES_DSN")
+func run(args []string, getenv func(string) string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: migrate <up|down|down-to|status|version|bootstrap> [version]")
+	}
+	dsn := getenv("POSTGRES_DSN")
 	if dsn == "" {
 		return fmt.Errorf("POSTGRES_DSN is required")
 	}
-
-	names, err := fs.Glob(migrations.FS, "0*.up.sql")
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
-		return fmt.Errorf("listing migrations: %w", err)
+		return fmt.Errorf("open db: %w", err)
 	}
-	if len(names) == 0 {
-		return fmt.Errorf("no migrations found (expected migrations/0*.up.sql)")
-	}
-	sort.Strings(names) // filename order == apply order (zero-padded prefixes).
+	defer func() { _ = db.Close() }()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
-	conn, err := pgx.Connect(ctx, dsn)
-	if err != nil {
-		return fmt.Errorf("connecting to Postgres: %w", err)
-	}
-	defer func() { _ = conn.Close(context.Background()) }()
-
-	for _, name := range names {
-		sqlBytes, readErr := migrations.FS.ReadFile(name)
-		if readErr != nil {
-			return fmt.Errorf("reading %s: %w", name, readErr)
+	switch args[0] {
+	case "up":
+		return migrate.Up(db)
+	case "down":
+		return migrate.Down(db)
+	case "down-to":
+		if len(args) < 2 {
+			return fmt.Errorf("down-to requires a target version")
 		}
-		fmt.Println("applying " + name)
-		// No arguments -> pgx uses the simple protocol, which executes the whole
-		// multi-statement file in one implicit transaction. A file that defines
-		// its own BEGIN/COMMIT (e.g. 0009) is honored as-is.
-		if _, execErr := conn.Exec(ctx, string(sqlBytes)); execErr != nil {
-			return fmt.Errorf("applying %s: %w", name, execErr)
+		v, err := strconv.ParseInt(args[1], 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid version %q: %w", args[1], err)
 		}
+		return migrate.DownTo(db, v)
+	case "status":
+		return migrate.Status(db)
+	case "version":
+		v, err := migrate.Version(db)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("current version: %d\n", v)
+		return nil
+	case "bootstrap":
+		return fmt.Errorf("bootstrap not yet implemented")
+	default:
+		return fmt.Errorf("unknown command %q", args[0])
 	}
-
-	fmt.Printf("migrate: applied %d migration(s)\n", len(names))
-	return nil
 }

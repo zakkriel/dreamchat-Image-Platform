@@ -3,22 +3,24 @@ SHELL := /bin/bash
 POSTGRES_DSN ?= postgres://image_platform:image_platform@localhost:5432/image_platform?sslmode=disable
 APP_PORT     ?= 8080
 
-.PHONY: help up down dev migrate seed seed-admin test build generate fmt vet lint wait-ready
+.PHONY: help up down dev migrate migrate-down migrate-status seed seed-admin test build generate fmt vet lint wait-ready
 
 help:
 	@echo "Targets:"
-	@echo "  make up         - docker compose up -d"
-	@echo "  make down       - docker compose down -v"
-	@echo "  make migrate    - apply migrations/000*.up.sql in order"
-	@echo "  make seed       - insert one dev API token (raw value printed once)"
-	@echo "  make seed-admin - insert one dev admin token (admin:costs only)"
-	@echo "  make dev        - up + wait-for-ready + migrate + seed"
-	@echo "  make test       - go test ./..."
-	@echo "  make build      - go build ./..."
-	@echo "  make generate   - run oapi-codegen + sqlc generate"
-	@echo "  make fmt        - gofmt -w ."
-	@echo "  make vet        - go vet ./..."
-	@echo "  make lint       - golangci-lint run"
+	@echo "  make up            - docker compose up -d"
+	@echo "  make down          - docker compose down -v"
+	@echo "  make migrate       - apply migrations via goose (cmd/migrate up)"
+	@echo "  make migrate-down  - roll back the latest migration (cmd/migrate down)"
+	@echo "  make migrate-status- show goose migration status"
+	@echo "  make seed          - insert one dev API token (raw value printed once)"
+	@echo "  make seed-admin    - insert one dev admin token (admin:costs only)"
+	@echo "  make dev           - up + wait-for-ready + migrate + seed"
+	@echo "  make test          - go test ./..."
+	@echo "  make build         - go build ./..."
+	@echo "  make generate      - run oapi-codegen + sqlc generate"
+	@echo "  make fmt           - gofmt -w ."
+	@echo "  make vet           - go vet ./..."
+	@echo "  make lint          - golangci-lint run"
 
 up:
 	docker compose up -d --build
@@ -41,12 +43,13 @@ wait-ready:
 	done
 
 migrate:
-	@echo "Applying migrations in order..."
-	@for f in $$(ls migrations/0*.up.sql | sort); do \
-	  echo "  $$f"; \
-	  docker compose exec -T postgres psql -U image_platform -d image_platform -v ON_ERROR_STOP=1 < "$$f"; \
-	done
-	@echo "Migration complete."
+	POSTGRES_DSN=$(POSTGRES_DSN) go run ./cmd/migrate up
+
+migrate-down:
+	POSTGRES_DSN=$(POSTGRES_DSN) go run ./cmd/migrate down
+
+migrate-status:
+	POSTGRES_DSN=$(POSTGRES_DSN) go run ./cmd/migrate status
 
 seed:
 	@bash scripts/seed_dev_token.sh
