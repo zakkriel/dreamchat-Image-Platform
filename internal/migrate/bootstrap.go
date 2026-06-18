@@ -26,7 +26,7 @@ var baselineTables = []string{
 //
 //   - goose_db_version already present  -> delegate to Up (apply pending).
 //   - zero baseline tables              -> fresh DB, apply everything via Up.
-//   - full footprint (20 tables + 0011  -> stamp versions 1..BaselineVersion as
+//   - full footprint (20 tables + 0011  -> stamp versions 0..BaselineVersion as
 //     fal seed)                            applied without running them, then Up.
 //   - anything in between               -> REFUSE; stamp nothing.
 func Bootstrap(db *sql.DB) error {
@@ -72,11 +72,18 @@ func Bootstrap(db *sql.DB) error {
 }
 
 // stampBaseline marks versions 0..BaselineVersion applied WITHOUT running them,
-// so a subsequent Up is a no-op for the baseline. It writes goose's own version
-// table schema explicitly (stable across goose v3), which is deterministic and
-// does not depend on goose internals.
+// so a subsequent Up is a no-op for the baseline. It creates an equivalent
+// goose_db_version table whose columns goose's operations (INSERT/SELECT/DELETE
+// on version_id/is_applied) work against; goose never asserts the table's exact
+// column types, so this is stable across goose v3 without copying goose's DDL
+// verbatim.
 func stampBaseline(db *sql.DB) error {
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS goose_db_version (
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin stamp tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op after a successful Commit
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS goose_db_version (
 		id serial NOT NULL,
 		version_id bigint NOT NULL,
 		is_applied boolean NOT NULL,
@@ -86,13 +93,13 @@ func stampBaseline(db *sql.DB) error {
 		return fmt.Errorf("create version table: %w", err)
 	}
 	for v := int64(0); v <= BaselineVersion; v++ {
-		if _, err := db.Exec(
+		if _, err := tx.Exec(
 			`INSERT INTO goose_db_version (version_id, is_applied) VALUES ($1, true)`, v,
 		); err != nil {
 			return fmt.Errorf("stamp version %d: %w", v, err)
 		}
 	}
-	return nil
+	return tx.Commit()
 }
 
 func tableExists(db *sql.DB, name string) (bool, error) {
