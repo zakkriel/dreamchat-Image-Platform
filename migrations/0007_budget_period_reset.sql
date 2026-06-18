@@ -1,3 +1,4 @@
+-- +goose Up
 -- Phase 7C-1c: lazy budget period reset.
 --
 -- Daily/monthly budgets previously behaved like lifetime budgets because their
@@ -22,3 +23,7 @@ SET period_start = CASE period
     WHEN 'monthly' THEN date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
     ELSE now()
 END;
+
+-- +goose Down
+-- Baseline migration: irreversible floor. Roll back by restoring from backup.
+SELECT 'baseline migration 0007 is irreversible' WHERE false;

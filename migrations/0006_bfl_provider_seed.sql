@@ -1,3 +1,4 @@
+-- +goose Up
 -- 0006_bfl_provider_seed
 --
 -- Phase 7A (real provider routing + BFL adapter) seed migration.
@@ -24,8 +25,6 @@
 -- for pack generation.
 --
 -- Endpoint/pricing assumptions are documented in internal/providers/bfl/bfl.go.
-
-BEGIN;
 
 -- 1. BFL provider model. Capabilities stay conservative
 --    (draft_only + scene_capable, no_preview, NO high-res) per the
@@ -107,4 +106,6 @@ INSERT INTO provider_routes (
      'true_preview', 'high', 'balanced', true, 100, 1, false)
 ON CONFLICT (id) DO NOTHING;
 
-COMMIT;
+-- +goose Down
+-- Baseline migration: irreversible floor. Roll back by restoring from backup.
+SELECT 'baseline migration 0006 is irreversible' WHERE false;

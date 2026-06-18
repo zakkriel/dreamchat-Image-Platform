@@ -1,3 +1,4 @@
+-- +goose Up
 -- 0002_seed_mock_provider
 --
 -- Phase 4 (cost-control pre-flight) seed + schema migration.
@@ -14,8 +15,6 @@
 -- with IF NOT EXISTS so applying both migrations is safe and so the named
 -- index the spec/CI assert on is present regardless of 0001's history. See
 -- frustration_log.md (Phase 4) for the rationale.
-
-BEGIN;
 
 -- 1. Mock provider model. capabilities/aspect-ratios are Postgres text[]
 --    literals; preview_capability=true_preview gates the preview-first UX.
@@ -58,4 +57,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_model_prices_one_active
     ON provider_model_prices (provider_id, model_id, operation_type)
     WHERE is_active = true;
 
-COMMIT;
+-- +goose Down
+-- Baseline migration: irreversible floor. Roll back by restoring from backup.
+SELECT 'baseline migration 0002 is irreversible' WHERE false;

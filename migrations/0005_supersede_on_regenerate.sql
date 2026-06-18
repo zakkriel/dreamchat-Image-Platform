@@ -1,3 +1,4 @@
+-- +goose Up
 -- Phase 6A4 forced regeneration (supersede-on-regenerate).
 --
 -- A forced regeneration (force_regenerate: true) is a real generation that
@@ -15,3 +16,7 @@
 -- pre-6A4 row and any non-forced path leaves it NULL.
 ALTER TABLE visual_assets
     ADD COLUMN superseded_by_asset_id TEXT REFERENCES visual_assets(id);
+
+-- +goose Down
+-- Baseline migration: irreversible floor. Roll back by restoring from backup.
+SELECT 'baseline migration 0005 is irreversible' WHERE false;

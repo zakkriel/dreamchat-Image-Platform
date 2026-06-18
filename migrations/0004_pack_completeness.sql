@@ -1,3 +1,4 @@
+-- +goose Up
 -- Phase 6A3 pack reuse-first + completeness storage.
 --
 -- Packs become retrieval-first: at creation time the platform resolves each
@@ -19,3 +20,7 @@ ALTER TABLE asset_packs
     ADD COLUMN required_roles  TEXT[] NOT NULL DEFAULT '{}',  -- every role the pack template requires
     ADD COLUMN delivered_roles TEXT[] NOT NULL DEFAULT '{}',  -- required roles backed by a ready asset_pack_items row
     ADD COLUMN missing_roles   TEXT[] NOT NULL DEFAULT '{}';  -- required roles still awaiting (or failed) generation
+
+-- +goose Down
+-- Baseline migration: irreversible floor. Roll back by restoring from backup.
+SELECT 'baseline migration 0004 is irreversible' WHERE false;
