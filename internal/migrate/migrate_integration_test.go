@@ -1,5 +1,10 @@
 //go:build integration
 
+// WARNING: Do NOT add t.Parallel() to any test in this package.
+// The goose wrappers (goose.SetBaseFS, goose.SetDialect) mutate process-global
+// state; parallel tests would race on that shared state and produce
+// non-deterministic failures.
+
 package migrate_test
 
 import (

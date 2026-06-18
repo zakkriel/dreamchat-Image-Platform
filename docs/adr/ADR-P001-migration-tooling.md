@@ -39,8 +39,12 @@ The version table is goose-native `goose_db_version` (the source prompt's litera
 - **expand → backfill → contract.** Additive ("expand") changes ship first;
   data backfills are separate migrations; destructive ("contract") changes land
   last, only after the expand deploy has settled.
-- **Reversibility:** every new migration has a real `Down`; CI proves
-  `up → down-to 11 → up` on everything above the baseline.
+- **Reversibility:** every new migration added from Chunk 1 onward MUST ship a
+  real, tested `Down`. Once the first post-baseline migration lands, CI will gate
+  the round-trip `up → down-to 11 → up` on everything above the baseline. (No
+  such migration exists yet, so the harness's reversibility is currently proven
+  by the `TestGooseRoundTrip` canary, not by a CI step over the real
+  migrations.)
 - **NO-TRANSACTION audit:** goose runs each migration in its own transaction.
   Any statement that cannot run in a transaction (`CREATE INDEX CONCURRENTLY`,
   `ALTER TYPE … ADD VALUE`, `CREATE/DROP DATABASE`, `VACUUM`, `REINDEX`, …) must
