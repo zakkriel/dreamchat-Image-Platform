@@ -3,13 +3,18 @@
 package migrate_test
 
 import (
+	"database/sql"
 	"embed"
+	"io/fs"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/pressly/goose/v3"
 
 	"github.com/zakkriel/drchat-image-platform/internal/migrate"
 	"github.com/zakkriel/drchat-image-platform/internal/testdb"
+	"github.com/zakkriel/drchat-image-platform/migrations"
 )
 
 //go:embed testdata/canary/*.sql
@@ -80,5 +85,101 @@ func TestFreshUp(t *testing.T) {
 	}
 	if v != migrate.BaselineVersion {
 		t.Fatalf("version = %d, want %d", v, migrate.BaselineVersion)
+	}
+}
+
+// rawApplyFile executes a migration file's full text directly (no goose version
+// tracking) to simulate a database migrated by the old psql loop. The baseline
+// Down sections are no-op SELECTs, so executing them is harmless.
+func rawApplyFile(t *testing.T, db *sql.DB, name string) {
+	t.Helper()
+	b, err := migrations.FS.ReadFile(name)
+	if err != nil {
+		t.Fatalf("read %s: %v", name, err)
+	}
+	if _, err := db.Exec(string(b)); err != nil {
+		t.Fatalf("raw apply %s: %v", name, err)
+	}
+}
+
+func rawApplyAll(t *testing.T, db *sql.DB) {
+	t.Helper()
+	names, err := fs.Glob(migrations.FS, "0*.sql")
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		rawApplyFile(t, db, n)
+	}
+}
+
+func gooseTrackingExists(t *testing.T, db *sql.DB) bool {
+	t.Helper()
+	return testdb.TableExists(t, db, "goose_db_version")
+}
+
+// TestFreshBootstrap exercises bootstrap's FRESH branch directly: an empty DB
+// is migrated to the full baseline.
+func TestFreshBootstrap(t *testing.T) {
+	db, _ := testdb.New(t)
+
+	if err := migrate.Bootstrap(db); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	v, err := migrate.Version(db)
+	if err != nil {
+		t.Fatalf("version: %v", err)
+	}
+	if v != migrate.BaselineVersion {
+		t.Fatalf("version = %d, want %d", v, migrate.BaselineVersion)
+	}
+	for _, tbl := range baselineTables {
+		if !testdb.TableExists(t, db, tbl) {
+			t.Fatalf("baseline table %q missing after fresh bootstrap", tbl)
+		}
+	}
+}
+
+// TestBaselineConvergence exercises the ALREADY-MIGRATED branch: a DB with the
+// full footprint but no version table is stamped, not re-applied.
+func TestBaselineConvergence(t *testing.T) {
+	db, _ := testdb.New(t)
+	rawApplyAll(t, db) // simulate an existing prod DB at version 11
+	if gooseTrackingExists(t, db) {
+		t.Fatal("precondition: goose_db_version should not exist after raw apply")
+	}
+
+	if err := migrate.Bootstrap(db); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	v, err := migrate.Version(db)
+	if err != nil {
+		t.Fatalf("version: %v", err)
+	}
+	if v != migrate.BaselineVersion {
+		t.Fatalf("version = %d, want %d", v, migrate.BaselineVersion)
+	}
+	// A following Up must be a clean no-op.
+	if err := migrate.Up(db); err != nil {
+		t.Fatalf("up after bootstrap: %v", err)
+	}
+}
+
+// TestBootstrapRefusesPartial exercises the REFUSE branch: a present-but-
+// incomplete footprint (only 0001 applied) must be refused and stamp nothing.
+func TestBootstrapRefusesPartial(t *testing.T) {
+	db, _ := testdb.New(t)
+	rawApplyFile(t, db, "0001_initial.sql") // 17 of 20 tables, no fal seed
+
+	err := migrate.Bootstrap(db)
+	if err == nil {
+		t.Fatal("expected bootstrap to refuse a partially-migrated database")
+	}
+	if !strings.Contains(err.Error(), "refused") {
+		t.Fatalf("error %q should mention 'refused'", err.Error())
+	}
+	if gooseTrackingExists(t, db) {
+		t.Fatal("bootstrap must not create goose_db_version when refusing")
 	}
 }

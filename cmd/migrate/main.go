@@ -60,7 +60,7 @@ func run(args []string, getenv func(string) string) error {
 		fmt.Printf("current version: %d\n", v)
 		return nil
 	case "bootstrap":
-		return fmt.Errorf("bootstrap not yet implemented")
+		return migrate.Bootstrap(db)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
