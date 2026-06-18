@@ -66,6 +66,14 @@ sections** — goose does **not** read `.up.sql`/`.down.sql` pairs. Therefore:
   `-- +goose StatementEnd` so goose's naive `;` splitter does not break on
   semicolons inside the dollar-quoted bodies. Affected: **`0009`** (5 blocks),
   **`0010`** (1 block).
+- **NO TRANSACTION audit (completed for the baseline).** Every migration goose runs
+  inside its own transaction, so any statement that cannot run in a transaction
+  (`CREATE INDEX CONCURRENTLY`, `DROP INDEX CONCURRENTLY`, `ALTER TYPE … ADD VALUE`,
+  `CREATE/DROP DATABASE`, `VACUUM`, `REINDEX`, `ALTER SYSTEM`, …) must be split into
+  its own migration marked `-- +goose NO TRANSACTION`. A grep across all 11 baseline
+  files (`migrations/*.up.sql`) found **none** of these — so **no baseline file needs
+  `-- +goose NO TRANSACTION`.** Every migration added from Chunk 1 onward must be
+  re-audited the same way; this is recorded as policy in ADR-P001 (§8).
 
 No SQL **semantics** change in this step — it is a pure reformat. The proof that
 the reformat is faithful is that a fresh `up` still produces the identical schema
@@ -108,21 +116,45 @@ goose.SetDialect("postgres")
 
 ## 4. Baseline convergence — `cmd/migrate bootstrap`
 
-Existing staging/prod databases already have `0001…0011` applied with **no version
-tracking**. Running goose against them naively would find no `goose_db_version` table
-and attempt to apply everything from scratch, failing on already-existing objects.
-`bootstrap` resolves this idempotently:
+Existing staging/prod databases already have `0001…0011` applied (via the old
+embedded `cmd/migrate`, which globs the full `0*.up.sql` set) with **no version
+tracking**. Running goose against them naively would find no `goose_db_version`
+table and try to apply everything from scratch, failing on already-existing objects.
+`bootstrap` resolves this idempotently using a **full-footprint check** — never a
+single-object probe:
 
-- **Fresh database** — baseline sentinel table absent (probe: `generation_jobs`
-  does not exist) → behave like a normal `up`, applying versions `1…11`.
-- **Already-migrated database** — sentinel table present but `goose_db_version`
-  absent → create the version table and **stamp versions `1…11` as applied without
-  running them**, so a subsequent `up` is a clean no-op.
-- Safe to re-run: if `goose_db_version` already exists, `bootstrap` is a no-op
-  delegating to `up`.
+- **Fresh database** — **zero** baseline tables present → apply versions `1…11`
+  normally. This is the fresh branch and is tested directly (`TestFreshBootstrap`,
+  §7), not just via a raw `up`.
+- **Already-migrated database** — the **complete** baseline footprint is present
+  (all **20** baseline tables, the two RLS roles `image_platform_api` /
+  `image_platform_system` created in `0009`, and the `0011` fal seed sentinel row) →
+  create the version table and **stamp versions `1…11` as applied without running
+  them**, so a subsequent `up` is a clean no-op.
+- **Present but incomplete** — *some but not all* of the footprint present →
+  **refuse loudly, exit non-zero, and stamp nothing.** A partially-migrated database
+  is an unknown state a human must resolve; bootstrap must never guess.
+- Safe to re-run: if `goose_db_version` already exists, `bootstrap` is a no-op that
+  delegates to `up`.
+
+**Why a full-footprint check and not a single early table — do not "simplify" this
+back to one table.** A single early sentinel such as `generation_jobs` only proves
+that *some* migration ran, not that the database is fully converged at baseline 11.
+A DB stuck partway (say at version 7) still has `generation_jobs`; a single-object
+probe would classify it "already-migrated", stamp `1…11`, and **silently skip
+`8…11` forever** — the exact silent mis-stamp this guard exists to prevent. (Keying
+off `generation_jobs` would additionally violate locked hardening #1.) A single
+early object structurally *cannot* distinguish "fully at 11" from "partway", so
+detection must verify the whole footprint, and any state between empty and complete
+is **refused, not guessed** (locked hardening #2, extended to partial schema).
+Because `0011` is seed-only (no DDL), the footprint also verifies its seed sentinel
+so a DDL-complete-but-seed-missing database is treated as incomplete and refused
+rather than stamped.
 
 The stamping inserts the version rows goose expects (`version_id` `0` plus `1…11`,
-`is_applied = true`) so goose's own bookkeeping is consistent afterward.
+`is_applied = true`) so goose's own bookkeeping is consistent afterward. The exact
+enumerated object list (20 table names + 2 role names + the fal seed sentinel) is
+fixed in the implementation plan.
 
 ## 5. Reversibility policy — baseline floor
 
@@ -159,7 +191,14 @@ The stamping inserts the version rows goose expects (`version_id` `0` plus `1…
 - Replace the hardcoded `psql -f …` apply block with `go run ./cmd/migrate up`.
 - **Keep** the existing table / column / index / RLS-enforcement assertions — they are
   valuable smoke tests of the baseline schema.
-- **Update** the table-count assertion `18` → `19` (goose adds `goose_db_version`).
+- **Update the table-count assertion — and note the coverage change.** The current
+  job applies only `0001…0009` via `psql` and asserts `18` tables; its hardcoded list
+  never applied `0010` (webhooks) or `0011` (fal seed). Switching to
+  `go run ./cmd/migrate up` applies the **full** set `0001…0011`, which additionally
+  creates the two `0010` webhook tables and runs the `0011` fal seed. Post-`up` count
+  is therefore **20 baseline tables + `goose_db_version` = 21** (not 19). The plan
+  must confirm `0010`/`0011` apply cleanly in sequence under goose and add a
+  fal-provider-seed presence assertion alongside the existing mock/bfl ones.
 - **Add** assertions:
   - the version table reports head version `11` after `up`;
   - convergence path: raw-apply the baseline → `bootstrap` → assert a following `up`
@@ -177,20 +216,32 @@ Postgres service.
    via goose → assert its object exists → `down` → assert gone → `up` → assert back.
    Proves the harness genuinely reverses, independent of the irreversible baseline.
 2. **`TestBaselineConvergence`** — raw-apply the 11 baseline files to a clean DB
-   (simulating an existing prod DB) → run `bootstrap` → assert `goose_db_version`
-   head = `11` → assert a following `up` is a no-op (no error, no schema change).
-3. **`TestFreshUp`** — empty DB → `up` → assert all 18 baseline tables plus the goose
-   version table exist, and that the `0009`/`0010` `DO`-blocks parsed and applied
-   (i.e. RLS roles/policies and webhook objects present).
+   (simulating an existing prod DB with the full footprint) → run `bootstrap` →
+   assert `goose_db_version` head = `11` → assert a following `up` is a no-op
+   (no error, no schema change).
+3. **`TestFreshBootstrap`** — empty DB → `bootstrap` → assert it takes the **fresh
+   branch** and applies versions `1…11` (head = `11`, all baseline objects present).
+   This tests the fresh path of `bootstrap` *directly*, distinct from `TestFreshUp`'s
+   plain `up`.
+4. **`TestBootstrapRefusesPartial`** — apply only a *partial* baseline (e.g. through
+   `0007`, so the footprint is present-but-incomplete) → run `bootstrap` → assert it
+   **refuses loudly**: exits non-zero, creates **no** `goose_db_version` table, and
+   stamps nothing. Locks the refuse-on-partial branch from §4.
+5. **`TestFreshUp`** — empty DB → `up` → assert all **20** baseline tables plus the
+   goose version table exist, and that the `0009`/`0010` `DO`-blocks parsed and
+   applied (RLS roles/policies and webhook objects present).
 
 ## 8. Docs (D-9 evidence-backed; scoped to what this chunk makes false)
 
 - **New:** `docs/adr/ADR-P001-migration-tooling.md` (rule **D-5**, `ADR-P###`
   numbering). Records: the goose choice and rationale; the irreversible-baseline-floor
-  decision; the `bootstrap`/stamp convergence mechanism; the **expand → backfill →
-  contract** policy for all future schema; the reversibility requirement from Chunk 1
-  onward; the flagged `goose_db_version` vs `schema_migrations` deviation. Cites the
-  proving files/lines (runner subcommands, CI step, `bootstrap` implementation).
+  decision; the `bootstrap`/stamp convergence mechanism **and the full-footprint
+  detection rationale** (why never a single early sentinel; refuse-on-partial); the
+  **expand → backfill → contract** policy for all future schema; the **NO-TRANSACTION
+  audit requirement** for every future migration; the reversibility requirement from
+  Chunk 1 onward; the flagged `goose_db_version` vs `schema_migrations` deviation.
+  Cites the proving files/lines (runner subcommands, CI step, `bootstrap`
+  implementation).
 - **Update only what Chunk 0 falsifies:**
   - README + Makefile `help` lines describing `make migrate` applying `…up.sql` via
     `psql`.
@@ -213,10 +264,13 @@ Postgres service.
 
 - `make migrate` applies and `make migrate-down` rolls back via goose; no bare `psql`
   loop remains in the Makefile or CI.
-- CI proves the harness round-trips (canary up → down → up) and that an
-  already-migrated DB converges via `bootstrap` without destructive re-apply.
+- CI proves the harness round-trips (canary up → down → up); that an already-migrated
+  DB converges via `bootstrap` without destructive re-apply; that a fresh DB
+  bootstraps to `1…11`; and that a **partially-migrated DB is refused, not stamped**.
 - `sqlc` regenerated with zero diff; existing tests green; CI table/column/RLS
-  assertions still pass (count updated to 19).
+  assertions still pass, with the table-count assertion updated to **21**
+  (20 baseline tables + `goose_db_version`) now that `up` applies the full
+  `0001…0011` set.
 - `cmd/migrate` remains a single embedded binary (Railway deploy story intact).
 - ADR-P001 written with cited evidence; falsified docs/comments corrected.
 
