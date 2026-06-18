@@ -1,3 +1,4 @@
+-- +goose Up
 -- 0009_rls_tenant_isolation
 --
 -- Phase 7C-3: RLS / tenant isolation hardening (PR #22).
@@ -44,8 +45,6 @@
 -- Table count stays 18 — this migration adds NO business table. It only adds
 -- roles, grants, RLS enablement, and policies.
 
-BEGIN;
-
 -- ---------------------------------------------------------------------------
 -- 22.1 Roles
 --
@@ -58,24 +57,28 @@ BEGIN;
 -- image_platform_api: the RLS-enforced API tenant role. Non-superuser,
 -- non-owner, NO BYPASSRLS. Normal API request-path tenant work connects as this
 -- role and is fully subject to the policies below.
+-- +goose StatementBegin
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'image_platform_api') THEN
     CREATE ROLE image_platform_api LOGIN PASSWORD 'image_platform_api';
   END IF;
 END $$;
+-- +goose StatementEnd
 
 -- image_platform_system: the system/bypass role. Non-superuser but with
 -- BYPASSRLS, used only for legitimate cross-tenant / pre-tenant operations:
 -- migrations, seed, the worker (job lookup by id before tenant is known), auth
 -- token lookup + async last-used touch, system cost lifecycle, and explicit
 -- admin cross-tenant endpoints after an admin:* scope check.
+-- +goose StatementBegin
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'image_platform_system') THEN
     CREATE ROLE image_platform_system LOGIN PASSWORD 'image_platform_system';
   END IF;
 END $$;
+-- +goose StatementEnd
 
 -- Explicit RLS bypass for the system role. Under FORCE ROW LEVEL SECURITY the
 -- table owner is also subject to policies, so the system path cannot rely on
@@ -114,6 +117,7 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public
 -- surface), which is correct.
 -- ---------------------------------------------------------------------------
 
+-- +goose StatementBegin
 DO $$
 DECLARE
   t text;
@@ -141,6 +145,7 @@ BEGIN
     $f$, t);
   END LOOP;
 END $$;
+-- +goose StatementEnd
 
 -- ---------------------------------------------------------------------------
 -- Child tables (transitive tenant ownership)
@@ -162,6 +167,7 @@ END $$;
 --   cost_reservation_budget_holds  | cost_reservations  | cost_reservation_id
 -- ---------------------------------------------------------------------------
 
+-- +goose StatementBegin
 DO $$
 DECLARE
   rec record;
@@ -199,6 +205,7 @@ BEGIN
     $f$, child, parent, joincol);
   END LOOP;
 END $$;
+-- +goose StatementEnd
 
 -- ---------------------------------------------------------------------------
 -- Global reference tables — intentionally NOT protected.
@@ -210,4 +217,6 @@ END $$;
 -- regardless of the tenant GUC. RLS is deliberately NOT enabled on them.
 -- ---------------------------------------------------------------------------
 
-COMMIT;
+-- +goose Down
+-- Baseline migration: irreversible floor. Roll back by restoring from backup.
+SELECT 'baseline migration 0009 is irreversible' WHERE false;

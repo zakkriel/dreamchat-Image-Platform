@@ -61,8 +61,9 @@ golangci-lint run
 ```
 
 CI runs `go vet`, `go build`, `go test`, `openapi-spec-validator`, `sqlc vet`,
-and applies the migration to a throwaway Postgres asserting the 17 tables
-exist.
+and applies migrations to a throwaway Postgres via `go run ./cmd/migrate up`
+(goose), asserting the 20 baseline tables + `goose_db_version` exist and the
+schema is at version 11.
 
 ## Provider adapters
 

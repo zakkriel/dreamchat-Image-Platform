@@ -1,3 +1,4 @@
+-- +goose Up
 -- Phase 7C-4 (2/2): Outbound webhooks (MVP-tight).
 --
 -- Additive only. This is the FIRST deliberate table growth since Phase 6A3
@@ -93,6 +94,7 @@ CREATE INDEX idx_webhook_deliveries_job ON webhook_deliveries(generation_job_id)
 -- tables would silently lack grants. Explicit grants make this production-
 -- control PR robust to migration ownership.
 -- ---------------------------------------------------------------------------
+-- +goose StatementBegin
 DO $$
 DECLARE
   t text;
@@ -109,6 +111,7 @@ BEGIN
     $f$, t);
   END LOOP;
 END $$;
+-- +goose StatementEnd
 
 -- Explicit table privileges for both roles (see the note above). This does NOT
 -- weaken RLS: image_platform_api still has no BYPASSRLS, so it remains fully
@@ -119,3 +122,7 @@ END $$;
 GRANT SELECT, INSERT, UPDATE, DELETE
 ON webhook_endpoints, webhook_deliveries
 TO image_platform_api, image_platform_system;
+
+-- +goose Down
+-- Baseline migration: irreversible floor. Roll back by restoring from backup.
+SELECT 'baseline migration 0010 is irreversible' WHERE false;

@@ -1,3 +1,4 @@
+-- +goose Up
 -- 0011_fal_provider_seed
 --
 -- Seed migration for the first REAL reference-conditioned provider: fal.ai
@@ -30,8 +31,6 @@
 -- Endpoint / pricing assumptions are documented in internal/providers/fal/fal.go
 -- and docs/architecture/providers.md. fal bills FLUX.1 Kontext [pro] at $0.04 per
 -- output image (per-image unit, representable by the existing price schema).
-
-BEGIN;
 
 -- 1. fal provider model. Capabilities are reference-conditioned identity/pack
 --    (no production_capable, no_preview, no high-res) per the provider-capability
@@ -76,4 +75,6 @@ INSERT INTO provider_model_prices (
 )
 ON CONFLICT (id) DO NOTHING;
 
-COMMIT;
+-- +goose Down
+-- Baseline migration: irreversible floor. Roll back by restoring from backup.
+SELECT 'baseline migration 0011 is irreversible' WHERE false;

@@ -1,3 +1,4 @@
+-- +goose Up
 -- DreamChat Image Platform — initial schema (v0.5, matching OpenAPI v0.5.0)
 --
 -- This is a starting point for the first migration, not a frozen production
@@ -542,3 +543,7 @@ CREATE INDEX idx_audit_events_actor ON audit_events(actor_token_id, created_at D
 --   * The `pack_type` column is currently free text; promoting to CHECK or
 --     a lookup table is left for when the PRD 04 template list stabilizes.
 -- ---------------------------------------------------------------------------
+
+-- +goose Down
+-- Baseline migration: irreversible floor. Roll back by restoring from backup.
+SELECT 'baseline migration 0001 is irreversible' WHERE false;

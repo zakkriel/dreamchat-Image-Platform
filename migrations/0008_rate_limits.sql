@@ -1,3 +1,4 @@
+-- +goose Up
 -- Phase 7C-2: Rate Limiting + Hard Concurrent Job Caps.
 --
 -- Additive only. No new tables (table count stays 18): this migration adds
@@ -25,3 +26,7 @@ ALTER TABLE api_tokens
 -- directly. This is an index, not a table — table count remains 18.
 CREATE INDEX IF NOT EXISTS idx_generation_jobs_token_status
     ON generation_jobs (requested_by_token_id, status);
+
+-- +goose Down
+-- Baseline migration: irreversible floor. Roll back by restoring from backup.
+SELECT 'baseline migration 0008 is irreversible' WHERE false;

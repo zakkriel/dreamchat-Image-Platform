@@ -66,7 +66,7 @@ func (f *fakeResolver) ResolveChain(_ context.Context, req routing.ResolveReques
 }
 
 // okResolver resolves the seeded mock route, mirroring
-// migrations/0002_seed_mock_provider.up.sql.
+// migrations/0002_seed_mock_provider.sql.
 func okResolver() *fakeResolver {
 	return &fakeResolver{route: routing.ResolvedRoute{
 		ProviderID:        "mock",

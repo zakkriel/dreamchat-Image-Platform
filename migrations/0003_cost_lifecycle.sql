@@ -1,3 +1,4 @@
+-- +goose Up
 -- 0003_cost_lifecycle
 --
 -- Phase 4B: complete the cost-reservation lifecycle (commit on success /
@@ -13,8 +14,6 @@
 -- rows that were credited.
 --
 -- See frustration_log.md (Phase 4B) for the rationale.
-
-BEGIN;
 
 CREATE TABLE IF NOT EXISTS cost_reservation_budget_holds (
     id TEXT PRIMARY KEY,
@@ -34,4 +33,6 @@ CREATE INDEX IF NOT EXISTS idx_cost_reservation_budget_holds_reservation
 CREATE INDEX IF NOT EXISTS idx_cost_reservation_budget_holds_budget
     ON cost_reservation_budget_holds(cost_budget_id);
 
-COMMIT;
+-- +goose Down
+-- Baseline migration: irreversible floor. Roll back by restoring from backup.
+SELECT 'baseline migration 0003 is irreversible' WHERE false;

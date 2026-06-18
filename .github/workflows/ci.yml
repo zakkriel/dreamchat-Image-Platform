@@ -137,28 +137,10 @@ jobs:
           mc mb --ignore-existing local/image-platform
           mc ls local/
 
-      - name: apply migrations
+      - name: apply migrations (goose)
         env:
-          PGPASSWORD: image_platform
-        run: |
-          psql -h localhost -U image_platform -d image_platform \
-               -v ON_ERROR_STOP=1 -f migrations/0001_initial.up.sql
-          psql -h localhost -U image_platform -d image_platform \
-               -v ON_ERROR_STOP=1 -f migrations/0002_seed_mock_provider.up.sql
-          psql -h localhost -U image_platform -d image_platform \
-               -v ON_ERROR_STOP=1 -f migrations/0003_cost_lifecycle.up.sql
-          psql -h localhost -U image_platform -d image_platform \
-               -v ON_ERROR_STOP=1 -f migrations/0004_pack_completeness.up.sql
-          psql -h localhost -U image_platform -d image_platform \
-               -v ON_ERROR_STOP=1 -f migrations/0005_supersede_on_regenerate.up.sql
-          psql -h localhost -U image_platform -d image_platform \
-               -v ON_ERROR_STOP=1 -f migrations/0006_bfl_provider_seed.up.sql
-          psql -h localhost -U image_platform -d image_platform \
-               -v ON_ERROR_STOP=1 -f migrations/0007_budget_period_reset.up.sql
-          psql -h localhost -U image_platform -d image_platform \
-               -v ON_ERROR_STOP=1 -f migrations/0008_rate_limits.up.sql
-          psql -h localhost -U image_platform -d image_platform \
-               -v ON_ERROR_STOP=1 -f migrations/0009_rls_tenant_isolation.up.sql
+          POSTGRES_DSN: postgres://image_platform:image_platform@localhost:5432/image_platform?sslmode=disable
+        run: go run ./cmd/migrate up
 
       - name: assert all expected tables exist
         env:
@@ -167,13 +149,30 @@ jobs:
           count=$(psql -h localhost -U image_platform -d image_platform -tAc \
             "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'")
           echo "table count: $count"
-          # 17 from 0001 + cost_reservation_budget_holds from 0003 (Phase 4B).
-          # 0004 (Phase 6A3) and 0005 (Phase 6A4) only ADD columns — no new table.
-          # 0006 (Phase 7A) is seed-only DML (BFL provider/route/price) — no new table.
-          # 0007 (Phase 7C-1c) only ADDs cost_budgets.period_start — no new table.
-          # 0008 (Phase 7C-2) only ADDs api_tokens limit columns + an index — no new table.
-          # 0009 (Phase 7C-3) only adds RLS roles/policies — no new table.
-          test "$count" = "18"
+          # 20 baseline tables (17 from 0001 + cost_reservation_budget_holds from
+          # 0003 + 2 webhook tables from 0010) + goose_db_version = 21. goose now
+          # applies the FULL 0001-0011 set; the old psql list stopped at 0009.
+          test "$count" = "21"
+
+      - name: assert goose version is the baseline head
+        env:
+          PGPASSWORD: image_platform
+        run: |
+          v=$(psql -h localhost -U image_platform -d image_platform -tAc \
+            "SELECT max(version_id) FROM goose_db_version WHERE is_applied")
+          echo "goose version: $v"
+          test "$v" = "11"
+
+      - name: assert fal provider seed present (migration 0011)
+        env:
+          PGPASSWORD: image_platform
+        run: |
+          model=$(psql -h localhost -U image_platform -d image_platform -tAc \
+            "SELECT 1 FROM provider_models WHERE id = 'pm_fal_flux_kontext_multi' AND provider_id = 'fal'")
+          route=$(psql -h localhost -U image_platform -d image_platform -tAc \
+            "SELECT 1 FROM provider_routes WHERE id = 'route_fal_text_to_image_pack' AND required_capability = 'pack_capable'")
+          test "$model" = "1"
+          test "$route" = "1"
 
       - name: assert budget period_start column exists
         env:

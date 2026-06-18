@@ -42,7 +42,7 @@ import (
 const (
 	ProviderID = "bfl"
 	// ModelName is the default FLUX variant this adapter targets; it matches the
-	// model_name seeded in migrations/0006_bfl_provider_seed.up.sql.
+	// model_name seeded in migrations/0006_bfl_provider_seed.sql.
 	ModelName = "flux-pro-1.1"
 
 	defaultBaseURL      = "https://api.bfl.ai"

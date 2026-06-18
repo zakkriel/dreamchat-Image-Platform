@@ -47,9 +47,9 @@ minio                   # S3-compatible local
 minio-init              # one-shot job that creates the bucket
 ```
 
-`make up` brings the stack up. `make migrate` applies
-`docs/db/initial_schema.sql`. `make dev` is the full bootstrap (compose
-+ migrate + seed dev token). `make test` runs `go test ./...`.
+`make up` brings the stack up. `make migrate` applies the goose migrations in
+`migrations/` via `go run ./cmd/migrate up`. `make dev` is the full bootstrap
+(compose + migrate + seed dev token). `make test` runs `go test ./...`.
 
 ## Canonical environment variables
 
@@ -166,5 +166,5 @@ broad API-role grants, webhook at-least-once / no-DLQ / no-replay / no-rotation
 `make dev` brings the stack up. `curl localhost:8080/health` returns
 `200 OK` with a `request_id` response header. CI runs
 `openapi-spec-validator docs/api/openapi.yaml`, `go test ./...`,
-`sqlc vet`, and applies `docs/db/initial_schema.sql` to a throwaway
-Postgres. That's the bar.
+`sqlc vet`, and applies migrations via `go run ./cmd/migrate up` (goose) to a
+throwaway Postgres. That's the bar.
