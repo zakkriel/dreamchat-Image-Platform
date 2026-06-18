@@ -10,7 +10,7 @@ import (
 // handler holds the tenant pool and cannot accidentally obtain a SystemDB.
 //
 // It is backed by the BYPASSRLS image_platform_system role (see
-// migrations/0009_rls_tenant_isolation.up.sql) and is used ONLY for legitimate
+// migrations/0009_rls_tenant_isolation.sql) and is used ONLY for legitimate
 // cross-tenant or pre-tenant operations:
 //
 //   - auth token lookup before a principal (and therefore a tenant) exists

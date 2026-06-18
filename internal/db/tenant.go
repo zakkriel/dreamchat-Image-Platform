@@ -9,7 +9,7 @@ import (
 )
 
 // tenantGUC is the session/transaction setting the RLS policies in
-// migrations/0009_rls_tenant_isolation.up.sql read. Every tenant-scoped DB
+// migrations/0009_rls_tenant_isolation.sql read. Every tenant-scoped DB
 // statement on the request path must run with this set, or RLS denies by
 // default (an unset GUC becomes NULL and matches no tenant-owned rows).
 const tenantGUC = "app.current_tenant"

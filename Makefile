@@ -11,7 +11,7 @@ help:
 	@echo "  make down          - docker compose down -v"
 	@echo "  make migrate       - apply migrations via goose (cmd/migrate up)"
 	@echo "  make migrate-down  - roll back the latest migration (cmd/migrate down)"
-	@echo "  make migrate-status- show goose migration status"
+	@echo "  make migrate-status - show goose migration status"
 	@echo "  make seed          - insert one dev API token (raw value printed once)"
 	@echo "  make seed-admin    - insert one dev admin token (admin:costs only)"
 	@echo "  make dev           - up + wait-for-ready + migrate + seed"

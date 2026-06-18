@@ -58,7 +58,7 @@ import (
 const (
 	ProviderID = "fal"
 	// ModelName is the fal model id this adapter targets; it matches the
-	// model_name seeded in migrations/0011_fal_provider_seed.up.sql.
+	// model_name seeded in migrations/0011_fal_provider_seed.sql.
 	ModelName = "flux-pro-kontext-multi"
 	// modelPath is the fal queue endpoint path for the model.
 	modelPath = "fal-ai/flux-pro/kontext/multi"
