@@ -10,9 +10,9 @@ require (
 	github.com/go-chi/chi/v5 v5.3.0
 	github.com/google/uuid v1.6.0
 	github.com/hibiken/asynq v0.26.0
-	github.com/jackc/pgx/v5 v5.9.2
+	github.com/jackc/pgx/v5 v5.7.2
 	github.com/oapi-codegen/oapi-codegen/v2 v2.4.1
-	github.com/pressly/goose/v3 v3.27.1
+	github.com/pressly/goose/v3 v3.24.1
 	github.com/redis/go-redis/v9 v9.14.1
 	golang.org/x/image v0.42.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -54,6 +54,7 @@ require (
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/vmware-labs/yaml-jsonpath v0.3.2 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
+	golang.org/x/crypto v0.31.0 // indirect
 	golang.org/x/mod v0.36.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/sys v0.44.0 // indirect
