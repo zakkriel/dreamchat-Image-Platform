@@ -12,6 +12,7 @@ sql:
       - "migrations/0010_webhooks.sql"
       - "migrations/0012_governance_envelope.sql"
       - "migrations/0013_cost_routing.sql"
+      - "migrations/0014_anchor_lineage.sql"
     gen:
       go:
         package: "dbgen"

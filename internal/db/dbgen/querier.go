@@ -98,6 +98,9 @@ type Querier interface {
 	GetIdempotencyKey(ctx context.Context, arg GetIdempotencyKeyParams) (IdempotencyKey, error)
 	GetProviderModelPrice(ctx context.Context, id string) (GetProviderModelPriceRow, error)
 	GetStyleProfileByID(ctx context.Context, arg GetStyleProfileByIDParams) (StyleProfile, error)
+	// CONVENTION: queries here list visual_assets columns EXPLICITLY (not SELECT *).
+	// When a migration adds a column, append it to the matching RETURNING/SELECT
+	// lists below, or sqlc emits a per-query *Row type and the build breaks.
 	GetVisualAssetByID(ctx context.Context, arg GetVisualAssetByIDParams) (VisualAsset, error)
 	GetVisualIdentityByID(ctx context.Context, arg GetVisualIdentityByIDParams) (VisualIdentity, error)
 	GetVisualIdentityByOwner(ctx context.Context, arg GetVisualIdentityByOwnerParams) (VisualIdentity, error)

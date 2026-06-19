@@ -122,7 +122,8 @@ SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
        provider_id, model_id, provider_route_id,
        prompt_hash, seed, reference_asset_ids,
        generation_job_id, metadata, generated_at,
-       created_at, updated_at, superseded_by_asset_id
+       created_at, updated_at, superseded_by_asset_id,
+       anchor_asset_id, derive_from
 FROM visual_assets
 WHERE tenant_id = $1
   AND world_id = $2
@@ -205,6 +206,8 @@ func (q *Queries) FindExactVisualAsset(ctx context.Context, arg FindExactVisualA
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.SupersededByAssetID,
+		&i.AnchorAssetID,
+		&i.DeriveFrom,
 	)
 	return i, err
 }
@@ -218,7 +221,8 @@ SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
        provider_id, model_id, provider_route_id,
        prompt_hash, seed, reference_asset_ids,
        generation_job_id, metadata, generated_at,
-       created_at, updated_at, superseded_by_asset_id
+       created_at, updated_at, superseded_by_asset_id,
+       anchor_asset_id, derive_from
 FROM visual_assets
 WHERE tenant_id = $1
   AND world_id = $2
@@ -297,11 +301,14 @@ func (q *Queries) FindReadyArtifactByPromptHash(ctx context.Context, arg FindRea
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.SupersededByAssetID,
+		&i.AnchorAssetID,
+		&i.DeriveFrom,
 	)
 	return i, err
 }
 
 const getVisualAssetByID = `-- name: GetVisualAssetByID :one
+
 SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
        variant_family, version, state_version, style_profile_id,
        style_profile_version, quality_tier, status,
@@ -310,7 +317,8 @@ SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
        provider_id, model_id, provider_route_id,
        prompt_hash, seed, reference_asset_ids,
        generation_job_id, metadata, generated_at,
-       created_at, updated_at, superseded_by_asset_id
+       created_at, updated_at, superseded_by_asset_id,
+       anchor_asset_id, derive_from
 FROM visual_assets
 WHERE id = $1
   AND tenant_id = $2
@@ -321,6 +329,9 @@ type GetVisualAssetByIDParams struct {
 	TenantID string `json:"tenant_id"`
 }
 
+// CONVENTION: queries here list visual_assets columns EXPLICITLY (not SELECT *).
+// When a migration adds a column, append it to the matching RETURNING/SELECT
+// lists below, or sqlc emits a per-query *Row type and the build breaks.
 func (q *Queries) GetVisualAssetByID(ctx context.Context, arg GetVisualAssetByIDParams) (VisualAsset, error) {
 	row := q.db.QueryRow(ctx, getVisualAssetByID, arg.ID, arg.TenantID)
 	var i VisualAsset
@@ -357,6 +368,8 @@ func (q *Queries) GetVisualAssetByID(ctx context.Context, arg GetVisualAssetByID
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.SupersededByAssetID,
+		&i.AnchorAssetID,
+		&i.DeriveFrom,
 	)
 	return i, err
 }
@@ -387,7 +400,8 @@ RETURNING id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
           provider_id, model_id, provider_route_id,
           prompt_hash, seed, reference_asset_ids,
           generation_job_id, metadata, generated_at,
-          created_at, updated_at, superseded_by_asset_id
+          created_at, updated_at, superseded_by_asset_id,
+          anchor_asset_id, derive_from
 `
 
 type InsertPreviewVisualAssetParams struct {
@@ -484,6 +498,8 @@ func (q *Queries) InsertPreviewVisualAsset(ctx context.Context, arg InsertPrevie
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.SupersededByAssetID,
+		&i.AnchorAssetID,
+		&i.DeriveFrom,
 	)
 	return i, err
 }
@@ -514,7 +530,8 @@ RETURNING id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
           provider_id, model_id, provider_route_id,
           prompt_hash, seed, reference_asset_ids,
           generation_job_id, metadata, generated_at,
-          created_at, updated_at, superseded_by_asset_id
+          created_at, updated_at, superseded_by_asset_id,
+          anchor_asset_id, derive_from
 `
 
 type InsertVisualAssetParams struct {
@@ -609,6 +626,8 @@ func (q *Queries) InsertVisualAsset(ctx context.Context, arg InsertVisualAssetPa
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.SupersededByAssetID,
+		&i.AnchorAssetID,
+		&i.DeriveFrom,
 	)
 	return i, err
 }
@@ -622,7 +641,8 @@ SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
        provider_id, model_id, provider_route_id,
        prompt_hash, seed, reference_asset_ids,
        generation_job_id, metadata, generated_at,
-       created_at, updated_at, superseded_by_asset_id
+       created_at, updated_at, superseded_by_asset_id,
+       anchor_asset_id, derive_from
 FROM visual_assets
 WHERE tenant_id = $1
   AND world_id = $2
@@ -700,6 +720,8 @@ func (q *Queries) ListVisualAssetCandidates(ctx context.Context, arg ListVisualA
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.SupersededByAssetID,
+			&i.AnchorAssetID,
+			&i.DeriveFrom,
 		); err != nil {
 			return nil, err
 		}
@@ -720,7 +742,8 @@ SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
        provider_id, model_id, provider_route_id,
        prompt_hash, seed, reference_asset_ids,
        generation_job_id, metadata, generated_at,
-       created_at, updated_at, superseded_by_asset_id
+       created_at, updated_at, superseded_by_asset_id,
+       anchor_asset_id, derive_from
 FROM visual_assets
 WHERE tenant_id = $1
   AND world_id = $2
@@ -798,6 +821,8 @@ func (q *Queries) ListVisualAssetCandidatesByCompatTag(ctx context.Context, arg 
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.SupersededByAssetID,
+			&i.AnchorAssetID,
+			&i.DeriveFrom,
 		); err != nil {
 			return nil, err
 		}

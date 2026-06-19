@@ -285,6 +285,22 @@ func TestMigration0013CostRouting(t *testing.T) {
 	}
 }
 
+// TestMigration0014AnchorLineage proves anchor lineage columns land on both
+// visual_assets and generation_jobs.
+func TestMigration0014AnchorLineage(t *testing.T) {
+	db, _ := testdb.New(t)
+	if err := migrate.Up(db); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	for _, tbl := range []string{"visual_assets", "generation_jobs"} {
+		for _, col := range []string{"anchor_asset_id", "derive_from"} {
+			if !columnExists(t, db, tbl, col) {
+				t.Fatalf("%s.%s missing after up", tbl, col)
+			}
+		}
+	}
+}
+
 // TestMigration0012Governance proves the governance envelope columns are applied.
 func TestMigration0012Governance(t *testing.T) {
 	db, _ := testdb.New(t)

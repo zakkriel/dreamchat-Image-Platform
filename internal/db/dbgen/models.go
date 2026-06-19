@@ -165,6 +165,8 @@ type GenerationJob struct {
 	Transform            []byte             `json:"transform"`
 	MaxMegapixels        pgtype.Numeric     `json:"max_megapixels"`
 	Lazy                 *bool              `json:"lazy"`
+	AnchorAssetID        *string            `json:"anchor_asset_id"`
+	DeriveFrom           *string            `json:"derive_from"`
 }
 
 type IdempotencyKey struct {
@@ -305,6 +307,8 @@ type VisualAsset struct {
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
 	SupersededByAssetID *string            `json:"superseded_by_asset_id"`
+	AnchorAssetID       *string            `json:"anchor_asset_id"`
+	DeriveFrom          *string            `json:"derive_from"`
 }
 
 type VisualIdentity struct {
