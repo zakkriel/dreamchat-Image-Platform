@@ -18,7 +18,8 @@ RETURNING id, tenant_id, world_id, job_type, status,
           cost_reservation_id, cost_estimate_usd, actual_cost_usd,
           queue_duration_ms, generation_duration_ms,
           created_at, updated_at, started_at, completed_at,
-          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at;
+          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at,
+          intent, transform_only, transform, max_megapixels, lazy;
 
 -- name: InsertCompletedCacheHitJob :one
 -- Phase 6A2 single-artifact exact reuse: insert a generation job that is
@@ -48,7 +49,8 @@ RETURNING id, tenant_id, world_id, job_type, status,
           cost_reservation_id, cost_estimate_usd, actual_cost_usd,
           queue_duration_ms, generation_duration_ms,
           created_at, updated_at, started_at, completed_at,
-          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at;
+          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at,
+          intent, transform_only, transform, max_megapixels, lazy;
 
 -- name: InsertCompletedPackReuseJob :one
 -- Phase 6A3 all-hits pack reuse: the pack analogue of InsertCompletedCacheHitJob.
@@ -79,7 +81,8 @@ RETURNING id, tenant_id, world_id, job_type, status,
           cost_reservation_id, cost_estimate_usd, actual_cost_usd,
           queue_duration_ms, generation_duration_ms,
           created_at, updated_at, started_at, completed_at,
-          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at;
+          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at,
+          intent, transform_only, transform, max_megapixels, lazy;
 
 -- SetGenerationJobCost links a job to its cost_reservation and records the
 -- pre-flight estimate. Run inside the create transaction, after the
@@ -100,7 +103,8 @@ SELECT id, tenant_id, world_id, job_type, status,
        cost_reservation_id, cost_estimate_usd, actual_cost_usd,
        queue_duration_ms, generation_duration_ms,
        created_at, updated_at, started_at, completed_at,
-       governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at
+       governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at,
+       intent, transform_only, transform, max_megapixels, lazy
 FROM generation_jobs
 WHERE id = $1
   AND tenant_id = $2;
@@ -114,7 +118,8 @@ SELECT id, tenant_id, world_id, job_type, status,
        cost_reservation_id, cost_estimate_usd, actual_cost_usd,
        queue_duration_ms, generation_duration_ms,
        created_at, updated_at, started_at, completed_at,
-       governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at
+       governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at,
+       intent, transform_only, transform, max_megapixels, lazy
 FROM generation_jobs
 WHERE id = $1;
 
@@ -152,7 +157,8 @@ RETURNING id, tenant_id, world_id, job_type, status,
           cost_reservation_id, cost_estimate_usd, actual_cost_usd,
           queue_duration_ms, generation_duration_ms,
           created_at, updated_at, started_at, completed_at,
-          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at;
+          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at,
+          intent, transform_only, transform, max_megapixels, lazy;
 
 -- RetryResetGenerationJob reopens a failed job (Phase 7C-1b). It keeps the job
 -- identity, payload, fallback policy, delivery mode, persisted resolved route,
@@ -184,7 +190,8 @@ RETURNING id, tenant_id, world_id, job_type, status,
           cost_reservation_id, cost_estimate_usd, actual_cost_usd,
           queue_duration_ms, generation_duration_ms,
           created_at, updated_at, started_at, completed_at,
-          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at;
+          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at,
+          intent, transform_only, transform, max_megapixels, lazy;
 
 -- LockGenerationJobRowForUpdate row-locks a job and returns the full row so the
 -- retry path can read the persisted resolved route + payload under the same
@@ -198,7 +205,8 @@ SELECT id, tenant_id, world_id, job_type, status,
        cost_reservation_id, cost_estimate_usd, actual_cost_usd,
        queue_duration_ms, generation_duration_ms,
        created_at, updated_at, started_at, completed_at,
-       governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at
+       governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at,
+       intent, transform_only, transform, max_megapixels, lazy
 FROM generation_jobs
 WHERE id = $1
   AND tenant_id = $2
@@ -219,7 +227,8 @@ RETURNING id, tenant_id, world_id, job_type, status,
           cost_reservation_id, cost_estimate_usd, actual_cost_usd,
           queue_duration_ms, generation_duration_ms,
           created_at, updated_at, started_at, completed_at,
-          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at;
+          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at,
+          intent, transform_only, transform, max_megapixels, lazy;
 
 -- name: MarkGenerationJobCompleted :one
 UPDATE generation_jobs
@@ -237,7 +246,8 @@ RETURNING id, tenant_id, world_id, job_type, status,
           cost_reservation_id, cost_estimate_usd, actual_cost_usd,
           queue_duration_ms, generation_duration_ms,
           created_at, updated_at, started_at, completed_at,
-          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at;
+          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at,
+          intent, transform_only, transform, max_megapixels, lazy;
 
 -- name: MarkGenerationJobPreviewReady :one
 -- Phase 7B two-phase generation: the preview tier landed. Flip the job to
@@ -260,7 +270,8 @@ RETURNING id, tenant_id, world_id, job_type, status,
           cost_reservation_id, cost_estimate_usd, actual_cost_usd,
           queue_duration_ms, generation_duration_ms,
           created_at, updated_at, started_at, completed_at,
-          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at;
+          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at,
+          intent, transform_only, transform, max_megapixels, lazy;
 
 -- name: MarkGenerationJobFailed :one
 UPDATE generation_jobs
@@ -280,7 +291,8 @@ RETURNING id, tenant_id, world_id, job_type, status,
           cost_reservation_id, cost_estimate_usd, actual_cost_usd,
           queue_duration_ms, generation_duration_ms,
           created_at, updated_at, started_at, completed_at,
-          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at;
+          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at,
+          intent, transform_only, transform, max_megapixels, lazy;
 
 -- name: CountLiveGenerationJobsByToken :one
 -- Phase 7C-2: the hard concurrent-job cap counts a token's live generation

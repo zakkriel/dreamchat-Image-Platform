@@ -160,6 +160,11 @@ type GenerationJob struct {
 	ContentClass         *string            `json:"content_class"`
 	AuthorizedBy         *string            `json:"authorized_by"`
 	GovernanceVerifiedAt pgtype.Timestamptz `json:"governance_verified_at"`
+	Intent               *string            `json:"intent"`
+	TransformOnly        *bool              `json:"transform_only"`
+	Transform            []byte             `json:"transform"`
+	MaxMegapixels        pgtype.Numeric     `json:"max_megapixels"`
+	Lazy                 *bool              `json:"lazy"`
 }
 
 type IdempotencyKey struct {

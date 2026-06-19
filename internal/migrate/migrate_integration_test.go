@@ -270,6 +270,21 @@ func columnExists(t *testing.T, db *sql.DB, table, column string) bool {
 	return n > 0
 }
 
+// TestMigration0013CostRouting proves the cost-routing columns are applied.
+func TestMigration0013CostRouting(t *testing.T) {
+	db, _ := testdb.New(t)
+	if err := migrate.Up(db); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	for _, col := range []string{
+		"intent", "transform_only", "transform", "max_megapixels", "lazy",
+	} {
+		if !columnExists(t, db, "generation_jobs", col) {
+			t.Fatalf("generation_jobs.%s missing after up", col)
+		}
+	}
+}
+
 // TestMigration0012Governance proves the governance envelope columns are applied.
 func TestMigration0012Governance(t *testing.T) {
 	db, _ := testdb.New(t)

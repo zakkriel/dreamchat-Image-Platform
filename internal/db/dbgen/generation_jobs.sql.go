@@ -29,7 +29,8 @@ RETURNING id, tenant_id, world_id, job_type, status,
           cost_reservation_id, cost_estimate_usd, actual_cost_usd,
           queue_duration_ms, generation_duration_ms,
           created_at, updated_at, started_at, completed_at,
-          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at
+          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at,
+          intent, transform_only, transform, max_megapixels, lazy
 `
 
 type CancelGenerationJobParams struct {
@@ -78,6 +79,11 @@ func (q *Queries) CancelGenerationJob(ctx context.Context, arg CancelGenerationJ
 		&i.ContentClass,
 		&i.AuthorizedBy,
 		&i.GovernanceVerifiedAt,
+		&i.Intent,
+		&i.TransformOnly,
+		&i.Transform,
+		&i.MaxMegapixels,
+		&i.Lazy,
 	)
 	return i, err
 }
@@ -113,7 +119,8 @@ SELECT id, tenant_id, world_id, job_type, status,
        cost_reservation_id, cost_estimate_usd, actual_cost_usd,
        queue_duration_ms, generation_duration_ms,
        created_at, updated_at, started_at, completed_at,
-       governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at
+       governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at,
+       intent, transform_only, transform, max_megapixels, lazy
 FROM generation_jobs
 WHERE id = $1
   AND tenant_id = $2
@@ -160,6 +167,11 @@ func (q *Queries) GetGenerationJobByID(ctx context.Context, arg GetGenerationJob
 		&i.ContentClass,
 		&i.AuthorizedBy,
 		&i.GovernanceVerifiedAt,
+		&i.Intent,
+		&i.TransformOnly,
+		&i.Transform,
+		&i.MaxMegapixels,
+		&i.Lazy,
 	)
 	return i, err
 }
@@ -173,7 +185,8 @@ SELECT id, tenant_id, world_id, job_type, status,
        cost_reservation_id, cost_estimate_usd, actual_cost_usd,
        queue_duration_ms, generation_duration_ms,
        created_at, updated_at, started_at, completed_at,
-       governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at
+       governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at,
+       intent, transform_only, transform, max_megapixels, lazy
 FROM generation_jobs
 WHERE id = $1
 `
@@ -214,6 +227,11 @@ func (q *Queries) GetGenerationJobByIDUnchecked(ctx context.Context, id string) 
 		&i.ContentClass,
 		&i.AuthorizedBy,
 		&i.GovernanceVerifiedAt,
+		&i.Intent,
+		&i.TransformOnly,
+		&i.Transform,
+		&i.MaxMegapixels,
+		&i.Lazy,
 	)
 	return i, err
 }
@@ -238,7 +256,8 @@ RETURNING id, tenant_id, world_id, job_type, status,
           cost_reservation_id, cost_estimate_usd, actual_cost_usd,
           queue_duration_ms, generation_duration_ms,
           created_at, updated_at, started_at, completed_at,
-          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at
+          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at,
+          intent, transform_only, transform, max_megapixels, lazy
 `
 
 type InsertCompletedCacheHitJobParams struct {
@@ -307,6 +326,11 @@ func (q *Queries) InsertCompletedCacheHitJob(ctx context.Context, arg InsertComp
 		&i.ContentClass,
 		&i.AuthorizedBy,
 		&i.GovernanceVerifiedAt,
+		&i.Intent,
+		&i.TransformOnly,
+		&i.Transform,
+		&i.MaxMegapixels,
+		&i.Lazy,
 	)
 	return i, err
 }
@@ -331,7 +355,8 @@ RETURNING id, tenant_id, world_id, job_type, status,
           cost_reservation_id, cost_estimate_usd, actual_cost_usd,
           queue_duration_ms, generation_duration_ms,
           created_at, updated_at, started_at, completed_at,
-          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at
+          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at,
+          intent, transform_only, transform, max_megapixels, lazy
 `
 
 type InsertCompletedPackReuseJobParams struct {
@@ -403,6 +428,11 @@ func (q *Queries) InsertCompletedPackReuseJob(ctx context.Context, arg InsertCom
 		&i.ContentClass,
 		&i.AuthorizedBy,
 		&i.GovernanceVerifiedAt,
+		&i.Intent,
+		&i.TransformOnly,
+		&i.Transform,
+		&i.MaxMegapixels,
+		&i.Lazy,
 	)
 	return i, err
 }
@@ -424,7 +454,8 @@ RETURNING id, tenant_id, world_id, job_type, status,
           cost_reservation_id, cost_estimate_usd, actual_cost_usd,
           queue_duration_ms, generation_duration_ms,
           created_at, updated_at, started_at, completed_at,
-          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at
+          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at,
+          intent, transform_only, transform, max_megapixels, lazy
 `
 
 type InsertGenerationJobParams struct {
@@ -486,6 +517,11 @@ func (q *Queries) InsertGenerationJob(ctx context.Context, arg InsertGenerationJ
 		&i.ContentClass,
 		&i.AuthorizedBy,
 		&i.GovernanceVerifiedAt,
+		&i.Intent,
+		&i.TransformOnly,
+		&i.Transform,
+		&i.MaxMegapixels,
+		&i.Lazy,
 	)
 	return i, err
 }
@@ -524,7 +560,8 @@ SELECT id, tenant_id, world_id, job_type, status,
        cost_reservation_id, cost_estimate_usd, actual_cost_usd,
        queue_duration_ms, generation_duration_ms,
        created_at, updated_at, started_at, completed_at,
-       governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at
+       governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at,
+       intent, transform_only, transform, max_megapixels, lazy
 FROM generation_jobs
 WHERE id = $1
   AND tenant_id = $2
@@ -575,6 +612,11 @@ func (q *Queries) LockGenerationJobRowForUpdate(ctx context.Context, arg LockGen
 		&i.ContentClass,
 		&i.AuthorizedBy,
 		&i.GovernanceVerifiedAt,
+		&i.Intent,
+		&i.TransformOnly,
+		&i.Transform,
+		&i.MaxMegapixels,
+		&i.Lazy,
 	)
 	return i, err
 }
@@ -595,7 +637,8 @@ RETURNING id, tenant_id, world_id, job_type, status,
           cost_reservation_id, cost_estimate_usd, actual_cost_usd,
           queue_duration_ms, generation_duration_ms,
           created_at, updated_at, started_at, completed_at,
-          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at
+          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at,
+          intent, transform_only, transform, max_megapixels, lazy
 `
 
 type MarkGenerationJobCompletedParams struct {
@@ -640,6 +683,11 @@ func (q *Queries) MarkGenerationJobCompleted(ctx context.Context, arg MarkGenera
 		&i.ContentClass,
 		&i.AuthorizedBy,
 		&i.GovernanceVerifiedAt,
+		&i.Intent,
+		&i.TransformOnly,
+		&i.Transform,
+		&i.MaxMegapixels,
+		&i.Lazy,
 	)
 	return i, err
 }
@@ -662,7 +710,8 @@ RETURNING id, tenant_id, world_id, job_type, status,
           cost_reservation_id, cost_estimate_usd, actual_cost_usd,
           queue_duration_ms, generation_duration_ms,
           created_at, updated_at, started_at, completed_at,
-          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at
+          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at,
+          intent, transform_only, transform, max_megapixels, lazy
 `
 
 type MarkGenerationJobFailedParams struct {
@@ -715,6 +764,11 @@ func (q *Queries) MarkGenerationJobFailed(ctx context.Context, arg MarkGeneratio
 		&i.ContentClass,
 		&i.AuthorizedBy,
 		&i.GovernanceVerifiedAt,
+		&i.Intent,
+		&i.TransformOnly,
+		&i.Transform,
+		&i.MaxMegapixels,
+		&i.Lazy,
 	)
 	return i, err
 }
@@ -734,7 +788,8 @@ RETURNING id, tenant_id, world_id, job_type, status,
           cost_reservation_id, cost_estimate_usd, actual_cost_usd,
           queue_duration_ms, generation_duration_ms,
           created_at, updated_at, started_at, completed_at,
-          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at
+          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at,
+          intent, transform_only, transform, max_megapixels, lazy
 `
 
 type MarkGenerationJobPreviewReadyParams struct {
@@ -785,6 +840,11 @@ func (q *Queries) MarkGenerationJobPreviewReady(ctx context.Context, arg MarkGen
 		&i.ContentClass,
 		&i.AuthorizedBy,
 		&i.GovernanceVerifiedAt,
+		&i.Intent,
+		&i.TransformOnly,
+		&i.Transform,
+		&i.MaxMegapixels,
+		&i.Lazy,
 	)
 	return i, err
 }
@@ -804,7 +864,8 @@ RETURNING id, tenant_id, world_id, job_type, status,
           cost_reservation_id, cost_estimate_usd, actual_cost_usd,
           queue_duration_ms, generation_duration_ms,
           created_at, updated_at, started_at, completed_at,
-          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at
+          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at,
+          intent, transform_only, transform, max_megapixels, lazy
 `
 
 type MarkGenerationJobRunningParams struct {
@@ -848,6 +909,11 @@ func (q *Queries) MarkGenerationJobRunning(ctx context.Context, arg MarkGenerati
 		&i.ContentClass,
 		&i.AuthorizedBy,
 		&i.GovernanceVerifiedAt,
+		&i.Intent,
+		&i.TransformOnly,
+		&i.Transform,
+		&i.MaxMegapixels,
+		&i.Lazy,
 	)
 	return i, err
 }
@@ -875,7 +941,8 @@ RETURNING id, tenant_id, world_id, job_type, status,
           cost_reservation_id, cost_estimate_usd, actual_cost_usd,
           queue_duration_ms, generation_duration_ms,
           created_at, updated_at, started_at, completed_at,
-          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at
+          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at,
+          intent, transform_only, transform, max_megapixels, lazy
 `
 
 type RetryResetGenerationJobParams struct {
@@ -933,6 +1000,11 @@ func (q *Queries) RetryResetGenerationJob(ctx context.Context, arg RetryResetGen
 		&i.ContentClass,
 		&i.AuthorizedBy,
 		&i.GovernanceVerifiedAt,
+		&i.Intent,
+		&i.TransformOnly,
+		&i.Transform,
+		&i.MaxMegapixels,
+		&i.Lazy,
 	)
 	return i, err
 }
