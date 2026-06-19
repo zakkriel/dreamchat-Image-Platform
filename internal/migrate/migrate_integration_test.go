@@ -188,3 +188,70 @@ func TestBootstrapRefusesPartial(t *testing.T) {
 		t.Fatal("bootstrap must not create goose_db_version when refusing")
 	}
 }
+
+// TestDownToRefusesBelowBaseline proves DownTo rejects any target below the
+// irreversible baseline floor and leaves the schema version untouched.
+func TestDownToRefusesBelowBaseline(t *testing.T) {
+	db, _ := testdb.New(t)
+	if err := migrate.Up(db); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	before, err := migrate.Version(db)
+	if err != nil {
+		t.Fatalf("version: %v", err)
+	}
+	if err := migrate.DownTo(db, migrate.BaselineVersion-1); err == nil {
+		t.Fatal("expected down-to below baseline to be refused")
+	} else if !strings.Contains(err.Error(), "refused") {
+		t.Fatalf("error %q should mention 'refused'", err.Error())
+	}
+	after, err := migrate.Version(db)
+	if err != nil {
+		t.Fatalf("version after: %v", err)
+	}
+	if after != before {
+		t.Fatalf("version changed from %d to %d despite refusal", before, after)
+	}
+}
+
+// TestDownToBaselineAllowed proves DownTo to exactly the baseline floor succeeds
+// (it is the CI round-trip's midpoint and leaves v11 applied).
+func TestDownToBaselineAllowed(t *testing.T) {
+	db, _ := testdb.New(t)
+	if err := migrate.Up(db); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	if err := migrate.DownTo(db, migrate.BaselineVersion); err != nil {
+		t.Fatalf("down-to baseline should be allowed: %v", err)
+	}
+	v, err := migrate.Version(db)
+	if err != nil {
+		t.Fatalf("version: %v", err)
+	}
+	if v != migrate.BaselineVersion {
+		t.Fatalf("version = %d, want %d", v, migrate.BaselineVersion)
+	}
+}
+
+// TestDownRefusesAtBaseline proves a single-step Down at the floor is refused.
+func TestDownRefusesAtBaseline(t *testing.T) {
+	db, _ := testdb.New(t)
+	if err := migrate.Up(db); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	if err := migrate.DownTo(db, migrate.BaselineVersion); err != nil {
+		t.Fatalf("down-to baseline: %v", err)
+	}
+	if err := migrate.Down(db); err == nil {
+		t.Fatal("expected single-step down at baseline to be refused")
+	} else if !strings.Contains(err.Error(), "refused") {
+		t.Fatalf("error %q should mention 'refused'", err.Error())
+	}
+	v, err := migrate.Version(db)
+	if err != nil {
+		t.Fatalf("version: %v", err)
+	}
+	if v != migrate.BaselineVersion {
+		t.Fatalf("version = %d, want %d (unchanged)", v, migrate.BaselineVersion)
+	}
+}
