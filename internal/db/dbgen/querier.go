@@ -166,6 +166,9 @@ type Querier interface {
 	// the worker never managed to write one (best-effort fallback).
 	InsertFinalizerCostEvent(ctx context.Context, arg InsertFinalizerCostEventParams) error
 	InsertGenerationCostEvent(ctx context.Context, arg InsertGenerationCostEventParams) error
+	// CONVENTION: queries here list generation_jobs columns EXPLICITLY (not SELECT *).
+	// When a migration adds a column, append it to the matching RETURNING/SELECT
+	// lists below, or sqlc emits a per-query *Row type and the build breaks.
 	InsertGenerationJob(ctx context.Context, arg InsertGenerationJobParams) (GenerationJob, error)
 	InsertIdempotencyKey(ctx context.Context, arg InsertIdempotencyKeyParams) (IdempotencyKey, error)
 	// Phase 7B two-phase preview tier. Identical column mapping to InsertVisualAsset

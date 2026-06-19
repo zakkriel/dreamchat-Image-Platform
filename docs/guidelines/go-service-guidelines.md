@@ -64,6 +64,7 @@ Never log raw bearer tokens.
 ## Migrations
 
 Use explicit SQL migrations.
+Adding a column? Update the matching explicit query `RETURNING`/`SELECT` lists — this repo lists columns explicitly, not `*`, so sqlc otherwise emits a per-query `*Row` type and the build breaks.
 
 ## Generated OpenAPI Types
 

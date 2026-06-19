@@ -88,8 +88,8 @@ func TestFreshUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("version: %v", err)
 	}
-	if v != migrate.BaselineVersion {
-		t.Fatalf("version = %d, want %d", v, migrate.BaselineVersion)
+	if v < migrate.BaselineVersion {
+		t.Fatalf("version = %d, want >= baseline %d", v, migrate.BaselineVersion)
 	}
 }
 
@@ -136,8 +136,8 @@ func TestFreshBootstrap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("version: %v", err)
 	}
-	if v != migrate.BaselineVersion {
-		t.Fatalf("version = %d, want %d", v, migrate.BaselineVersion)
+	if v < migrate.BaselineVersion {
+		t.Fatalf("version = %d, want >= baseline %d", v, migrate.BaselineVersion)
 	}
 	for _, tbl := range baselineTables {
 		if !testdb.TableExists(t, db, tbl) {
@@ -162,8 +162,8 @@ func TestBaselineConvergence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("version: %v", err)
 	}
-	if v != migrate.BaselineVersion {
-		t.Fatalf("version = %d, want %d", v, migrate.BaselineVersion)
+	if v < migrate.BaselineVersion {
+		t.Fatalf("version = %d, want >= baseline %d", v, migrate.BaselineVersion)
 	}
 	// A following Up must be a clean no-op.
 	if err := migrate.Up(db); err != nil {
@@ -253,5 +253,35 @@ func TestDownRefusesAtBaseline(t *testing.T) {
 	}
 	if v != migrate.BaselineVersion {
 		t.Fatalf("version = %d, want %d (unchanged)", v, migrate.BaselineVersion)
+	}
+}
+
+// columnExists reports whether a column of the given name exists on a table in
+// the public schema.
+func columnExists(t *testing.T, db *sql.DB, table, column string) bool {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(
+		`SELECT count(*) FROM information_schema.columns
+		 WHERE table_schema='public' AND table_name=$1 AND column_name=$2`,
+		table, column).Scan(&n); err != nil {
+		t.Fatalf("columnExists(%s.%s): %v", table, column, err)
+	}
+	return n > 0
+}
+
+// TestMigration0012Governance proves the governance envelope columns are applied.
+func TestMigration0012Governance(t *testing.T) {
+	db, _ := testdb.New(t)
+	if err := migrate.Up(db); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	for _, col := range []string{
+		"governance_envelope", "classification_id", "visibility",
+		"content_class", "authorized_by", "governance_verified_at",
+	} {
+		if !columnExists(t, db, "generation_jobs", col) {
+			t.Fatalf("generation_jobs.%s missing after up", col)
+		}
 	}
 }

@@ -10,6 +10,7 @@ sql:
       - "migrations/0007_budget_period_reset.sql"
       - "migrations/0008_rate_limits.sql"
       - "migrations/0010_webhooks.sql"
+      - "migrations/0012_governance_envelope.sql"
     gen:
       go:
         package: "dbgen"

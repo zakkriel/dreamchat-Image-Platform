@@ -154,6 +154,12 @@ type GenerationJob struct {
 	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
 	StartedAt            pgtype.Timestamptz `json:"started_at"`
 	CompletedAt          pgtype.Timestamptz `json:"completed_at"`
+	GovernanceEnvelope   []byte             `json:"governance_envelope"`
+	ClassificationID     *string            `json:"classification_id"`
+	Visibility           *string            `json:"visibility"`
+	ContentClass         *string            `json:"content_class"`
+	AuthorizedBy         *string            `json:"authorized_by"`
+	GovernanceVerifiedAt pgtype.Timestamptz `json:"governance_verified_at"`
 }
 
 type IdempotencyKey struct {
