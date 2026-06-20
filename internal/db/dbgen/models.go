@@ -256,6 +256,31 @@ type ProviderRoute struct {
 	UpdatedAt             pgtype.Timestamptz `json:"updated_at"`
 }
 
+type SpriteSheetContract struct {
+	ID               string             `json:"id"`
+	TenantID         string             `json:"tenant_id"`
+	WorldID          *string            `json:"world_id"`
+	VisualIdentityID *string            `json:"visual_identity_id"`
+	SheetAssetID     *string            `json:"sheet_asset_id"`
+	GenerationJobID  *string            `json:"generation_job_id"`
+	RowCount         *int32             `json:"row_count"`
+	ColCount         *int32             `json:"col_count"`
+	Contract         []byte             `json:"contract"`
+	Status           *string            `json:"status"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+}
+
+type SpriteSheetSlice struct {
+	ID                    string             `json:"id"`
+	SpriteSheetContractID string             `json:"sprite_sheet_contract_id"`
+	CropIndex             *int32             `json:"crop_index"`
+	CropBox               []byte             `json:"crop_box"`
+	ExpressionKey         *string            `json:"expression_key"`
+	AssetID               *string            `json:"asset_id"`
+	CreatedAt             pgtype.Timestamptz `json:"created_at"`
+}
+
 type StyleProfile struct {
 	ID                     string             `json:"id"`
 	TenantID               string             `json:"tenant_id"`
@@ -309,6 +334,10 @@ type VisualAsset struct {
 	SupersededByAssetID *string            `json:"superseded_by_asset_id"`
 	AnchorAssetID       *string            `json:"anchor_asset_id"`
 	DeriveFrom          *string            `json:"derive_from"`
+	ParentAssetID       *string            `json:"parent_asset_id"`
+	CropIndex           *int32             `json:"crop_index"`
+	CropBox             []byte             `json:"crop_box"`
+	ExpressionKey       *string            `json:"expression_key"`
 }
 
 type VisualIdentity struct {

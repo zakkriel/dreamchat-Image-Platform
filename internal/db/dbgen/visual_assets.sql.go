@@ -123,7 +123,8 @@ SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
        prompt_hash, seed, reference_asset_ids,
        generation_job_id, metadata, generated_at,
        created_at, updated_at, superseded_by_asset_id,
-       anchor_asset_id, derive_from
+       anchor_asset_id, derive_from,
+       parent_asset_id, crop_index, crop_box, expression_key
 FROM visual_assets
 WHERE tenant_id = $1
   AND world_id = $2
@@ -208,6 +209,10 @@ func (q *Queries) FindExactVisualAsset(ctx context.Context, arg FindExactVisualA
 		&i.SupersededByAssetID,
 		&i.AnchorAssetID,
 		&i.DeriveFrom,
+		&i.ParentAssetID,
+		&i.CropIndex,
+		&i.CropBox,
+		&i.ExpressionKey,
 	)
 	return i, err
 }
@@ -222,7 +227,8 @@ SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
        prompt_hash, seed, reference_asset_ids,
        generation_job_id, metadata, generated_at,
        created_at, updated_at, superseded_by_asset_id,
-       anchor_asset_id, derive_from
+       anchor_asset_id, derive_from,
+       parent_asset_id, crop_index, crop_box, expression_key
 FROM visual_assets
 WHERE tenant_id = $1
   AND world_id = $2
@@ -303,6 +309,10 @@ func (q *Queries) FindReadyArtifactByPromptHash(ctx context.Context, arg FindRea
 		&i.SupersededByAssetID,
 		&i.AnchorAssetID,
 		&i.DeriveFrom,
+		&i.ParentAssetID,
+		&i.CropIndex,
+		&i.CropBox,
+		&i.ExpressionKey,
 	)
 	return i, err
 }
@@ -318,7 +328,8 @@ SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
        prompt_hash, seed, reference_asset_ids,
        generation_job_id, metadata, generated_at,
        created_at, updated_at, superseded_by_asset_id,
-       anchor_asset_id, derive_from
+       anchor_asset_id, derive_from,
+       parent_asset_id, crop_index, crop_box, expression_key
 FROM visual_assets
 WHERE id = $1
   AND tenant_id = $2
@@ -370,6 +381,10 @@ func (q *Queries) GetVisualAssetByID(ctx context.Context, arg GetVisualAssetByID
 		&i.SupersededByAssetID,
 		&i.AnchorAssetID,
 		&i.DeriveFrom,
+		&i.ParentAssetID,
+		&i.CropIndex,
+		&i.CropBox,
+		&i.ExpressionKey,
 	)
 	return i, err
 }
@@ -401,7 +416,8 @@ RETURNING id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
           prompt_hash, seed, reference_asset_ids,
           generation_job_id, metadata, generated_at,
           created_at, updated_at, superseded_by_asset_id,
-          anchor_asset_id, derive_from
+          anchor_asset_id, derive_from,
+          parent_asset_id, crop_index, crop_box, expression_key
 `
 
 type InsertPreviewVisualAssetParams struct {
@@ -500,6 +516,10 @@ func (q *Queries) InsertPreviewVisualAsset(ctx context.Context, arg InsertPrevie
 		&i.SupersededByAssetID,
 		&i.AnchorAssetID,
 		&i.DeriveFrom,
+		&i.ParentAssetID,
+		&i.CropIndex,
+		&i.CropBox,
+		&i.ExpressionKey,
 	)
 	return i, err
 }
@@ -531,7 +551,8 @@ RETURNING id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
           prompt_hash, seed, reference_asset_ids,
           generation_job_id, metadata, generated_at,
           created_at, updated_at, superseded_by_asset_id,
-          anchor_asset_id, derive_from
+          anchor_asset_id, derive_from,
+          parent_asset_id, crop_index, crop_box, expression_key
 `
 
 type InsertVisualAssetParams struct {
@@ -628,6 +649,10 @@ func (q *Queries) InsertVisualAsset(ctx context.Context, arg InsertVisualAssetPa
 		&i.SupersededByAssetID,
 		&i.AnchorAssetID,
 		&i.DeriveFrom,
+		&i.ParentAssetID,
+		&i.CropIndex,
+		&i.CropBox,
+		&i.ExpressionKey,
 	)
 	return i, err
 }
@@ -642,7 +667,8 @@ SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
        prompt_hash, seed, reference_asset_ids,
        generation_job_id, metadata, generated_at,
        created_at, updated_at, superseded_by_asset_id,
-       anchor_asset_id, derive_from
+       anchor_asset_id, derive_from,
+       parent_asset_id, crop_index, crop_box, expression_key
 FROM visual_assets
 WHERE tenant_id = $1
   AND world_id = $2
@@ -722,6 +748,10 @@ func (q *Queries) ListVisualAssetCandidates(ctx context.Context, arg ListVisualA
 			&i.SupersededByAssetID,
 			&i.AnchorAssetID,
 			&i.DeriveFrom,
+			&i.ParentAssetID,
+			&i.CropIndex,
+			&i.CropBox,
+			&i.ExpressionKey,
 		); err != nil {
 			return nil, err
 		}
@@ -743,7 +773,8 @@ SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
        prompt_hash, seed, reference_asset_ids,
        generation_job_id, metadata, generated_at,
        created_at, updated_at, superseded_by_asset_id,
-       anchor_asset_id, derive_from
+       anchor_asset_id, derive_from,
+       parent_asset_id, crop_index, crop_box, expression_key
 FROM visual_assets
 WHERE tenant_id = $1
   AND world_id = $2
@@ -823,6 +854,10 @@ func (q *Queries) ListVisualAssetCandidatesByCompatTag(ctx context.Context, arg 
 			&i.SupersededByAssetID,
 			&i.AnchorAssetID,
 			&i.DeriveFrom,
+			&i.ParentAssetID,
+			&i.CropIndex,
+			&i.CropBox,
+			&i.ExpressionKey,
 		); err != nil {
 			return nil, err
 		}

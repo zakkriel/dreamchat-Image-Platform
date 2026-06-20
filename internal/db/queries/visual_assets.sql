@@ -12,7 +12,8 @@ SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
        prompt_hash, seed, reference_asset_ids,
        generation_job_id, metadata, generated_at,
        created_at, updated_at, superseded_by_asset_id,
-       anchor_asset_id, derive_from
+       anchor_asset_id, derive_from,
+       parent_asset_id, crop_index, crop_box, expression_key
 FROM visual_assets
 WHERE id = $1
   AND tenant_id = $2;
@@ -37,7 +38,8 @@ SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
        prompt_hash, seed, reference_asset_ids,
        generation_job_id, metadata, generated_at,
        created_at, updated_at, superseded_by_asset_id,
-       anchor_asset_id, derive_from
+       anchor_asset_id, derive_from,
+       parent_asset_id, crop_index, crop_box, expression_key
 FROM visual_assets
 WHERE tenant_id = sqlc.arg('tenant_id')
   AND world_id = sqlc.arg('world_id')
@@ -74,7 +76,8 @@ SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
        prompt_hash, seed, reference_asset_ids,
        generation_job_id, metadata, generated_at,
        created_at, updated_at, superseded_by_asset_id,
-       anchor_asset_id, derive_from
+       anchor_asset_id, derive_from,
+       parent_asset_id, crop_index, crop_box, expression_key
 FROM visual_assets
 WHERE tenant_id = sqlc.arg('tenant_id')
   AND world_id = sqlc.arg('world_id')
@@ -109,7 +112,8 @@ SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
        prompt_hash, seed, reference_asset_ids,
        generation_job_id, metadata, generated_at,
        created_at, updated_at, superseded_by_asset_id,
-       anchor_asset_id, derive_from
+       anchor_asset_id, derive_from,
+       parent_asset_id, crop_index, crop_box, expression_key
 FROM visual_assets
 WHERE tenant_id = sqlc.arg('tenant_id')
   AND world_id = sqlc.arg('world_id')
@@ -137,7 +141,8 @@ SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
        prompt_hash, seed, reference_asset_ids,
        generation_job_id, metadata, generated_at,
        created_at, updated_at, superseded_by_asset_id,
-       anchor_asset_id, derive_from
+       anchor_asset_id, derive_from,
+       parent_asset_id, crop_index, crop_box, expression_key
 FROM visual_assets
 WHERE tenant_id = sqlc.arg('tenant_id')
   AND world_id = sqlc.arg('world_id')
@@ -180,7 +185,8 @@ RETURNING id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
           prompt_hash, seed, reference_asset_ids,
           generation_job_id, metadata, generated_at,
           created_at, updated_at, superseded_by_asset_id,
-          anchor_asset_id, derive_from;
+          anchor_asset_id, derive_from,
+          parent_asset_id, crop_index, crop_box, expression_key;
 
 -- name: InsertPreviewVisualAsset :one
 -- Phase 7B two-phase preview tier. Identical column mapping to InsertVisualAsset
@@ -215,7 +221,8 @@ RETURNING id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
           prompt_hash, seed, reference_asset_ids,
           generation_job_id, metadata, generated_at,
           created_at, updated_at, superseded_by_asset_id,
-          anchor_asset_id, derive_from;
+          anchor_asset_id, derive_from,
+          parent_asset_id, crop_index, crop_box, expression_key;
 
 -- name: AcquireSupersedeLock :exec
 -- Phase 6A4 supersede concurrency control: a transaction-scoped advisory lock

@@ -13,6 +13,7 @@ sql:
       - "migrations/0012_governance_envelope.sql"
       - "migrations/0013_cost_routing.sql"
       - "migrations/0014_anchor_lineage.sql"
+      - "migrations/0015_grid_and_sprite_sheets.sql"
     gen:
       go:
         package: "dbgen"

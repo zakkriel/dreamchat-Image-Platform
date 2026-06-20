@@ -301,6 +301,25 @@ func TestMigration0014AnchorLineage(t *testing.T) {
 	}
 }
 
+// TestMigration0015GridAndSpriteSheets proves the grid columns and the two new
+// sprite-sheet tables are applied.
+func TestMigration0015GridAndSpriteSheets(t *testing.T) {
+	db, _ := testdb.New(t)
+	if err := migrate.Up(db); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	for _, col := range []string{"parent_asset_id", "crop_index", "crop_box", "expression_key"} {
+		if !columnExists(t, db, "visual_assets", col) {
+			t.Fatalf("visual_assets.%s missing after up", col)
+		}
+	}
+	for _, tbl := range []string{"sprite_sheet_contract", "sprite_sheet_slice"} {
+		if !testdb.TableExists(t, db, tbl) {
+			t.Fatalf("table %s missing after up", tbl)
+		}
+	}
+}
+
 // TestMigration0012Governance proves the governance envelope columns are applied.
 func TestMigration0012Governance(t *testing.T) {
 	db, _ := testdb.New(t)
