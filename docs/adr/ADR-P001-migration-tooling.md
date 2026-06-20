@@ -40,11 +40,20 @@ The version table is goose-native `goose_db_version` (the source prompt's litera
   data backfills are separate migrations; destructive ("contract") changes land
   last, only after the expand deploy has settled.
 - **Reversibility:** every new migration added from Chunk 1 onward MUST ship a
-  real, tested `Down`. Once the first post-baseline migration lands, CI will gate
-  the round-trip `up → down-to 11 → up` on everything above the baseline. (No
-  such migration exists yet, so the harness's reversibility is currently proven
-  by the `TestGooseRoundTrip` canary, not by a CI step over the real
-  migrations.)
+  real, tested `Down`. As of Chunk 1 this is enforced end-to-end: the
+  `down`/`down-to` floor guard (`internal/migrate/migrate.go`) refuses any target
+  below version 11, and CI gates the round-trip `up → down-to 11 → up` over every
+  post-baseline migration (`.github/workflows/ci.yml`, the `migrations` job).
+  Migrations `0012`–`0017` (governance + cost schema) are the first to exercise
+  this, with reversibility also covered by `TestChunk1RoundTrip` in
+  `internal/migrate/migrate_integration_test.go`. The `TestGooseRoundTrip` canary
+  remains as a harness-level smoke test.
+- **Explicit-column queries:** `internal/db/queries/*.sql` lists table columns
+  explicitly (not `SELECT *`). A migration that adds a column to a queried table
+  (e.g. `generation_jobs`, `visual_assets`) MUST append that column to the
+  matching `RETURNING`/`SELECT` lists, or sqlc emits a per-query `*Row` type and
+  the build breaks. See the convention headers in those query files and
+  `docs/guidelines/go-service-guidelines.md`.
 - **NO-TRANSACTION audit:** goose runs each migration in its own transaction.
   Any statement that cannot run in a transaction (`CREATE INDEX CONCURRENTLY`,
   `ALTER TYPE … ADD VALUE`, `CREATE/DROP DATABASE`, `VACUUM`, `REINDEX`, …) must
@@ -55,8 +64,10 @@ The version table is goose-native `goose_db_version` (the source prompt's litera
 
 CI applies the full set via `go run ./cmd/migrate up`
 (`.github/workflows/ci.yml`), closing the prior `0010`/`0011` coverage gap; the
-base table count is 20 + `goose_db_version` = 21. Rollback to empty is not
-supported for the baseline — production rollback is restore-from-backup.
+base table count is 20 + `goose_db_version` = 21. Chunk 1 adds three tables
+(`sprite_sheet_contract`, `sprite_sheet_slice`, `identity_cost_ledger`), so CI
+asserts 24 post-Chunk-1 and 21 again after `down-to 11`. Rollback to empty is
+not supported for the baseline — production rollback is restore-from-backup.
 
 Goose pulls `modernc.org/sqlite` as a transitive dependency (verifiable in
 `go.sum`) for a Postgres-only service; this is acceptable bloat — the sqlite
