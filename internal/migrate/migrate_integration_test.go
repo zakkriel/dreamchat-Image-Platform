@@ -115,6 +115,17 @@ func rawApplyAll(t *testing.T, db *sql.DB) {
 	}
 	sort.Strings(names)
 	for _, n := range names {
+		// rawApplyAll simulates "an existing prod DB at version 11": apply
+		// only baseline migrations (0001–0011). Post-baseline migrations
+		// (0012+) include reversible Down sections whose raw execution would
+		// leave schema objects in an inconsistent state (e.g. chunk-1 tables
+		// created then immediately dropped). Bootstrap stamps v11 and then Up
+		// re-applies post-baseline migrations via goose, so skipping them here
+		// is correct. Files are sorted, so the first name > "0011" is the
+		// stop marker.
+		if n >= "0012" {
+			break
+		}
 		rawApplyFile(t, db, n)
 	}
 }
@@ -337,6 +348,104 @@ func TestMigration0016IdentityCostLedger(t *testing.T) {
 			t.Fatalf("identity_cost_ledger.%s missing after up", col)
 		}
 	}
+}
+
+// rlsForced reports whether a table has ROW LEVEL SECURITY both enabled and forced.
+func rlsForced(t *testing.T, db *sql.DB, table string) bool {
+	t.Helper()
+	var forced bool
+	if err := db.QueryRow(
+		`SELECT relrowsecurity AND relforcerowsecurity FROM pg_class WHERE relname=$1`,
+		table).Scan(&forced); err != nil {
+		t.Fatalf("rlsForced(%s): %v", table, err)
+	}
+	return forced
+}
+
+// policyExists reports whether a named policy exists on a table.
+func policyExists(t *testing.T, db *sql.DB, table, policy string) bool {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(
+		`SELECT count(*) FROM pg_policies WHERE tablename=$1 AND policyname=$2`,
+		table, policy).Scan(&n); err != nil {
+		t.Fatalf("policyExists(%s,%s): %v", table, policy, err)
+	}
+	return n > 0
+}
+
+// TestMigration0017NewTableRLS proves RLS is enabled+forced with a tenant_isolation
+// policy on each of the three new tables.
+func TestMigration0017NewTableRLS(t *testing.T) {
+	db, _ := testdb.New(t)
+	if err := migrate.Up(db); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	for _, tbl := range []string{"sprite_sheet_contract", "sprite_sheet_slice", "identity_cost_ledger"} {
+		if !rlsForced(t, db, tbl) {
+			t.Fatalf("%s is not RLS enabled+forced", tbl)
+		}
+		if !policyExists(t, db, tbl, "tenant_isolation") {
+			t.Fatalf("%s missing tenant_isolation policy", tbl)
+		}
+	}
+}
+
+// TestChunk1RoundTrip proves the whole post-baseline stack reverses: up applies
+// every Chunk 1 object, down-to 11 removes them and returns to the baseline, and
+// up restores them. This is the harness's first real reversibility proof.
+func TestChunk1RoundTrip(t *testing.T) {
+	db, _ := testdb.New(t)
+	if err := migrate.Up(db); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	head, err := migrate.Version(db)
+	if err != nil {
+		t.Fatalf("version: %v", err)
+	}
+	if head <= migrate.BaselineVersion {
+		t.Fatalf("head %d should be above baseline %d", head, migrate.BaselineVersion)
+	}
+
+	cols := []struct{ table, col string }{
+		{"generation_jobs", "governance_envelope"},
+		{"generation_jobs", "intent"},
+		{"generation_jobs", "anchor_asset_id"},
+		{"visual_assets", "anchor_asset_id"},
+		{"visual_assets", "parent_asset_id"},
+		{"visual_assets", "crop_box"},
+	}
+	tables := []string{"sprite_sheet_contract", "sprite_sheet_slice", "identity_cost_ledger"}
+	assertPresent := func(want bool) {
+		for _, c := range cols {
+			if got := columnExists(t, db, c.table, c.col); got != want {
+				t.Fatalf("%s.%s exists=%v, want %v", c.table, c.col, got, want)
+			}
+		}
+		for _, tbl := range tables {
+			if got := testdb.TableExists(t, db, tbl); got != want {
+				t.Fatalf("table %s exists=%v, want %v", tbl, got, want)
+			}
+		}
+	}
+
+	assertPresent(true)
+
+	if err := migrate.DownTo(db, migrate.BaselineVersion); err != nil {
+		t.Fatalf("down-to baseline: %v", err)
+	}
+	if v, _ := migrate.Version(db); v != migrate.BaselineVersion {
+		t.Fatalf("after down-to: version %d, want %d", v, migrate.BaselineVersion)
+	}
+	assertPresent(false)
+
+	if err := migrate.Up(db); err != nil {
+		t.Fatalf("re-up: %v", err)
+	}
+	if v, _ := migrate.Version(db); v != head {
+		t.Fatalf("after re-up: version %d, want %d", v, head)
+	}
+	assertPresent(true)
 }
 
 // TestMigration0012Governance proves the governance envelope columns are applied.
