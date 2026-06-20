@@ -180,6 +180,17 @@ type IdempotencyKey struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 }
 
+type IdentityCostLedger struct {
+	ID                 string             `json:"id"`
+	TenantID           string             `json:"tenant_id"`
+	VisualIdentityID   string             `json:"visual_identity_id"`
+	CostEstimatedTotal pgtype.Numeric     `json:"cost_estimated_total"`
+	CostActualTotal    pgtype.Numeric     `json:"cost_actual_total"`
+	Currency           string             `json:"currency"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+}
+
 type ProviderAttempt struct {
 	ID                 string             `json:"id"`
 	GenerationJobID    string             `json:"generation_job_id"`

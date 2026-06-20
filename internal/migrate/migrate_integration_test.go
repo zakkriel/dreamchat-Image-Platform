@@ -320,6 +320,25 @@ func TestMigration0015GridAndSpriteSheets(t *testing.T) {
 	}
 }
 
+// TestMigration0016IdentityCostLedger proves the per-identity cost ledger table
+// is applied with its accumulator columns.
+func TestMigration0016IdentityCostLedger(t *testing.T) {
+	db, _ := testdb.New(t)
+	if err := migrate.Up(db); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	if !testdb.TableExists(t, db, "identity_cost_ledger") {
+		t.Fatal("identity_cost_ledger missing after up")
+	}
+	for _, col := range []string{
+		"tenant_id", "visual_identity_id", "cost_estimated_total", "cost_actual_total",
+	} {
+		if !columnExists(t, db, "identity_cost_ledger", col) {
+			t.Fatalf("identity_cost_ledger.%s missing after up", col)
+		}
+	}
+}
+
 // TestMigration0012Governance proves the governance envelope columns are applied.
 func TestMigration0012Governance(t *testing.T) {
 	db, _ := testdb.New(t)
