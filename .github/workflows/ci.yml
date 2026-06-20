@@ -149,10 +149,9 @@ jobs:
           count=$(psql -h localhost -U image_platform -d image_platform -tAc \
             "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'")
           echo "table count: $count"
-          # 20 baseline tables (17 from 0001 + cost_reservation_budget_holds from
-          # 0003 + 2 webhook tables from 0010) + goose_db_version = 21. goose now
-          # applies the FULL 0001-0011 set; the old psql list stopped at 0009.
-          test "$count" = "21"
+          # 21 baseline objects (20 tables + goose_db_version) + 3 Chunk 1 tables
+          # (sprite_sheet_contract, sprite_sheet_slice, identity_cost_ledger) = 24.
+          test "$count" = "24"
 
       - name: assert goose version is the baseline head
         env:
@@ -161,7 +160,56 @@ jobs:
           v=$(psql -h localhost -U image_platform -d image_platform -tAc \
             "SELECT max(version_id) FROM goose_db_version WHERE is_applied")
           echo "goose version: $v"
-          test "$v" = "11"
+          # Chunk 1 added migrations 0012-0017; head is now 17.
+          test "$v" = "17"
+
+      - name: assert migrations round-trip above baseline (up -> down-to 11 -> up)
+        env:
+          POSTGRES_DSN: postgres://image_platform:image_platform@localhost:5432/image_platform?sslmode=disable
+          PGPASSWORD: image_platform
+        run: |
+          set -euo pipefail
+          go run ./cmd/migrate down-to 11
+          v=$(psql -h localhost -U image_platform -d image_platform -tAc \
+            "SELECT max(version_id) FROM goose_db_version WHERE is_applied")
+          test "$v" = "11" || { echo "ERROR: after down-to, version=$v (want 11)"; exit 1; }
+          count=$(psql -h localhost -U image_platform -d image_platform -tAc \
+            "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'")
+          test "$count" = "21" || { echo "ERROR: after down-to, table count=$count (want 21)"; exit 1; }
+          for tbl in sprite_sheet_contract sprite_sheet_slice identity_cost_ledger; do
+            n=$(psql -h localhost -U image_platform -d image_platform -tAc \
+              "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='$tbl'")
+            test "$n" = "0" || { echo "ERROR: $tbl still present after down-to 11"; exit 1; }
+          done
+          go run ./cmd/migrate up
+          v=$(psql -h localhost -U image_platform -d image_platform -tAc \
+            "SELECT max(version_id) FROM goose_db_version WHERE is_applied")
+          test "$v" = "17" || { echo "ERROR: after re-up, version=$v (want 17)"; exit 1; }
+          count=$(psql -h localhost -U image_platform -d image_platform -tAc \
+            "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'")
+          test "$count" = "24" || { echo "ERROR: after re-up, table count=$count (want 24)"; exit 1; }
+
+      - name: assert down-guard refuses crossing below baseline
+        env:
+          POSTGRES_DSN: postgres://image_platform:image_platform@localhost:5432/image_platform?sslmode=disable
+        run: |
+          if go run ./cmd/migrate down-to 10; then
+            echo "ERROR: down-to 10 was allowed (should be refused below baseline)"; exit 1
+          fi
+          echo "down-to 10 correctly refused"
+
+      - name: assert RLS enabled+forced on Chunk 1 tables
+        env:
+          PGPASSWORD: image_platform
+        run: |
+          for tbl in sprite_sheet_contract sprite_sheet_slice identity_cost_ledger; do
+            state=$(psql -h localhost -U image_platform -d image_platform -tAc \
+              "SELECT (relrowsecurity AND relforcerowsecurity)::int FROM pg_class WHERE relname = '$tbl'")
+            test "$state" = "1" || { echo "ERROR: $tbl not RLS enabled+forced (state=$state)"; exit 1; }
+            pol=$(psql -h localhost -U image_platform -d image_platform -tAc \
+              "SELECT count(*) FROM pg_policies WHERE tablename = '$tbl' AND policyname = 'tenant_isolation'")
+            test "$pol" = "1" || { echo "ERROR: $tbl missing tenant_isolation policy"; exit 1; }
+          done
 
       - name: assert fal provider seed present (migration 0011)
         env:
