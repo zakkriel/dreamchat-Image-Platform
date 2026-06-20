@@ -1,7 +1,6 @@
 -- CONVENTION: queries here list visual_assets columns EXPLICITLY (not SELECT *).
 -- When a migration adds a column, append it to the matching RETURNING/SELECT
 -- lists below, or sqlc emits a per-query *Row type and the build breaks.
-
 -- name: GetVisualAssetByID :one
 SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
        variant_family, version, state_version, style_profile_id,

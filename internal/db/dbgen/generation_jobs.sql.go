@@ -453,7 +453,6 @@ func (q *Queries) InsertCompletedPackReuseJob(ctx context.Context, arg InsertCom
 }
 
 const insertGenerationJob = `-- name: InsertGenerationJob :one
-
 INSERT INTO generation_jobs (
     id, tenant_id, world_id, job_type, status,
     requested_by_token_id, input_payload, fallback_policy, cache_result

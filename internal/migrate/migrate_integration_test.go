@@ -281,6 +281,22 @@ func columnExists(t *testing.T, db *sql.DB, table, column string) bool {
 	return n > 0
 }
 
+// TestMigration0012Governance proves the governance envelope columns are applied.
+func TestMigration0012Governance(t *testing.T) {
+	db, _ := testdb.New(t)
+	if err := migrate.Up(db); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	for _, col := range []string{
+		"governance_envelope", "classification_id", "visibility",
+		"content_class", "authorized_by", "governance_verified_at",
+	} {
+		if !columnExists(t, db, "generation_jobs", col) {
+			t.Fatalf("generation_jobs.%s missing after up", col)
+		}
+	}
+}
+
 // TestMigration0013CostRouting proves the cost-routing columns are applied.
 func TestMigration0013CostRouting(t *testing.T) {
 	db, _ := testdb.New(t)
@@ -446,20 +462,4 @@ func TestChunk1RoundTrip(t *testing.T) {
 		t.Fatalf("after re-up: version %d, want %d", v, head)
 	}
 	assertPresent(true)
-}
-
-// TestMigration0012Governance proves the governance envelope columns are applied.
-func TestMigration0012Governance(t *testing.T) {
-	db, _ := testdb.New(t)
-	if err := migrate.Up(db); err != nil {
-		t.Fatalf("up: %v", err)
-	}
-	for _, col := range []string{
-		"governance_envelope", "classification_id", "visibility",
-		"content_class", "authorized_by", "governance_verified_at",
-	} {
-		if !columnExists(t, db, "generation_jobs", col) {
-			t.Fatalf("generation_jobs.%s missing after up", col)
-		}
-	}
 }

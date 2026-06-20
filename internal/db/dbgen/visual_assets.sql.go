@@ -318,7 +318,6 @@ func (q *Queries) FindReadyArtifactByPromptHash(ctx context.Context, arg FindRea
 }
 
 const getVisualAssetByID = `-- name: GetVisualAssetByID :one
-
 SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
        variant_family, version, state_version, style_profile_id,
        style_profile_version, quality_tier, status,

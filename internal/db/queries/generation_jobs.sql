@@ -1,7 +1,6 @@
 -- CONVENTION: queries here list generation_jobs columns EXPLICITLY (not SELECT *).
 -- When a migration adds a column, append it to the matching RETURNING/SELECT
 -- lists below, or sqlc emits a per-query *Row type and the build breaks.
-
 -- name: InsertGenerationJob :one
 INSERT INTO generation_jobs (
     id, tenant_id, world_id, job_type, status,
