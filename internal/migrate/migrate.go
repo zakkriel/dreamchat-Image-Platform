@@ -5,6 +5,7 @@ package migrate
 
 import (
 	"database/sql"
+	"fmt"
 
 	"github.com/pressly/goose/v3"
 
@@ -33,16 +34,38 @@ func Up(db *sql.DB) error {
 	return goose.Up(db, ".")
 }
 
-// Down rolls back the most recently applied migration.
+// Down rolls back the most recently applied migration, refusing any step that
+// would cross into or below the irreversible baseline floor (allowed only at
+// v12+; a step from v11 would roll back a baseline migration). See
+// docs/adr/ADR-P001-migration-tooling.md.
 func Down(db *sql.DB) error {
 	if err := gooseInit(); err != nil {
 		return err
 	}
+	current, err := goose.GetDBVersion(db)
+	if err != nil {
+		return err
+	}
+	if current <= BaselineVersion {
+		return fmt.Errorf(
+			"down refused: current version %d is at or below the irreversible "+
+				"baseline floor %d; a single-step down would roll back a baseline "+
+				"migration (restore from backup instead)", current, BaselineVersion)
+	}
 	return goose.Down(db, ".")
 }
 
-// DownTo rolls back to (and including) the given target version.
+// DownTo rolls back to (and including) the given target version, refusing any
+// target below the irreversible baseline floor. down-to 11 is allowed (goose
+// leaves v11 applied); down-to 10 and below error. See
+// docs/adr/ADR-P001-migration-tooling.md.
 func DownTo(db *sql.DB, version int64) error {
+	if version < BaselineVersion {
+		return fmt.Errorf(
+			"down-to refused: target version %d is below the irreversible "+
+				"baseline floor %d; the baseline cannot be rolled back "+
+				"(restore from backup instead)", version, BaselineVersion)
+	}
 	if err := gooseInit(); err != nil {
 		return err
 	}

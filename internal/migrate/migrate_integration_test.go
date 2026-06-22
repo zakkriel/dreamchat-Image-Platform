@@ -88,8 +88,8 @@ func TestFreshUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("version: %v", err)
 	}
-	if v != migrate.BaselineVersion {
-		t.Fatalf("version = %d, want %d", v, migrate.BaselineVersion)
+	if v < migrate.BaselineVersion {
+		t.Fatalf("version = %d, want >= baseline %d", v, migrate.BaselineVersion)
 	}
 }
 
@@ -115,6 +115,17 @@ func rawApplyAll(t *testing.T, db *sql.DB) {
 	}
 	sort.Strings(names)
 	for _, n := range names {
+		// rawApplyAll simulates "an existing prod DB at version 11": apply
+		// only baseline migrations (0001–0011). Post-baseline migrations
+		// (0012+) include reversible Down sections whose raw execution would
+		// leave schema objects in an inconsistent state (e.g. chunk-1 tables
+		// created then immediately dropped). Bootstrap stamps v11 and then Up
+		// re-applies post-baseline migrations via goose, so skipping them here
+		// is correct. Files are sorted, so the first name > "0011" is the
+		// stop marker.
+		if n >= "0012" {
+			break
+		}
 		rawApplyFile(t, db, n)
 	}
 }
@@ -136,8 +147,8 @@ func TestFreshBootstrap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("version: %v", err)
 	}
-	if v != migrate.BaselineVersion {
-		t.Fatalf("version = %d, want %d", v, migrate.BaselineVersion)
+	if v < migrate.BaselineVersion {
+		t.Fatalf("version = %d, want >= baseline %d", v, migrate.BaselineVersion)
 	}
 	for _, tbl := range baselineTables {
 		if !testdb.TableExists(t, db, tbl) {
@@ -162,8 +173,8 @@ func TestBaselineConvergence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("version: %v", err)
 	}
-	if v != migrate.BaselineVersion {
-		t.Fatalf("version = %d, want %d", v, migrate.BaselineVersion)
+	if v < migrate.BaselineVersion {
+		t.Fatalf("version = %d, want >= baseline %d", v, migrate.BaselineVersion)
 	}
 	// A following Up must be a clean no-op.
 	if err := migrate.Up(db); err != nil {
@@ -187,4 +198,268 @@ func TestBootstrapRefusesPartial(t *testing.T) {
 	if gooseTrackingExists(t, db) {
 		t.Fatal("bootstrap must not create goose_db_version when refusing")
 	}
+}
+
+// TestDownToRefusesBelowBaseline proves DownTo rejects any target below the
+// irreversible baseline floor and leaves the schema version untouched.
+func TestDownToRefusesBelowBaseline(t *testing.T) {
+	db, _ := testdb.New(t)
+	if err := migrate.Up(db); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	before, err := migrate.Version(db)
+	if err != nil {
+		t.Fatalf("version: %v", err)
+	}
+	if err := migrate.DownTo(db, migrate.BaselineVersion-1); err == nil {
+		t.Fatal("expected down-to below baseline to be refused")
+	} else if !strings.Contains(err.Error(), "refused") {
+		t.Fatalf("error %q should mention 'refused'", err.Error())
+	}
+	after, err := migrate.Version(db)
+	if err != nil {
+		t.Fatalf("version after: %v", err)
+	}
+	if after != before {
+		t.Fatalf("version changed from %d to %d despite refusal", before, after)
+	}
+}
+
+// TestDownToBaselineAllowed proves DownTo to exactly the baseline floor succeeds
+// (it is the CI round-trip's midpoint and leaves v11 applied).
+func TestDownToBaselineAllowed(t *testing.T) {
+	db, _ := testdb.New(t)
+	if err := migrate.Up(db); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	if err := migrate.DownTo(db, migrate.BaselineVersion); err != nil {
+		t.Fatalf("down-to baseline should be allowed: %v", err)
+	}
+	v, err := migrate.Version(db)
+	if err != nil {
+		t.Fatalf("version: %v", err)
+	}
+	if v != migrate.BaselineVersion {
+		t.Fatalf("version = %d, want %d", v, migrate.BaselineVersion)
+	}
+}
+
+// TestDownRefusesAtBaseline proves a single-step Down at the floor is refused.
+func TestDownRefusesAtBaseline(t *testing.T) {
+	db, _ := testdb.New(t)
+	if err := migrate.Up(db); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	if err := migrate.DownTo(db, migrate.BaselineVersion); err != nil {
+		t.Fatalf("down-to baseline: %v", err)
+	}
+	if err := migrate.Down(db); err == nil {
+		t.Fatal("expected single-step down at baseline to be refused")
+	} else if !strings.Contains(err.Error(), "refused") {
+		t.Fatalf("error %q should mention 'refused'", err.Error())
+	}
+	v, err := migrate.Version(db)
+	if err != nil {
+		t.Fatalf("version: %v", err)
+	}
+	if v != migrate.BaselineVersion {
+		t.Fatalf("version = %d, want %d (unchanged)", v, migrate.BaselineVersion)
+	}
+}
+
+// columnExists reports whether a column of the given name exists on a table in
+// the public schema.
+func columnExists(t *testing.T, db *sql.DB, table, column string) bool {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(
+		`SELECT count(*) FROM information_schema.columns
+		 WHERE table_schema='public' AND table_name=$1 AND column_name=$2`,
+		table, column).Scan(&n); err != nil {
+		t.Fatalf("columnExists(%s.%s): %v", table, column, err)
+	}
+	return n > 0
+}
+
+// TestMigration0012Governance proves the governance envelope columns are applied.
+func TestMigration0012Governance(t *testing.T) {
+	db, _ := testdb.New(t)
+	if err := migrate.Up(db); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	for _, col := range []string{
+		"governance_envelope", "classification_id", "visibility",
+		"content_class", "authorized_by", "governance_verified_at",
+	} {
+		if !columnExists(t, db, "generation_jobs", col) {
+			t.Fatalf("generation_jobs.%s missing after up", col)
+		}
+	}
+}
+
+// TestMigration0013CostRouting proves the cost-routing columns are applied.
+func TestMigration0013CostRouting(t *testing.T) {
+	db, _ := testdb.New(t)
+	if err := migrate.Up(db); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	for _, col := range []string{
+		"intent", "transform_only", "transform", "max_megapixels", "lazy",
+	} {
+		if !columnExists(t, db, "generation_jobs", col) {
+			t.Fatalf("generation_jobs.%s missing after up", col)
+		}
+	}
+}
+
+// TestMigration0014AnchorLineage proves anchor lineage columns land on both
+// visual_assets and generation_jobs.
+func TestMigration0014AnchorLineage(t *testing.T) {
+	db, _ := testdb.New(t)
+	if err := migrate.Up(db); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	for _, tbl := range []string{"visual_assets", "generation_jobs"} {
+		for _, col := range []string{"anchor_asset_id", "derive_from"} {
+			if !columnExists(t, db, tbl, col) {
+				t.Fatalf("%s.%s missing after up", tbl, col)
+			}
+		}
+	}
+}
+
+// TestMigration0015GridAndSpriteSheets proves the grid columns and the two new
+// sprite-sheet tables are applied.
+func TestMigration0015GridAndSpriteSheets(t *testing.T) {
+	db, _ := testdb.New(t)
+	if err := migrate.Up(db); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	for _, col := range []string{"parent_asset_id", "crop_index", "crop_box", "expression_key"} {
+		if !columnExists(t, db, "visual_assets", col) {
+			t.Fatalf("visual_assets.%s missing after up", col)
+		}
+	}
+	for _, tbl := range []string{"sprite_sheet_contract", "sprite_sheet_slice"} {
+		if !testdb.TableExists(t, db, tbl) {
+			t.Fatalf("table %s missing after up", tbl)
+		}
+	}
+}
+
+// TestMigration0016IdentityCostLedger proves the per-identity cost ledger table
+// is applied with its accumulator columns.
+func TestMigration0016IdentityCostLedger(t *testing.T) {
+	db, _ := testdb.New(t)
+	if err := migrate.Up(db); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	if !testdb.TableExists(t, db, "identity_cost_ledger") {
+		t.Fatal("identity_cost_ledger missing after up")
+	}
+	for _, col := range []string{
+		"tenant_id", "visual_identity_id", "cost_estimated_total", "cost_actual_total",
+	} {
+		if !columnExists(t, db, "identity_cost_ledger", col) {
+			t.Fatalf("identity_cost_ledger.%s missing after up", col)
+		}
+	}
+}
+
+// rlsForced reports whether a table has ROW LEVEL SECURITY both enabled and forced.
+func rlsForced(t *testing.T, db *sql.DB, table string) bool {
+	t.Helper()
+	var forced bool
+	if err := db.QueryRow(
+		`SELECT relrowsecurity AND relforcerowsecurity FROM pg_class WHERE relname=$1`,
+		table).Scan(&forced); err != nil {
+		t.Fatalf("rlsForced(%s): %v", table, err)
+	}
+	return forced
+}
+
+// policyExists reports whether a named policy exists on a table.
+func policyExists(t *testing.T, db *sql.DB, table, policy string) bool {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(
+		`SELECT count(*) FROM pg_policies WHERE tablename=$1 AND policyname=$2`,
+		table, policy).Scan(&n); err != nil {
+		t.Fatalf("policyExists(%s,%s): %v", table, policy, err)
+	}
+	return n > 0
+}
+
+// TestMigration0017NewTableRLS proves RLS is enabled+forced with a tenant_isolation
+// policy on each of the three new tables.
+func TestMigration0017NewTableRLS(t *testing.T) {
+	db, _ := testdb.New(t)
+	if err := migrate.Up(db); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	for _, tbl := range []string{"sprite_sheet_contract", "sprite_sheet_slice", "identity_cost_ledger"} {
+		if !rlsForced(t, db, tbl) {
+			t.Fatalf("%s is not RLS enabled+forced", tbl)
+		}
+		if !policyExists(t, db, tbl, "tenant_isolation") {
+			t.Fatalf("%s missing tenant_isolation policy", tbl)
+		}
+	}
+}
+
+// TestChunk1RoundTrip proves the whole post-baseline stack reverses: up applies
+// every Chunk 1 object, down-to 11 removes them and returns to the baseline, and
+// up restores them. This is the harness's first real reversibility proof.
+func TestChunk1RoundTrip(t *testing.T) {
+	db, _ := testdb.New(t)
+	if err := migrate.Up(db); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	head, err := migrate.Version(db)
+	if err != nil {
+		t.Fatalf("version: %v", err)
+	}
+	if head <= migrate.BaselineVersion {
+		t.Fatalf("head %d should be above baseline %d", head, migrate.BaselineVersion)
+	}
+
+	cols := []struct{ table, col string }{
+		{"generation_jobs", "governance_envelope"},
+		{"generation_jobs", "intent"},
+		{"generation_jobs", "anchor_asset_id"},
+		{"visual_assets", "anchor_asset_id"},
+		{"visual_assets", "parent_asset_id"},
+		{"visual_assets", "crop_box"},
+	}
+	tables := []string{"sprite_sheet_contract", "sprite_sheet_slice", "identity_cost_ledger"}
+	assertPresent := func(want bool) {
+		for _, c := range cols {
+			if got := columnExists(t, db, c.table, c.col); got != want {
+				t.Fatalf("%s.%s exists=%v, want %v", c.table, c.col, got, want)
+			}
+		}
+		for _, tbl := range tables {
+			if got := testdb.TableExists(t, db, tbl); got != want {
+				t.Fatalf("table %s exists=%v, want %v", tbl, got, want)
+			}
+		}
+	}
+
+	assertPresent(true)
+
+	if err := migrate.DownTo(db, migrate.BaselineVersion); err != nil {
+		t.Fatalf("down-to baseline: %v", err)
+	}
+	if v, _ := migrate.Version(db); v != migrate.BaselineVersion {
+		t.Fatalf("after down-to: version %d, want %d", v, migrate.BaselineVersion)
+	}
+	assertPresent(false)
+
+	if err := migrate.Up(db); err != nil {
+		t.Fatalf("re-up: %v", err)
+	}
+	if v, _ := migrate.Version(db); v != head {
+		t.Fatalf("after re-up: version %d, want %d", v, head)
+	}
+	assertPresent(true)
 }

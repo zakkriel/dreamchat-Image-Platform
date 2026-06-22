@@ -98,6 +98,9 @@ type Querier interface {
 	GetIdempotencyKey(ctx context.Context, arg GetIdempotencyKeyParams) (IdempotencyKey, error)
 	GetProviderModelPrice(ctx context.Context, id string) (GetProviderModelPriceRow, error)
 	GetStyleProfileByID(ctx context.Context, arg GetStyleProfileByIDParams) (StyleProfile, error)
+	// CONVENTION: queries here list visual_assets columns EXPLICITLY (not SELECT *).
+	// When a migration adds a column, append it to the matching RETURNING/SELECT
+	// lists below, or sqlc emits a per-query *Row type and the build breaks.
 	GetVisualAssetByID(ctx context.Context, arg GetVisualAssetByIDParams) (VisualAsset, error)
 	GetVisualIdentityByID(ctx context.Context, arg GetVisualIdentityByIDParams) (VisualIdentity, error)
 	GetVisualIdentityByOwner(ctx context.Context, arg GetVisualIdentityByOwnerParams) (VisualIdentity, error)
@@ -166,6 +169,9 @@ type Querier interface {
 	// the worker never managed to write one (best-effort fallback).
 	InsertFinalizerCostEvent(ctx context.Context, arg InsertFinalizerCostEventParams) error
 	InsertGenerationCostEvent(ctx context.Context, arg InsertGenerationCostEventParams) error
+	// CONVENTION: queries here list generation_jobs columns EXPLICITLY (not SELECT *).
+	// When a migration adds a column, append it to the matching RETURNING/SELECT
+	// lists below, or sqlc emits a per-query *Row type and the build breaks.
 	InsertGenerationJob(ctx context.Context, arg InsertGenerationJobParams) (GenerationJob, error)
 	InsertIdempotencyKey(ctx context.Context, arg InsertIdempotencyKeyParams) (IdempotencyKey, error)
 	// Phase 7B two-phase preview tier. Identical column mapping to InsertVisualAsset
