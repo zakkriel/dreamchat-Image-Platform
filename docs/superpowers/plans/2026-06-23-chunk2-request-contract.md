@@ -1047,10 +1047,12 @@ git commit -m "feat(routing): intent-driven price-aware ranking over a capabilit
 - Create: `internal/http/handlers/generations_handler.go`
 - Modify: `internal/http/router.go` (mount the route)
 - Modify: `internal/httperr/errors.go` (add codes)
-- Test: `internal/http/handlers/generations_handler_test.go` (unit, fake resolver/creator)
+- Test: `internal/http/handlers/generations_handler_test.go` (unit, fake resolver/creator/identities)
 
 **Interfaces:**
-- Consumes: `apigen.GenerationRequest` (T4); `RouteResolver`, `applyResolvedRoute`, `writeJobAccepted`, `writeRouteError`, `handleReplay` (`handlers/routing.go`); `jobs.Creator`/`CreateAndEnqueue` + `CreateAndEnqueueParams` (T5); `routing.ResolveRequest{Intent, RequiredCapability, ProviderID, OperationType=...}`.
+- Consumes: `apigen.GenerationRequest` (T4); `RouteResolver`, `applyResolvedRoute`, `writeJobAccepted`, `writeRouteError`, `handleReplay` (`handlers/routing.go`); `jobs.Creator`/`CreateAndEnqueue` + `CreateAndEnqueueParams` (T5); `routing.ResolveRequest{Intent, RequiredCapability, ProviderID, OperationType=...}`; `identities.Repository.GetByIDForTenant(ctx, id, tenantID) (identities.VisualIdentity, error)` (`internal/identities/repository.go:218`, `ErrNotFound`) — same dep the packs handler already takes.
+
+> **Prompt sourcing (decided):** the contract has no prompt field; the reused artifact worker uses `payload["description"]` as the provider prompt (`internal/jobs/worker.go:323`). So the handler seeds `payload["description"]` from the subject identity — mirroring the existing identity→prompt path the pack flow uses (`identity.DisplayName` → `payload["display_name"]` → worker, `worker_pack.go:502/291`). Use `identity.DisplayName` as the description source; do NOT invent a parallel prompt-assembly path. The content is assembled AFTER the governance gate, from the validated identity — the gate only ever receives `SubjectMeta` IDs (it never reads the identity's display_name/traits).
 - Produces: `handlers.NewGenerationsHandler(...)` + `(*GenerationsHandler).Create`. Task 8 inserts the governance gate into `Create`.
 
 - [ ] **Step 1: Add httperr codes**
@@ -1080,6 +1082,8 @@ Create `internal/http/handlers/generations_handler_test.go` covering (use the ex
 // - grid.enabled=true → 501 grid_not_supported, no job created.
 // - render.intent missing/invalid → 422.
 // - subject.identity_id missing → 422.
+// - subject.identity_id not found (fake identities returns ErrNotFound) → 422.
+// - created job payload["description"] == the fetched identity.DisplayName (identity-derived prompt; assert via fake creator's captured params/payload).
 // - header Idempotency-Key present and != body idempotency_key → 422.
 // - header-only (no body idempotency_key) → 422.
 // - body idempotency_key present (no header) → proceeds (202).
@@ -1101,11 +1105,12 @@ Create `internal/http/handlers/generations_handler.go`. Structure (model on `art
 2. `readRawJSONBody` (raw bytes for idempotency hash) → `rejectBodyTenantID`.
 3. Decode with **DisallowUnknownFields**: `dec := newJSONDecoder(raw); dec.DisallowUnknownFields(); if err := dec.Decode(&req); ... 422`.
 4. Validate: `req.Governance` all required fields non-empty + `schema_version`; `req.Subject.IdentityId` non-empty; `req.Render.Intent` ∈ {draft,commit}; if `req.Render.Transform != nil` require its `schema_version` (D-4); `req.Grid` shape. 422 via `httperr.Write(..., http.StatusUnprocessableEntity, httperr.CodeInvalidRequest, msg)`.
+   - **Resolve the subject identity (existence + later description source):** `identity, err := h.Identities.GetByIDForTenant(ctx, req.Subject.IdentityId, tenantID)`; on `identities.ErrNotFound` → 422 (`invalid_request`, "subject.identity_id not found"). Keep the fetched `identity` for step 9 — but do NOT pass its `DisplayName`/traits to the governance gate (the gate gets only `SubjectMeta` IDs).
 5. **501 checks (before everything else after validation):** `if req.Render.TransformOnly != nil && *req.Render.TransformOnly { httperr.Write(w,r,http.StatusNotImplemented, httperr.CodeTransformOnlyNotSupported, "...") ; return }` and the same for `req.Grid != nil && req.Grid.Enabled`.
 6. **Idempotency reconcile:** body key required (422 if empty); read header `Idempotency-Key`; if header != "" and header != body key → 422; (header-only impossible since body required). endpoint = `r.Method + " " + r.URL.Path`; requestHash = `HashRequestBody(raw)`.
 7. `handleReplay(...)` pre-check → return if handled.
 8. **Cost-routing:** build `routing.ResolveRequest{TenantID, OperationType: "text_to_image", Intent: string(req.Render.Intent), RequiredCapability: floor, ProviderID: deref(req.Render.ProviderId)}` where `floor = "identity_capable" if req.Subject.IdentityId != "" else "scene_capable"` (identity_id is required, so floor is effectively identity_capable; keep the conditional for clarity/futureproofing). `resolved, err := h.Resolver.Resolve(...)`; on err `writeRouteError`; `applyResolvedRoute(&params, payload, resolved)`.
-9. **MP clamp:** `clamped := clampMegapixels(req.Render.MaxMegapixels, platformCeiling)`; store `clamped` + the raw contract objects (`governance`, `subject`, `render`, `grid`, `lazy`) into `payload`; set `params.MaxMegapixels = &clamped`.
+9. **MP clamp + identity-derived description:** `clamped := clampMegapixels(req.Render.MaxMegapixels, platformCeiling)`; set `params.MaxMegapixels = &clamped`. Seed `payload["description"] = identity.DisplayName` (the identity-derived prompt content — assembled here, AFTER the gate, from the validated identity; same source the pack flow uses). Also store the raw contract objects (`governance`, `subject`, `render`, `grid`, `lazy`) + `clamped` into `payload`.
 10. Map governance/subject/render fields onto `CreateAndEnqueueParams` (T5 fields): `ClassificationID`, `Visibility`, `ContentClass`, `AuthorizedBy`, `GovernanceEnvelope` (marshal the governance object incl. schema_version), `Intent`, `TransformOnly`, `Transform` (marshal if present), `Lazy`, `AnchorAssetID`, `DeriveFrom`. (`GovernanceVerifiedAt` set in Task 8.)
 11. `result, err := h.Service.CreateAndEnqueue(ctx, params)` → `writeJobServiceError` on err; else `writeJobAccepted(w, result)`.
 
