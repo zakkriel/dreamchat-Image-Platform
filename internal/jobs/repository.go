@@ -182,6 +182,21 @@ func (r *pgRepository) Insert(ctx context.Context, params InsertParams) (Job, er
 		InputPayload:       payload,
 		FallbackPolicy:     params.FallbackPolicy,
 		CacheResult:        params.CacheResult,
+		// Governance/render/subject columns - not set on the repository path;
+		// nil/zero persists NULL (existing behavior unchanged).
+		GovernanceEnvelope:   nil,
+		ClassificationID:     nil,
+		Visibility:           nil,
+		ContentClass:         nil,
+		AuthorizedBy:         nil,
+		GovernanceVerifiedAt: pgtype.Timestamptz{},
+		Intent:               nil,
+		TransformOnly:        nil,
+		Transform:            nil,
+		MaxMegapixels:        pgtype.Numeric{},
+		Lazy:                 nil,
+		AnchorAssetID:        nil,
+		DeriveFrom:           nil,
 	})
 	if err != nil {
 		return Job{}, err

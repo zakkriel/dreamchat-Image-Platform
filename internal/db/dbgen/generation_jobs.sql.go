@@ -455,10 +455,18 @@ func (q *Queries) InsertCompletedPackReuseJob(ctx context.Context, arg InsertCom
 const insertGenerationJob = `-- name: InsertGenerationJob :one
 INSERT INTO generation_jobs (
     id, tenant_id, world_id, job_type, status,
-    requested_by_token_id, input_payload, fallback_policy, cache_result
+    requested_by_token_id, input_payload, fallback_policy, cache_result,
+    governance_envelope, classification_id, visibility, content_class,
+    authorized_by, governance_verified_at,
+    intent, transform_only, transform, max_megapixels, lazy,
+    anchor_asset_id, derive_from
 ) VALUES (
     $1, $2, $3, $4, 'queued',
-    $5, $6, $7, $8
+    $5, $6, $7, $8,
+    $9, $10, $11, $12,
+    $13, $14,
+    $15, $16, $17, $18, $19,
+    $20, $21
 )
 RETURNING id, tenant_id, world_id, job_type, status,
           requested_by_token_id, visual_identity_id, asset_pack_id,
@@ -474,14 +482,27 @@ RETURNING id, tenant_id, world_id, job_type, status,
 `
 
 type InsertGenerationJobParams struct {
-	ID                 string  `json:"id"`
-	TenantID           string  `json:"tenant_id"`
-	WorldID            *string `json:"world_id"`
-	JobType            string  `json:"job_type"`
-	RequestedByTokenID *string `json:"requested_by_token_id"`
-	InputPayload       []byte  `json:"input_payload"`
-	FallbackPolicy     *string `json:"fallback_policy"`
-	CacheResult        *string `json:"cache_result"`
+	ID                   string             `json:"id"`
+	TenantID             string             `json:"tenant_id"`
+	WorldID              *string            `json:"world_id"`
+	JobType              string             `json:"job_type"`
+	RequestedByTokenID   *string            `json:"requested_by_token_id"`
+	InputPayload         []byte             `json:"input_payload"`
+	FallbackPolicy       *string            `json:"fallback_policy"`
+	CacheResult          *string            `json:"cache_result"`
+	GovernanceEnvelope   []byte             `json:"governance_envelope"`
+	ClassificationID     *string            `json:"classification_id"`
+	Visibility           *string            `json:"visibility"`
+	ContentClass         *string            `json:"content_class"`
+	AuthorizedBy         *string            `json:"authorized_by"`
+	GovernanceVerifiedAt pgtype.Timestamptz `json:"governance_verified_at"`
+	Intent               *string            `json:"intent"`
+	TransformOnly        *bool              `json:"transform_only"`
+	Transform            []byte             `json:"transform"`
+	MaxMegapixels        pgtype.Numeric     `json:"max_megapixels"`
+	Lazy                 *bool              `json:"lazy"`
+	AnchorAssetID        *string            `json:"anchor_asset_id"`
+	DeriveFrom           *string            `json:"derive_from"`
 }
 
 // CONVENTION: queries here list generation_jobs columns EXPLICITLY (not SELECT *).
@@ -497,6 +518,19 @@ func (q *Queries) InsertGenerationJob(ctx context.Context, arg InsertGenerationJ
 		arg.InputPayload,
 		arg.FallbackPolicy,
 		arg.CacheResult,
+		arg.GovernanceEnvelope,
+		arg.ClassificationID,
+		arg.Visibility,
+		arg.ContentClass,
+		arg.AuthorizedBy,
+		arg.GovernanceVerifiedAt,
+		arg.Intent,
+		arg.TransformOnly,
+		arg.Transform,
+		arg.MaxMegapixels,
+		arg.Lazy,
+		arg.AnchorAssetID,
+		arg.DeriveFrom,
 	)
 	var i GenerationJob
 	err := row.Scan(
