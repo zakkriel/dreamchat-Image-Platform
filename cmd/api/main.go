@@ -20,6 +20,7 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/config"
 	"github.com/zakkriel/drchat-image-platform/internal/cost"
 	appdb "github.com/zakkriel/drchat-image-platform/internal/db"
+	"github.com/zakkriel/drchat-image-platform/internal/governance"
 	apphttp "github.com/zakkriel/drchat-image-platform/internal/http"
 	"github.com/zakkriel/drchat-image-platform/internal/identities"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
@@ -159,6 +160,17 @@ func main() {
 		Storage:        store,
 		Resolver:       resolver,
 		RateLimiter:    rateLimiter,
+		// Chunk 2 governance gate. The RealVerifier uses the stub signature
+		// verifier until the cross-system signing contract is finalized (Task 9
+		// will emit a WARN when enforce+stub are combined at startup). Mode maps
+		// directly from the GOVERNANCE_ENFORCEMENT config variable.
+		GovernanceVerifier: governance.NewVerifier(
+			governance.StubSignatureVerifier{},
+			cfg.GovernanceMaxAge,
+			cfg.GovernanceAuthorizedIssuers,
+		),
+		GovernanceMode: governance.Mode(cfg.GovernanceEnforcement),
+		TenantPool:     tenantPool,
 	}
 
 	router := apphttp.NewRouter(deps)

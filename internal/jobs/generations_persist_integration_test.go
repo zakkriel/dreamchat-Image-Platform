@@ -12,8 +12,8 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
 )
 
-func strptr(s string) *string       { return &s }
-func boolptr(b bool) *bool          { return &b }
+func strptr(s string) *string        { return &s }
+func boolptr(b bool) *bool           { return &b }
 func timeptr(t time.Time) *time.Time { return &t }
 
 func TestInsertPersistsGovernanceColumns(t *testing.T) {

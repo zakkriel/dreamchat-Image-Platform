@@ -103,11 +103,11 @@ type identityKey struct {
 }
 
 type stubIdentitiesRepo struct {
-	mu                sync.Mutex
-	byOwner           map[identityKey]identities.VisualIdentity
-	tenantStyleOK     map[string]map[string]bool // tenantID -> styleID -> ok
-	versionsWritten   []versionEntry
-	getByIDCallCount  int // incremented by GetByIDForTenant; used to assert no DB fetch on 501 paths
+	mu               sync.Mutex
+	byOwner          map[identityKey]identities.VisualIdentity
+	tenantStyleOK    map[string]map[string]bool // tenantID -> styleID -> ok
+	versionsWritten  []versionEntry
+	getByIDCallCount int // incremented by GetByIDForTenant; used to assert no DB fetch on 501 paths
 }
 
 type versionEntry struct {

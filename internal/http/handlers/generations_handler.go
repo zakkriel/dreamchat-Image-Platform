@@ -1,11 +1,15 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
+	"github.com/zakkriel/drchat-image-platform/internal/audit"
 	"github.com/zakkriel/drchat-image-platform/internal/auth"
+	"github.com/zakkriel/drchat-image-platform/internal/governance"
 	"github.com/zakkriel/drchat-image-platform/internal/http/apigen"
 	"github.com/zakkriel/drchat-image-platform/internal/httperr"
 	"github.com/zakkriel/drchat-image-platform/internal/idempotency"
@@ -13,6 +17,16 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
 	"github.com/zakkriel/drchat-image-platform/internal/providers/routing"
 )
+
+// AuditSink is the handler-facing audit-emission seam. Implementations open a
+// tenant-scoped DB connection (appdb.WithTenant + audit.Emit) and close it;
+// unit tests use a fake that records events in memory.
+//
+// tenantID is threaded in separately (not embedded in the event) so the sink
+// can scope its DB queries without requiring the handler to know about the DB.
+type AuditSink interface {
+	Emit(ctx context.Context, tenantID string, ev audit.Event) error
+}
 
 // platformCeiling is the maximum megapixel value the platform will accept
 // from a caller. Requests above this are clamped to this ceiling.
@@ -28,12 +42,22 @@ const generationsOperationType = "text_to_image"
 // GenerationsHandler handles POST /v1/generations requests. It is the
 // chokepoint for the combined contract (governance + subject + render + grid),
 // running validation, 501 gates, idempotency reconcile, identity fetch,
-// cost-routing, MP clamp, payload seeding, and CreateAndEnqueue. The
-// governance gate (Task 8) is inserted after Task 7.
+// governance verification, cost-routing, MP clamp, payload seeding, and
+// CreateAndEnqueue.
 type GenerationsHandler struct {
 	Service    jobs.Creator
 	Resolver   RouteResolver
 	Identities identities.Repository
+
+	// Verifier is the governance.Verifier applied at the chokepoint (Task 8).
+	// When nil the gate is skipped (log_only no-op); wired in production by router.go.
+	Verifier governance.Verifier
+	// Mode is governance.ModeEnforce or ModeLogOnly. Only consulted when Verifier
+	// is non-nil.
+	Mode governance.Mode
+	// Audit emits media.eligibility_verified / media.eligibility_blocked events.
+	// Required when Verifier is non-nil; may be nil-safe (events are best-effort).
+	Audit AuditSink
 }
 
 // NewGenerationsHandler wires a GenerationsHandler.
@@ -57,6 +81,7 @@ func NewGenerationsHandler(svc jobs.Creator, resolver RouteResolver, idRepo iden
 //  7. Fetch the subject identity (existence + description source) → 422 on ErrNotFound.
 //  8. handleReplay pre-check.
 //  9. Build ResolveRequest (Intent + identity_capable floor, QualityTier EMPTY, ProviderID pin).
+//
 // 10. Resolve → writeRouteError on error; applyResolvedRoute.
 // 11. MP clamp; seed payload["description"]=identity.DisplayName; map params; CreateAndEnqueue → 202.
 func (h *GenerationsHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -181,6 +206,58 @@ func (h *GenerationsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Step 8b: governance gate — runs AFTER idempotency and BEFORE route
+	// resolution and cost reservation. A block in enforce mode short-circuits
+	// here: neither the resolver nor CreateAndEnqueue is called, so no
+	// cost_reservations row is ever written for a blocked request.
+	//
+	// governanceVerifiedAt is non-nil when the gate passes (res.OK=true); it
+	// is stamped onto CreateAndEnqueueParams below so the worker knows the
+	// envelope was verified at request time.
+	var governanceVerifiedAt *time.Time
+	if h.Verifier != nil {
+		env := governance.Envelope{
+			SchemaVersion:    req.Governance.SchemaVersion,
+			ClassificationID: req.Governance.ClassificationId,
+			Visibility:       req.Governance.Visibility,
+			ContentClass:     req.Governance.ContentClass,
+			AuthorizedBy:     req.Governance.AuthorizedBy,
+			IssuedAt:         req.Governance.IssuedAt,
+			Signature:        req.Governance.Signature,
+		}
+		// SubjectMeta carries ONLY the identity ID refs — never the fetched
+		// identity's DisplayName, traits, or any prompt/description text.
+		subj := governance.SubjectMeta{
+			IdentityID:    req.Subject.IdentityId,
+			AnchorAssetID: deref(req.Subject.AnchorAssetId),
+			DeriveFrom:    deref(req.Subject.DeriveFrom),
+		}
+		res := h.Verifier.Verify(r.Context(), env, subj)
+		proceed, eventType := governance.Decide(h.Mode, res)
+		if h.Audit != nil {
+			_ = h.Audit.Emit(r.Context(), tenantID, audit.Event{
+				EventType:    eventType,
+				TenantID:     tenantID,
+				ActorTokenID: principal.TokenID,
+				ResourceType: "generation",
+				Metadata: map[string]any{
+					"reason":            res.Reason,
+					"classification_id": req.Governance.ClassificationId,
+					"content_class":     req.Governance.ContentClass, // opaque: stored/logged, never parsed
+					"mode":              string(h.Mode),
+				},
+			})
+		}
+		if !proceed {
+			httperr.Write(w, r, http.StatusForbidden, httperr.CodeGovernanceBlocked, "governance verification failed: "+res.Reason)
+			return
+		}
+		if res.OK {
+			now := time.Now()
+			governanceVerifiedAt = &now
+		}
+	}
+
 	// Step 9: build ResolveRequest.
 	// Floor: identity_capable (identity_id is required by this endpoint, so the
 	// floor is always identity_capable; the conditional is for clarity/futureproofing).
@@ -196,8 +273,8 @@ func (h *GenerationsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resolveReq := routing.ResolveRequest{
-		TenantID:           tenantID,
-		OperationType:      generationsOperationType,
+		TenantID:      tenantID,
+		OperationType: generationsOperationType,
 		// QualityTier intentionally left EMPTY: a set QualityTier hard-filters
 		// BEFORE intent ranking and would defeat draft/commit selection (Task 6).
 		Intent:             string(req.Render.Intent),
@@ -291,7 +368,8 @@ func (h *GenerationsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	params.Endpoint = endpoint
 	params.RequestHash = requestHash
 
-	// GovernanceVerifiedAt is NOT set here — Task 8 inserts the governance gate.
+	// GovernanceVerifiedAt: set when the governance gate passed (res.OK=true).
+	params.GovernanceVerifiedAt = governanceVerifiedAt
 
 	result, err := h.Service.CreateAndEnqueue(r.Context(), params)
 	if err != nil {

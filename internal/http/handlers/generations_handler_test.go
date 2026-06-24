@@ -1,15 +1,78 @@
 package handlers
 
 import (
+	"context"
 	"net/http"
+	"sync"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/zakkriel/drchat-image-platform/internal/audit"
+	"github.com/zakkriel/drchat-image-platform/internal/governance"
 	"github.com/zakkriel/drchat-image-platform/internal/idempotency"
 	"github.com/zakkriel/drchat-image-platform/internal/identities"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
 )
+
+// ---------------------------------------------------------------------------
+// Governance gate fakes
+// ---------------------------------------------------------------------------
+
+// fakeVerifier is a test-double governance.Verifier that returns a preset
+// result and records the (Envelope, SubjectMeta) it was called with so tests
+// can assert the handler never leaks prompt/description text into the gate.
+type fakeVerifier struct {
+	mu     sync.Mutex
+	result governance.Result
+	calls  []fakeVerifyCall
+}
+
+type fakeVerifyCall struct {
+	env  governance.Envelope
+	subj governance.SubjectMeta
+}
+
+func (f *fakeVerifier) Verify(_ context.Context, env governance.Envelope, subj governance.SubjectMeta) governance.Result {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, fakeVerifyCall{env: env, subj: subj})
+	return f.result
+}
+
+// fakeAuditSink records Emit calls for assertion in unit tests.
+type fakeAuditSink struct {
+	mu     sync.Mutex
+	events []audit.Event
+}
+
+func (f *fakeAuditSink) Emit(_ context.Context, _ string, ev audit.Event) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.events = append(f.events, ev)
+	return nil
+}
+
+func (f *fakeAuditSink) lastEvent() (audit.Event, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.events) == 0 {
+		return audit.Event{}, false
+	}
+	return f.events[len(f.events)-1], true
+}
+
+// newGovernedGenerationsRouter wires a GenerationsHandler with the supplied
+// governance verifier, mode, and audit sink — used by governance gate unit tests.
+func newGovernedGenerationsRouter(creator jobs.Creator, idRepo identities.Repository, resolver RouteResolver, verifier governance.Verifier, mode governance.Mode, sink AuditSink) chi.Router {
+	h := NewGenerationsHandler(creator, resolver, idRepo)
+	h.Verifier = verifier
+	h.Mode = mode
+	h.Audit = sink
+	r := chi.NewRouter()
+	r.Post("/v1/generations", h.Create)
+	return r
+}
 
 const (
 	testIdentityID      = "vi_aaaaaaaaaaaaaaaa"
@@ -50,8 +113,24 @@ func minimalGenBody(identityID, idempKey string) map[string]any {
 	}
 }
 
+// alwaysOKVerifier is a governance.Verifier that always approves — used by
+// pre-gate tests so they don't need to supply governance credentials.
+type alwaysOKVerifier struct{}
+
+func (alwaysOKVerifier) Verify(_ context.Context, _ governance.Envelope, _ governance.SubjectMeta) governance.Result {
+	return governance.Result{OK: true}
+}
+
+// noopAuditSink discards every Emit call.
+type noopAuditSink struct{}
+
+func (noopAuditSink) Emit(_ context.Context, _ string, _ audit.Event) error { return nil }
+
 func newGenerationsRouter(creator jobs.Creator, idRepo identities.Repository, resolver RouteResolver) chi.Router {
 	h := NewGenerationsHandler(creator, resolver, idRepo)
+	h.Verifier = alwaysOKVerifier{}
+	h.Mode = governance.ModeEnforce
+	h.Audit = noopAuditSink{}
 	r := chi.NewRouter()
 	r.Post("/v1/generations", h.Create)
 	return r
@@ -191,7 +270,7 @@ func TestGenerationsIdentityIDMissing422(t *testing.T) {
 			"issued_at":         "2026-06-18T00:00:00Z",
 			"signature":         "sig_test",
 		},
-		"subject":         map[string]any{},                   // no identity_id
+		"subject":         map[string]any{}, // no identity_id
 		"render":          map[string]any{"intent": "draft"},
 		"idempotency_key": "idem-key-007",
 	}
@@ -382,4 +461,149 @@ func TestGenerationsGovernanceMissingFields422(t *testing.T) {
 	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/generations", tenantA,
 		[]string{"images:write"}, body, nil)
 	assertError(t, rec, http.StatusUnprocessableEntity, "invalid_request")
+}
+
+// ---------------------------------------------------------------------------
+// Governance gate unit tests (Task 8)
+// ---------------------------------------------------------------------------
+
+// log_only + governance block → 202 (proceeds) AND audit EventBlocked recorded.
+func TestGenerationsGovernanceLogOnlyBlockProceeds(t *testing.T) {
+	creator := newStubCreator()
+	idRepo := seededGenIDRepo()
+	verifier := &fakeVerifier{result: governance.Result{OK: false, Reason: "bad_sig"}}
+	sink := &fakeAuditSink{}
+
+	router := newGovernedGenerationsRouter(creator, idRepo, okResolver(), verifier, governance.ModeLogOnly, sink)
+
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/generations", tenantA,
+		[]string{"images:write"}, minimalGenBody(testIdentityID, "gov-log-001"), nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("log_only block: expected 202 (proceed), got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(creator.calls) != 1 {
+		t.Fatalf("log_only block: expected resolver+creator called (1 CreateAndEnqueue), got %d", len(creator.calls))
+	}
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("log_only block: expected at least one audit event")
+	}
+	if ev.EventType != governance.EventBlocked {
+		t.Fatalf("log_only block: expected audit EventType=%q, got %q", governance.EventBlocked, ev.EventType)
+	}
+}
+
+// enforce + governance block → 403 governance_blocked; audit EventBlocked; resolver/creator NOT called.
+func TestGenerationsGovernanceEnforceBlockReturns403(t *testing.T) {
+	creator := newStubCreator()
+	idRepo := seededGenIDRepo()
+	verifier := &fakeVerifier{result: governance.Result{OK: false, Reason: "bad_sig"}}
+	sink := &fakeAuditSink{}
+
+	router := newGovernedGenerationsRouter(creator, idRepo, okResolver(), verifier, governance.ModeEnforce, sink)
+
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/generations", tenantA,
+		[]string{"images:write"}, minimalGenBody(testIdentityID, "gov-enforce-001"), nil)
+	assertError(t, rec, http.StatusForbidden, "governance_blocked")
+	if len(creator.calls) != 0 {
+		t.Fatalf("enforce block: expected NO CreateAndEnqueue call, got %d", len(creator.calls))
+	}
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("enforce block: expected at least one audit event")
+	}
+	if ev.EventType != governance.EventBlocked {
+		t.Fatalf("enforce block: expected audit EventType=%q, got %q", governance.EventBlocked, ev.EventType)
+	}
+}
+
+// governance verified → 202, audit EventVerified, params.GovernanceVerifiedAt set.
+func TestGenerationsGovernanceVerifiedSetsGovernanceVerifiedAt(t *testing.T) {
+	creator := newStubCreator()
+	idRepo := seededGenIDRepo()
+	verifier := &fakeVerifier{result: governance.Result{OK: true}}
+	sink := &fakeAuditSink{}
+
+	router := newGovernedGenerationsRouter(creator, idRepo, okResolver(), verifier, governance.ModeEnforce, sink)
+
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/generations", tenantA,
+		[]string{"images:write"}, minimalGenBody(testIdentityID, "gov-verified-001"), nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("verified: expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(creator.calls) != 1 {
+		t.Fatalf("verified: expected 1 CreateAndEnqueue call, got %d", len(creator.calls))
+	}
+	if creator.calls[0].GovernanceVerifiedAt == nil {
+		t.Fatal("verified: expected GovernanceVerifiedAt to be set on CreateAndEnqueueParams")
+	}
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("verified: expected at least one audit event")
+	}
+	if ev.EventType != governance.EventVerified {
+		t.Fatalf("verified: expected audit EventType=%q, got %q", governance.EventVerified, ev.EventType)
+	}
+}
+
+// prompt-never-read spy: the gate receives Envelope + SubjectMeta with ONLY
+// the identity IDs — no prompt/description/display-name text.
+func TestGenerationsGovernanceGateNeverSeesPromptText(t *testing.T) {
+	creator := newStubCreator()
+	idRepo := seededGenIDRepo() // identity has DisplayName = testIdentityDisplay
+	verifier := &fakeVerifier{result: governance.Result{OK: true}}
+	sink := noopAuditSink{}
+
+	router := newGovernedGenerationsRouter(creator, idRepo, okResolver(), verifier, governance.ModeEnforce, sink)
+
+	body := minimalGenBody(testIdentityID, "gov-spy-001")
+	// Add optional subject fields to check they pass through only as IDs.
+	body["subject"] = map[string]any{
+		"identity_id":     testIdentityID,
+		"anchor_asset_id": "anchor_abc",
+		"derive_from":     "derive_xyz",
+	}
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/generations", tenantA,
+		[]string{"images:write"}, body, nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("spy: expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	verifier.mu.Lock()
+	calls := verifier.calls
+	verifier.mu.Unlock()
+
+	if len(calls) == 0 {
+		t.Fatal("spy: verifier was never called")
+	}
+	call := calls[0]
+
+	// SubjectMeta must carry only ID fields.
+	if call.subj.IdentityID != testIdentityID {
+		t.Fatalf("spy: IdentityID=%q, want %q", call.subj.IdentityID, testIdentityID)
+	}
+	if call.subj.AnchorAssetID != "anchor_abc" {
+		t.Fatalf("spy: AnchorAssetID=%q, want %q", call.subj.AnchorAssetID, "anchor_abc")
+	}
+	if call.subj.DeriveFrom != "derive_xyz" {
+		t.Fatalf("spy: DeriveFrom=%q, want %q", call.subj.DeriveFrom, "derive_xyz")
+	}
+
+	// The identity DisplayName must NOT appear in the Envelope fields.
+	envFields := []string{
+		call.env.SchemaVersion, call.env.ClassificationID, call.env.Visibility,
+		call.env.ContentClass, call.env.AuthorizedBy, call.env.Signature,
+	}
+	for _, f := range envFields {
+		if f == testIdentityDisplay {
+			t.Fatalf("spy: identity DisplayName %q leaked into Envelope field", testIdentityDisplay)
+		}
+	}
+	// SubjectMeta fields must be IDs, not display names.
+	subjFields := []string{call.subj.IdentityID, call.subj.AnchorAssetID, call.subj.DeriveFrom}
+	for _, f := range subjFields {
+		if f == testIdentityDisplay {
+			t.Fatalf("spy: identity DisplayName %q leaked into SubjectMeta field", testIdentityDisplay)
+		}
+	}
 }
