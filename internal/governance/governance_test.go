@@ -115,3 +115,12 @@ func TestIsStub(t *testing.T) {
 		t.Fatal("StubSignatureVerifier must report IsStub true")
 	}
 }
+
+func TestEnforceWithStubWarning(t *testing.T) {
+	if governance.EnforceWithStubWarning(governance.ModeEnforce, governance.StubSignatureVerifier{}) == "" {
+		t.Fatal("expected warning for enforce+stub")
+	}
+	if governance.EnforceWithStubWarning(governance.ModeLogOnly, governance.StubSignatureVerifier{}) != "" {
+		t.Fatal("no warning expected in log_only")
+	}
+}

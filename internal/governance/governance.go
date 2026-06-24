@@ -103,6 +103,15 @@ func (v *RealVerifier) Verify(ctx context.Context, env Envelope, _ SubjectMeta) 
 	return Result{OK: true}
 }
 
+// EnforceWithStubWarning returns a non-empty warning when enforce mode is active
+// against a stubbed signature verifier (signatures are NOT actually verified).
+func EnforceWithStubWarning(mode Mode, sig SignatureVerifier) string {
+	if mode == ModeEnforce && IsStub(sig) {
+		return "GOVERNANCE_ENFORCEMENT=enforce but signature verification is STUBBED — signatures are not verified; do not trust enforce for signature integrity (TODO core-signing)"
+	}
+	return ""
+}
+
 // Decide maps (mode, result) to (proceed, auditEventType). proceed is false only
 // when enforcing AND the result is a block. The audit event always reflects the
 // verdict (verified vs blocked), in BOTH modes.

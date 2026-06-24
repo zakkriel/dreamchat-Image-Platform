@@ -128,6 +128,16 @@ func main() {
 	// fails the request closed, matching the repo's fail-at-resolution pattern.
 	reconcileRoutesAtBoot(context.Background(), logger, routeSource, capabilityIndex, cfg.AllowSyntheticProviders)
 
+	// Chunk 2 governance gate. The RealVerifier uses the stub signature
+	// verifier until the cross-system signing contract is finalized. Emit a
+	// startup WARN when enforce+stub are combined so operators know signatures
+	// are not actually verified (Task 9).
+	sig := governance.StubSignatureVerifier{}
+	gmode := governance.Mode(cfg.GovernanceEnforcement)
+	if w := governance.EnforceWithStubWarning(gmode, sig); w != "" {
+		logger.Warn(w)
+	}
+
 	deps := apphttp.Deps{
 		Logger: logger,
 		Config: cfg,
@@ -160,16 +170,14 @@ func main() {
 		Storage:        store,
 		Resolver:       resolver,
 		RateLimiter:    rateLimiter,
-		// Chunk 2 governance gate. The RealVerifier uses the stub signature
-		// verifier until the cross-system signing contract is finalized (Task 9
-		// will emit a WARN when enforce+stub are combined at startup). Mode maps
-		// directly from the GOVERNANCE_ENFORCEMENT config variable.
+		// Mode maps directly from the GOVERNANCE_ENFORCEMENT config variable;
+		// sig and gmode are declared above where the startup WARN is emitted.
 		GovernanceVerifier: governance.NewVerifier(
-			governance.StubSignatureVerifier{},
+			sig,
 			cfg.GovernanceMaxAge,
 			cfg.GovernanceAuthorizedIssuers,
 		),
-		GovernanceMode: governance.Mode(cfg.GovernanceEnforcement),
+		GovernanceMode: gmode,
 		TenantPool:     tenantPool,
 	}
 
