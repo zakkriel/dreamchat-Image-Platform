@@ -199,6 +199,43 @@ func TestGenerationsTransformOnlyTrue501(t *testing.T) {
 	}
 }
 
+// render.transform present with non-string or empty schema_version → 422 (D-4).
+func TestGenerationsTransformNonStringSchemaVersion422(t *testing.T) {
+	creator := newStubCreator()
+	idRepo := seededGenIDRepo()
+	router := newGenerationsRouter(creator, idRepo, okResolver())
+
+	// Numeric schema_version (e.g. JSON integer 1) must be rejected.
+	body := minimalGenBody(testIdentityID, "idem-key-transform-sv-001")
+	body["render"] = map[string]any{
+		"intent": "draft",
+		"transform": map[string]any{
+			"schema_version": 1, // numeric, not a string — must fail
+			"ops":            []any{},
+		},
+	}
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/generations", tenantA,
+		[]string{"images:write"}, body, nil)
+	assertError(t, rec, http.StatusUnprocessableEntity, "invalid_request")
+	if len(creator.calls) != 0 {
+		t.Fatalf("expected no service call on invalid transform schema_version, got %d", len(creator.calls))
+	}
+
+	// Missing schema_version inside transform must also be rejected.
+	creator2 := newStubCreator()
+	body2 := minimalGenBody(testIdentityID, "idem-key-transform-sv-002")
+	body2["render"] = map[string]any{
+		"intent": "draft",
+		"transform": map[string]any{
+			"ops": []any{},
+		},
+	}
+	rec2 := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/generations", tenantA,
+		[]string{"images:write"}, body2, nil)
+	_ = creator2
+	assertError(t, rec2, http.StatusUnprocessableEntity, "invalid_request")
+}
+
 // grid.enabled=true → 501 grid_not_supported.
 func TestGenerationsGridEnabled501(t *testing.T) {
 	creator := newStubCreator()

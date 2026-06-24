@@ -52,7 +52,7 @@ route resolution and cost reservation (handler step 8b):
 ### Prompt isolation
 
 `SubjectMeta` passed to the gate carries only ID references (`IdentityID`,
-`PackID`, `StyleID`). The identity's `DisplayName` is fetched at handler step 7
+`AnchorAssetID`, `DeriveFrom`). The identity's `DisplayName` is fetched at handler step 7
 but is **not** passed into `SubjectMeta` (which carries only ID refs); the gate
 at step 8b therefore structurally cannot access the identity's display
 name/traits or any prompt text. Prompt content is assembled later, at step 11,
@@ -94,7 +94,7 @@ floor to `identity_capable` for every `POST /v1/generations` request because
 as a hierarchy floor when `Intent` is non-empty: a route qualifies only if its
 capability satisfies the floor via `providers.CapabilitySatisfies`. This means
 an identity-capable floor cannot be silently satisfied by a scene-only route —
-the resolver fails closed (`ErrNoRoute`) rather than downgrading.
+the resolver fails closed (`ErrUnsupportedCapability`) rather than downgrading.
 
 ### Intent → ranking
 

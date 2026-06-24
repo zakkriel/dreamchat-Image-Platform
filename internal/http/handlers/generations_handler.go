@@ -153,7 +153,8 @@ func (h *GenerationsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if req.Render.Transform != nil {
 		m := *req.Render.Transform
 		sv, hasVersion := m["schema_version"]
-		if !hasVersion || sv == "" {
+		svStr, _ := sv.(string)
+		if !hasVersion || svStr == "" {
 			httperr.Write(w, r, http.StatusUnprocessableEntity, httperr.CodeInvalidRequest, "render.transform requires schema_version when present")
 			return
 		}
