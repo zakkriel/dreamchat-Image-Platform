@@ -477,3 +477,161 @@ func TestPriorityBeatsModelOrder(t *testing.T) {
 		t.Fatalf("expected lower-priority route to win, got %+v", got)
 	}
 }
+
+// --- Phase 7 cost-routing: intent-driven, price-aware ranking ----------------
+
+// newPricedRoute builds a test route with explicit Price, QualityTier, and
+// RequiredCapability so the intent-ranking tests can control all three axes.
+func newPricedRoute(id, capability, qualityTier string, price *float64) Route {
+	r := mockRoute()
+	r.RouteID = id
+	r.ModelID = "pm_" + id
+	r.RequiredCapability = capability
+	r.QualityTier = qualityTier
+	r.Price = price
+	// Priority is left at 100 so tests can be specific about price/tier wins.
+	return r
+}
+
+func ptr(f float64) *float64 { return &f }
+
+// TestResolveDraftPicksCheapest: draft picks the cheapest capability-valid
+// route at/above the scene_capable floor.
+func TestResolveDraftPicksCheapest(t *testing.T) {
+	expensive := newPricedRoute("route_exp", "scene_capable", "standard", ptr(0.02))
+	cheap := newPricedRoute("route_cheap", "scene_capable", "standard", ptr(0.01))
+	got, err := resolve(t, []Route{expensive, cheap}, map[string]bool{"mock": true},
+		ResolveRequest{
+			OperationType:      "text_to_image",
+			Intent:             "draft",
+			RequiredCapability: "scene_capable",
+		})
+	if err != nil {
+		t.Fatalf("resolve draft: %v", err)
+	}
+	if got.ProviderRouteID != "route_cheap" {
+		t.Fatalf("draft must pick cheapest route, got %+v", got)
+	}
+}
+
+// TestResolveCommitPicksPremium: commit picks the highest quality_tier route
+// at/above the scene_capable floor regardless of price.
+func TestResolveCommitPicksPremium(t *testing.T) {
+	std := newPricedRoute("route_std", "scene_capable", "standard", ptr(0.01))
+	high := newPricedRoute("route_high", "scene_capable", "high", ptr(0.05))
+	got, err := resolve(t, []Route{std, high}, map[string]bool{"mock": true},
+		ResolveRequest{
+			OperationType:      "text_to_image",
+			Intent:             "commit",
+			RequiredCapability: "scene_capable",
+		})
+	if err != nil {
+		t.Fatalf("resolve commit: %v", err)
+	}
+	if got.ProviderRouteID != "route_high" {
+		t.Fatalf("commit must pick highest quality_tier route, got %+v", got)
+	}
+}
+
+// TestResolveIdentityFloorNoDowngrade: a scene-only route NEVER satisfies an
+// identity_capable floor, even for draft intent. The identity_capable route is
+// chosen, not the cheaper scene route.
+func TestResolveIdentityFloorNoDowngrade(t *testing.T) {
+	scene := newPricedRoute("route_scene", "scene_capable", "standard", ptr(0.01))
+	identity := newPricedRoute("route_identity", "identity_capable", "standard", ptr(0.05))
+
+	// draft: must pick identity route, not the cheaper scene route.
+	got, err := resolve(t, []Route{scene, identity}, map[string]bool{"mock": true},
+		ResolveRequest{
+			OperationType:      "text_to_image",
+			Intent:             "draft",
+			RequiredCapability: "identity_capable",
+		})
+	if err != nil {
+		t.Fatalf("resolve draft identity floor: %v", err)
+	}
+	if got.ProviderRouteID != "route_identity" {
+		t.Fatalf("draft must not downgrade to scene_capable route for identity floor, got %+v", got)
+	}
+
+	// commit: must also pick identity route.
+	got2, err := resolve(t, []Route{scene, identity}, map[string]bool{"mock": true},
+		ResolveRequest{
+			OperationType:      "text_to_image",
+			Intent:             "commit",
+			RequiredCapability: "identity_capable",
+		})
+	if err != nil {
+		t.Fatalf("resolve commit identity floor: %v", err)
+	}
+	if got2.ProviderRouteID != "route_identity" {
+		t.Fatalf("commit must not downgrade to scene_capable route for identity floor, got %+v", got2)
+	}
+}
+
+// TestResolveAnchorCreationStaysIdentity: with an identity_capable floor, both
+// draft and commit resolve an identity-axis capable route. A pack_capable route
+// satisfies the identity_capable floor (pack ⊇ identity in the hierarchy).
+func TestResolveAnchorCreationStaysIdentity(t *testing.T) {
+	// pack_capable satisfies identity_capable floor (pack ⊇ identity).
+	pack := newPricedRoute("route_pack", "pack_capable", "standard", ptr(0.04))
+
+	for _, intent := range []string{"draft", "commit"} {
+		got, err := resolve(t, []Route{pack}, map[string]bool{"mock": true},
+			ResolveRequest{
+				OperationType:      "text_to_image",
+				Intent:             intent,
+				RequiredCapability: "identity_capable",
+			})
+		if err != nil {
+			t.Fatalf("resolve %s anchor: %v", intent, err)
+		}
+		if got.ProviderRouteID != "route_pack" {
+			t.Fatalf("%s anchor: expected pack route to satisfy identity floor, got %+v", intent, got)
+		}
+	}
+}
+
+// TestResolvePinMustPassFloor: a ProviderID pin to a scene-only provider under
+// an identity_capable floor must return ErrUnsupportedCapability (not the scene
+// route).
+func TestResolvePinMustPassFloor(t *testing.T) {
+	scene := newPricedRoute("route_scene", "scene_capable", "standard", ptr(0.01))
+	scene.ProviderID = "bfl"
+	scene.ModelID = "pm_bfl_scene"
+
+	identity := newPricedRoute("route_identity", "identity_capable", "standard", ptr(0.05))
+	// identity route is on a different provider (mock).
+
+	_, err := resolve(t, []Route{scene, identity},
+		map[string]bool{"bfl": true, "mock": true},
+		ResolveRequest{
+			OperationType:      "text_to_image",
+			Intent:             "draft",
+			RequiredCapability: "identity_capable",
+			ProviderID:         "bfl", // pin to bfl which only has scene route
+		})
+	if err == nil {
+		t.Fatal("expected error when pinned provider has no identity-capable route")
+	}
+	if !errors.Is(err, ErrUnsupportedCapability) && !errors.Is(err, ErrNoRoute) {
+		t.Fatalf("expected ErrUnsupportedCapability or ErrNoRoute for pin+floor miss, got %v", err)
+	}
+}
+
+// TestResolveNoCapableRoute: when only scene routes exist and the floor is
+// identity_capable, the resolver returns ErrUnsupportedCapability (not no_route).
+func TestResolveNoCapableRoute(t *testing.T) {
+	scene1 := newPricedRoute("route_s1", "scene_capable", "standard", ptr(0.01))
+	scene2 := newPricedRoute("route_s2", "scene_capable", "high", ptr(0.02))
+
+	_, err := resolve(t, []Route{scene1, scene2}, map[string]bool{"mock": true},
+		ResolveRequest{
+			OperationType:      "text_to_image",
+			Intent:             "draft",
+			RequiredCapability: "identity_capable",
+		})
+	if !errors.Is(err, ErrUnsupportedCapability) {
+		t.Fatalf("expected ErrUnsupportedCapability when only scene routes exist for identity floor, got %v", err)
+	}
+}

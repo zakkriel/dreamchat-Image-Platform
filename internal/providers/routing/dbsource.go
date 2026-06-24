@@ -20,7 +20,8 @@ func NewDBRouteSource(pool *pgxpool.Pool) *DBRouteSource {
 	return &DBRouteSource{q: dbgen.New(pool)}
 }
 
-// ListRoutes loads every route for the operation joined to its model status.
+// ListRoutes loads every route for the operation joined to its model status and
+// the active unit price (if any) from provider_model_prices.
 func (s *DBRouteSource) ListRoutes(ctx context.Context, operationType string) ([]Route, error) {
 	rows, err := s.q.ListProviderRoutesForOperation(ctx, operationType)
 	if err != nil {
@@ -28,7 +29,7 @@ func (s *DBRouteSource) ListRoutes(ctx context.Context, operationType string) ([
 	}
 	out := make([]Route, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, Route{
+		rt := Route{
 			RouteID:            row.RouteID,
 			ProviderID:         row.ProviderID,
 			ModelID:            row.ModelID,
@@ -40,7 +41,15 @@ func (s *DBRouteSource) ListRoutes(ctx context.Context, operationType string) ([
 			Priority:           row.Priority,
 			Enabled:            row.IsEnabled,
 			ModelActive:        row.ModelStatus == "active",
-		})
+		}
+		// Convert the LEFT-JOIN price to *float64 (nil when no active price row).
+		if row.PricePerUnit.Valid && !row.PricePerUnit.NaN {
+			if f8, err := row.PricePerUnit.Float64Value(); err == nil && f8.Valid {
+				f := f8.Float64
+				rt.Price = &f
+			}
+		}
+		out = append(out, rt)
 	}
 	return out, nil
 }

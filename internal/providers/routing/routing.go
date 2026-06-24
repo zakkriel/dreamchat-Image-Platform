@@ -62,6 +62,11 @@ type ResolveRequest struct {
 	// provider_routes.required_capability matches exactly (e.g. scene_capable,
 	// pack_capable). This is the general route capability — distinct from the
 	// preview capability below.
+	//
+	// When Intent is non-empty, RequiredCapability is treated as a HIERARCHY
+	// floor: any route whose capability satisfies the floor (via
+	// providers.CapabilitySatisfies) qualifies. When Intent is empty the legacy
+	// exact-match path is preserved.
 	RequiredCapability string
 	// RequiredPreviewCapability, when non-empty and not "no_preview", restricts
 	// selection to routes whose preview_capability matches. Optional /
@@ -80,6 +85,14 @@ type ResolveRequest struct {
 	// different provider. This lets a caller force the BFL scene route or the fal
 	// pack route per request without changing the deployment-wide default.
 	ProviderID string
+	// Intent, when non-empty ("draft" or "commit"), enables intent-driven,
+	// price-aware ranking over a capability floor:
+	//   draft  → cheapest active unit price (ascending); nil/unpriced sorts last.
+	//   commit → highest quality_tier rank (high>standard>draft), then identity-
+	//            axis-capable routes first, then the existing tie-break.
+	// When Intent is empty the legacy exact-match + priority tie-break path is
+	// used and the behavior of all existing callers is unchanged.
+	Intent string
 }
 
 // ResolvedRoute is the single route chosen for a request.
@@ -104,6 +117,10 @@ type Route struct {
 	Priority           int32
 	Enabled            bool
 	ModelActive        bool
+	// Price is the active unit price for this route (from provider_model_prices).
+	// Nil when no active price row exists. Used by intent-driven ranking (draft →
+	// ascending price; nil sorts last so unpriced routes are never cheapest).
+	Price *float64
 }
 
 // RouteSource lists candidate routes for an operation. The DB-backed
@@ -331,11 +348,27 @@ func (r *Resolver) candidates(ctx context.Context, req ResolveRequest) ([]Route,
 	// Stage 4: general required capability (hard filter when requested). Routes
 	// exist for the operation/quality but none satisfy the requested capability →
 	// unsupported_capability (NOT no_route).
+	//
+	// When Intent != "", RequiredCapability is treated as a HIERARCHY floor:
+	// a route qualifies if its capability satisfies the floor via the §8.3
+	// hierarchy (pack satisfies identity, production satisfies both, etc.). The
+	// legacy exact-match path is preserved when Intent == "".
 	if req.RequiredCapability != "" {
 		filtered := make([]Route, 0, len(candidates))
-		for _, rt := range candidates {
-			if rt.RequiredCapability == req.RequiredCapability {
-				filtered = append(filtered, rt)
+		if req.Intent != "" {
+			// Intent path: hierarchy floor check.
+			floor := providers.Capability(req.RequiredCapability)
+			for _, rt := range candidates {
+				if providers.CapabilitySatisfies(providers.Capability(rt.RequiredCapability), floor) {
+					filtered = append(filtered, rt)
+				}
+			}
+		} else {
+			// Legacy path: exact match only.
+			for _, rt := range candidates {
+				if rt.RequiredCapability == req.RequiredCapability {
+					filtered = append(filtered, rt)
+				}
 			}
 		}
 		if len(filtered) == 0 {
@@ -398,10 +431,58 @@ func resolvedRouteFrom(rt Route) ResolvedRoute {
 	}
 }
 
+// qualityTierRank maps a quality_tier string to a numeric rank for intent-driven
+// commit ranking (high > standard > draft > anything-else).
+func qualityTierRank(tier string) int {
+	switch tier {
+	case "high":
+		return 3
+	case "standard":
+		return 2
+	case "draft":
+		return 1
+	default:
+		return 0
+	}
+}
+
 // ranksBefore reports whether route a should be preferred over route b for the
 // request, implementing the Stage-5 precedence. It is a total, deterministic
 // order, so ties never depend on input ordering.
+//
+// When req.Intent is non-empty, intent-driven ranking is prepended:
+//   - draft: ascending active unit price (nil/unpriced sorts last).
+//   - commit: descending quality_tier rank (high>standard>draft), then
+//     identity-axis-capable first.
+//
+// The existing latency/preference/priority/id tie-break follows in both cases.
 func ranksBefore(a, b Route, req ResolveRequest) bool {
+	// Intent-driven ranking (prepended when Intent is set).
+	if req.Intent == "draft" {
+		switch {
+		case a.Price == nil && b.Price == nil:
+			// both unpriced: fall through to tie-break.
+		case a.Price == nil:
+			return false // unpriced sorts last
+		case b.Price == nil:
+			return true // priced beats unpriced
+		case *a.Price != *b.Price:
+			return *a.Price < *b.Price // cheapest first
+		}
+	} else if req.Intent == "commit" {
+		aRank := qualityTierRank(a.QualityTier)
+		bRank := qualityTierRank(b.QualityTier)
+		if aRank != bRank {
+			return aRank > bRank // highest quality first
+		}
+		// secondary: identity-axis-capable first.
+		aIdent := providers.IsIdentityAxisCapability(providers.Capability(a.RequiredCapability))
+		bIdent := providers.IsIdentityAxisCapability(providers.Capability(b.RequiredCapability))
+		if aIdent != bIdent {
+			return aIdent // identity-axis first
+		}
+	}
+
 	// 1. latency tier match (when requested).
 	if req.LatencyTier != "" {
 		aMatch := a.LatencyTier == req.LatencyTier
