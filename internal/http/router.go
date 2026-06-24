@@ -153,6 +153,7 @@ func mountV1(r chi.Router, deps Deps) {
 		mountIdentities(v1, deps)
 		mountAssets(v1, deps)
 		mountArtifacts(v1, deps)
+		mountGenerations(v1, deps)
 		mountPacks(v1, deps)
 		mountJobs(v1, deps)
 		mountAdminCost(v1, deps)
@@ -232,6 +233,17 @@ func mountArtifacts(v1 chi.Router, deps Deps) {
 	}
 	h := handlers.NewArtifactsHandler(deps.JobsService, deps.StylesRepo, deps.Resolver, string(deps.Config.ImageProvider), reuse)
 	v1.With(auth.RequireScopes("images:write")).Post("/artifacts/{artifact_id}/generate", h.Generate)
+}
+
+// mountGenerations wires POST /v1/generations — the Chunk 2 combined-contract
+// chokepoint. Requires JobsService, Resolver, and IdentitiesRepo; nil-safe
+// (skipped when any dep is missing).
+func mountGenerations(v1 chi.Router, deps Deps) {
+	if deps.JobsService == nil || deps.Resolver == nil || deps.IdentitiesRepo == nil {
+		return
+	}
+	h := handlers.NewGenerationsHandler(deps.JobsService, deps.Resolver, deps.IdentitiesRepo)
+	v1.With(auth.RequireScopes("images:write")).Post("/generations", h.Create)
 }
 
 // mountPacks wires the Phase 5A generate-pack endpoints. They mirror the

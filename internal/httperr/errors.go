@@ -66,6 +66,16 @@ const (
 	// by the tenant, not ready, missing a high-res object, or already bound to a
 	// different identity (ADR-017).
 	CodeInvalidAnchorAsset = "invalid_anchor_asset"
+
+	// Chunk 2: deferred-behavior rejections (HTTP 501) — the request is
+	// well-formed but actively invokes behavior not implemented yet, and routing
+	// it through the single-image path would mis-cost (transform_only) or
+	// mis-count (grid) the result.
+	CodeTransformOnlyNotSupported = "transform_only_not_supported"
+	CodeGridNotSupported          = "grid_not_supported"
+	// CodeGovernanceBlocked surfaces (HTTP 403) when GOVERNANCE_ENFORCEMENT=enforce
+	// and the media-eligibility envelope fails verification (Chunk 2).
+	CodeGovernanceBlocked = "governance_blocked"
 )
 
 type Body struct {

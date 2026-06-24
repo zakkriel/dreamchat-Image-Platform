@@ -103,10 +103,11 @@ type identityKey struct {
 }
 
 type stubIdentitiesRepo struct {
-	mu              sync.Mutex
-	byOwner         map[identityKey]identities.VisualIdentity
-	tenantStyleOK   map[string]map[string]bool // tenantID -> styleID -> ok
-	versionsWritten []versionEntry
+	mu                sync.Mutex
+	byOwner           map[identityKey]identities.VisualIdentity
+	tenantStyleOK     map[string]map[string]bool // tenantID -> styleID -> ok
+	versionsWritten   []versionEntry
+	getByIDCallCount  int // incremented by GetByIDForTenant; used to assert no DB fetch on 501 paths
 }
 
 type versionEntry struct {
@@ -193,6 +194,7 @@ func (s *stubIdentitiesRepo) GetByOwner(_ context.Context, tenantID, worldID, ow
 func (s *stubIdentitiesRepo) GetByIDForTenant(_ context.Context, id, tenantID string) (identities.VisualIdentity, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.getByIDCallCount++
 	for _, v := range s.byOwner {
 		if v.ID == id && v.TenantID == tenantID {
 			return v, nil
