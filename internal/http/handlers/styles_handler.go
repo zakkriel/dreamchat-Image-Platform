@@ -72,7 +72,7 @@ func (h *StylesHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tier := string(apigen.Standard)
+	tier := string(apigen.QualityTierStandard)
 	if req.DefaultQualityTier != nil && *req.DefaultQualityTier != "" {
 		if !validQualityTier(*req.DefaultQualityTier) {
 			httperr.Write(w, r, http.StatusBadRequest, httperr.CodeInvalidRequest, "default_quality_tier must be one of draft, standard, high")
@@ -108,7 +108,7 @@ func validStyleMode(m apigen.StyleMode) bool {
 
 func validQualityTier(q apigen.QualityTier) bool {
 	switch q {
-	case apigen.Draft, apigen.Standard, apigen.High:
+	case apigen.QualityTierDraft, apigen.QualityTierStandard, apigen.QualityTierHigh:
 		return true
 	}
 	return false

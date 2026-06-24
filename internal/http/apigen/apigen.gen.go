@@ -107,6 +107,12 @@ const (
 	GenerationJobStatusRunning      GenerationJobStatus = "running"
 )
 
+// Defines values for Intent.
+const (
+	IntentCommit Intent = "commit"
+	IntentDraft  Intent = "draft"
+)
+
 // Defines values for LatencyTier.
 const (
 	Balanced LatencyTier = "balanced"
@@ -172,9 +178,9 @@ const (
 
 // Defines values for QualityTier.
 const (
-	Draft    QualityTier = "draft"
-	High     QualityTier = "high"
-	Standard QualityTier = "standard"
+	QualityTierDraft    QualityTier = "draft"
+	QualityTierHigh     QualityTier = "high"
+	QualityTierStandard QualityTier = "standard"
 )
 
 // Defines values for StyleMode.
@@ -808,10 +814,52 @@ type GenerationJobAcceptedStatus string
 // unchanged Phase 7A single-phase lifecycle.
 type GenerationJobStatus string
 
+// GenerationRequest defines model for GenerationRequest.
+type GenerationRequest struct {
+	Governance     GovernanceEnvelope `json:"governance"`
+	Grid           *GridOptions       `json:"grid,omitempty"`
+	IdempotencyKey string             `json:"idempotency_key"`
+	Lazy           *bool              `json:"lazy,omitempty"`
+	Render         RenderOptions      `json:"render"`
+	Subject        GenerationSubject  `json:"subject"`
+}
+
+// GenerationSubject defines model for GenerationSubject.
+type GenerationSubject struct {
+	AnchorAssetId *string `json:"anchor_asset_id"`
+	DeriveFrom    *string `json:"derive_from"`
+	IdentityId    string  `json:"identity_id"`
+}
+
+// GovernanceEnvelope defines model for GovernanceEnvelope.
+type GovernanceEnvelope struct {
+	AuthorizedBy     string `json:"authorized_by"`
+	ClassificationId string `json:"classification_id"`
+
+	// ContentClass Opaque to this service — stored and logged, never parsed for meaning.
+	ContentClass  string    `json:"content_class"`
+	IssuedAt      time.Time `json:"issued_at"`
+	SchemaVersion string    `json:"schema_version"`
+	Signature     string    `json:"signature"`
+	Visibility    string    `json:"visibility"`
+}
+
+// GridOptions defines model for GridOptions.
+type GridOptions struct {
+	Cells      *[]map[string]interface{} `json:"cells,omitempty"`
+	ContractId *string                   `json:"contract_id"`
+
+	// Enabled When true, returns 501 this chunk (grid slicing is deferred).
+	Enabled bool `json:"enabled"`
+}
+
 // HealthResponse defines model for HealthResponse.
 type HealthResponse struct {
 	Status string `json:"status"`
 }
+
+// Intent Cost/quality selector. draft = cheapest capability-valid model; commit = premium.
+type Intent string
 
 // JobAssetsResponse A generation job's delivered visual assets, in deterministic delivery
 // order, each enriched with presigned per-tier download URLs (Phase 6B).
@@ -945,6 +993,22 @@ type ProviderModelPriceWrite struct {
 
 // QualityTier Output quality tier requested for generation.
 type QualityTier string
+
+// RenderOptions defines model for RenderOptions.
+type RenderOptions struct {
+	// Intent Cost/quality selector. draft = cheapest capability-valid model; commit = premium.
+	Intent Intent `json:"intent"`
+
+	// MaxMegapixels Validated and clamped to a platform ceiling, persisted. Not priced or pixel-enforced this chunk.
+	MaxMegapixels *float32 `json:"max_megapixels,omitempty"`
+	ProviderId    *string  `json:"provider_id"`
+
+	// Transform Validated (requires schema_version) and stored; execution deferred.
+	Transform *map[string]interface{} `json:"transform"`
+
+	// TransformOnly When true, returns 501 this chunk (transform execution is deferred).
+	TransformOnly *bool `json:"transform_only,omitempty"`
+}
 
 // StyleMode How a style profile is sourced.
 type StyleMode string
@@ -1258,6 +1322,14 @@ type PostV1CharactersCharacterIdVisualIdentityParams struct {
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
 }
 
+// PostV1GenerationsParams defines parameters for PostV1Generations.
+type PostV1GenerationsParams struct {
+	// IdempotencyKey Client-generated idempotency key. The same key + token + endpoint + body
+	// hash returns the same job. Same key + different body returns 409.
+	// See `idempotency.md`.
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
+}
+
 // PostV1PlacesPlaceIdGeneratePackParams defines parameters for PostV1PlacesPlaceIdGeneratePack.
 type PostV1PlacesPlaceIdGeneratePackParams struct {
 	// IdempotencyKey Client-generated idempotency key. The same key + token + endpoint + body
@@ -1330,6 +1402,9 @@ type PostV1CharactersCharacterIdVisualIdentityJSONRequestBody = CreateVisualIden
 
 // PostV1CharactersCharacterIdVisualIdentityAnchorsJSONRequestBody defines body for PostV1CharactersCharacterIdVisualIdentityAnchors for application/json ContentType.
 type PostV1CharactersCharacterIdVisualIdentityAnchorsJSONRequestBody = AttachAnchorAssetsRequest
+
+// PostV1GenerationsJSONRequestBody defines body for PostV1Generations for application/json ContentType.
+type PostV1GenerationsJSONRequestBody = GenerationRequest
 
 // PostV1PlacesPlaceIdGeneratePackJSONRequestBody defines body for PostV1PlacesPlaceIdGeneratePack for application/json ContentType.
 type PostV1PlacesPlaceIdGeneratePackJSONRequestBody = GeneratePlacePackRequest

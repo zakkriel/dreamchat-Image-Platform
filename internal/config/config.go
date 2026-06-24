@@ -25,6 +25,13 @@ const (
 	EnvLive Environment = "live"
 )
 
+type GovernanceMode string
+
+const (
+	GovernanceLogOnly GovernanceMode = "log_only"
+	GovernanceEnforce GovernanceMode = "enforce"
+)
+
 type Config struct {
 	AppPort           int
 	Environment       Environment
@@ -74,6 +81,17 @@ type Config struct {
 	// ALLOW_SYNTHETIC_PROVIDERS=true explicitly. Mock still backs scene/draft
 	// routes regardless of this flag.
 	AllowSyntheticProviders bool
+
+	// GovernanceEnforcement gates the media-eligibility verification at the
+	// /v1/generations chokepoint. log_only (default): record what WOULD be
+	// rejected via an audit event, then proceed. enforce: reject. Default is
+	// log_only everywhere because core cannot sign envelopes yet (Chunk 2).
+	GovernanceEnforcement GovernanceMode
+	// GovernanceMaxAge is the freshness window for governance issued_at.
+	GovernanceMaxAge time.Duration
+	// GovernanceAuthorizedIssuers is the allowlist of recognized authorized_by
+	// values (comma-separated env). Empty means none recognized.
+	GovernanceAuthorizedIssuers []string
 }
 
 func Load() (*Config, error) {
@@ -105,6 +123,10 @@ func Load() (*Config, error) {
 		OpenAPIDocsEnabled: getEnvBool("OPENAPI_DOCS_ENABLED", defaultDocsEnabled(env)),
 
 		AllowSyntheticProviders: getEnvBool("ALLOW_SYNTHETIC_PROVIDERS", false),
+
+		GovernanceEnforcement:       GovernanceMode(getEnv("GOVERNANCE_ENFORCEMENT", string(GovernanceLogOnly))),
+		GovernanceMaxAge:            getEnvDuration("GOVERNANCE_MAX_AGE", 24*time.Hour),
+		GovernanceAuthorizedIssuers: getEnvCSV("GOVERNANCE_AUTHORIZED_ISSUERS"),
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -170,6 +192,12 @@ func (c *Config) validate() error {
 		}
 	default:
 		return fmt.Errorf("invalid IMAGE_PROVIDER %q (expected mock|bfl|fal)", c.ImageProvider)
+	}
+
+	switch c.GovernanceEnforcement {
+	case GovernanceLogOnly, GovernanceEnforce:
+	default:
+		return fmt.Errorf("invalid GOVERNANCE_ENFORCEMENT %q (expected log_only|enforce)", c.GovernanceEnforcement)
 	}
 
 	if c.PostgresDSN == "" {
@@ -249,6 +277,23 @@ func getEnvBool(key string, def bool) bool {
 		return def
 	}
 	return b
+}
+
+// getEnvCSV parses a comma-separated env var into a trimmed, non-empty slice.
+// Unset or empty yields a nil slice.
+func getEnvCSV(key string) []string {
+	v, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(v) == "" {
+		return nil
+	}
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 var ErrMissingEnv = errors.New("missing required environment variable")

@@ -548,6 +548,32 @@ paths:
         default:
           $ref: '#/components/responses/ErrorResponse'
 
+  /v1/generations:
+    post:
+      tags: [Jobs]
+      summary: Create a generation from the combined governance + cost contract
+      security:
+        - BearerAuth: [images:write]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenerationRequest'
+      responses:
+        '202':
+          description: Generation accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationJobAccepted'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
   # ==========================================================================
   # Admin Control Surface — PARTIALLY IMPLEMENTED
   #
@@ -1538,6 +1564,10 @@ components:
         - true_preview
         - derived_preview
         - no_preview
+    Intent:
+      type: string
+      enum: [draft, commit]
+      description: Cost/quality selector. draft = cheapest capability-valid model; commit = premium.
     # ------------------------------------------------------------------------
     # Health & error
     # ------------------------------------------------------------------------
@@ -1763,6 +1793,69 @@ components:
             asset becomes the single ready row a later non-forced request
             reuses, with `version` incremented. Default `false` is the
             unchanged Phase 6A2 reuse behavior.
+    # ------------------------------------------------------------------------
+    # Combined contract schemas (Chunk 2)
+    # ------------------------------------------------------------------------
+    GovernanceEnvelope:
+      type: object
+      required: [schema_version, classification_id, visibility, content_class, authorized_by, issued_at, signature]
+      properties:
+        schema_version: { type: string }
+        classification_id: { type: string }
+        visibility: { type: string }
+        content_class:
+          type: string
+          description: Opaque to this service — stored and logged, never parsed for meaning.
+        authorized_by: { type: string }
+        issued_at: { type: string, format: date-time }
+        signature: { type: string }
+    GenerationSubject:
+      type: object
+      required: [identity_id]
+      properties:
+        identity_id: { type: string }
+        anchor_asset_id: { type: string, nullable: true }
+        derive_from: { type: string, nullable: true }
+    RenderOptions:
+      type: object
+      required: [intent]
+      properties:
+        intent: { $ref: '#/components/schemas/Intent' }
+        transform_only:
+          type: boolean
+          default: false
+          description: When true, returns 501 this chunk (transform execution is deferred).
+        transform:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: Validated (requires schema_version) and stored; execution deferred.
+        max_megapixels:
+          type: number
+          description: Validated and clamped to a platform ceiling, persisted. Not priced or pixel-enforced this chunk.
+        provider_id: { type: string, nullable: true }
+    GridOptions:
+      type: object
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+          default: false
+          description: When true, returns 501 this chunk (grid slicing is deferred).
+        contract_id: { type: string, nullable: true }
+        cells:
+          type: array
+          items: { type: object, additionalProperties: true }
+    GenerationRequest:
+      type: object
+      required: [governance, subject, render, idempotency_key]
+      properties:
+        governance: { $ref: '#/components/schemas/GovernanceEnvelope' }
+        subject: { $ref: '#/components/schemas/GenerationSubject' }
+        render: { $ref: '#/components/schemas/RenderOptions' }
+        grid: { $ref: '#/components/schemas/GridOptions' }
+        lazy: { type: boolean, default: false }
+        idempotency_key: { type: string }
     # ------------------------------------------------------------------------
     # Jobs
     # ------------------------------------------------------------------------

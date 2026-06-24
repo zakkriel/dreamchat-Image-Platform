@@ -160,6 +160,22 @@ type CreateAndEnqueueParams struct {
 	// token's live jobs under a per-token advisory lock and returns
 	// ErrConcurrentJobsExceeded before any side effect if at/over the cap.
 	MaxConcurrentJobs int
+
+	// Governance/render/subject columns (Chunk 1). All nullable; passed as nil
+	// by existing callers. When set, InsertGenerationJob persists them.
+	GovernanceEnvelope   []byte
+	ClassificationID     *string
+	Visibility           *string
+	ContentClass         *string
+	AuthorizedBy         *string
+	GovernanceVerifiedAt *time.Time
+	Intent               *string
+	TransformOnly        *bool
+	Transform            []byte
+	MaxMegapixels        *float64
+	Lazy                 *bool
+	AnchorAssetID        *string
+	DeriveFrom           *string
 }
 
 // CreateResult is the service's return shape. Replayed is true when the
@@ -1051,15 +1067,41 @@ func (s *Service) insertJob(ctx context.Context, q *dbgen.Queries, jobID string,
 	tokenID := params.RequestedByTokenID
 	fp := params.FallbackPolicy
 	cr := params.CacheResult
+
+	var govVerifiedAt pgtype.Timestamptz
+	if params.GovernanceVerifiedAt != nil {
+		govVerifiedAt = pgtype.Timestamptz{Time: *params.GovernanceVerifiedAt, Valid: true}
+	}
+
+	var maxMegapixels pgtype.Numeric
+	if params.MaxMegapixels != nil {
+		if err := maxMegapixels.Scan(fmt.Sprintf("%g", *params.MaxMegapixels)); err != nil {
+			return fmt.Errorf("insertJob: maxMegapixels scan: %w", err)
+		}
+	}
+
 	_, err := q.InsertGenerationJob(ctx, dbgen.InsertGenerationJobParams{
-		ID:                 jobID,
-		TenantID:           params.TenantID,
-		WorldID:            &worldID,
-		JobType:            params.JobType,
-		RequestedByTokenID: &tokenID,
-		InputPayload:       payload,
-		FallbackPolicy:     &fp,
-		CacheResult:        &cr,
+		ID:                   jobID,
+		TenantID:             params.TenantID,
+		WorldID:              &worldID,
+		JobType:              params.JobType,
+		RequestedByTokenID:   &tokenID,
+		InputPayload:         payload,
+		FallbackPolicy:       &fp,
+		CacheResult:          &cr,
+		GovernanceEnvelope:   params.GovernanceEnvelope,
+		ClassificationID:     params.ClassificationID,
+		Visibility:           params.Visibility,
+		ContentClass:         params.ContentClass,
+		AuthorizedBy:         params.AuthorizedBy,
+		GovernanceVerifiedAt: govVerifiedAt,
+		Intent:               params.Intent,
+		TransformOnly:        params.TransformOnly,
+		Transform:            params.Transform,
+		MaxMegapixels:        maxMegapixels,
+		Lazy:                 params.Lazy,
+		AnchorAssetID:        params.AnchorAssetID,
+		DeriveFrom:           params.DeriveFrom,
 	})
 	return err
 }

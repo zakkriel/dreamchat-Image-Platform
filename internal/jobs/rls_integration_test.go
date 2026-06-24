@@ -116,7 +116,7 @@ func TestRLSEnabledForcedAndPolicies(t *testing.T) {
 	defer sys.Close()
 	ctx := context.Background()
 
-	protected := []string{"generation_jobs", "visual_assets", "api_tokens", "cost_reservations", "idempotency_keys", "asset_pack_items"}
+	protected := []string{"generation_jobs", "visual_assets", "api_tokens", "cost_reservations", "idempotency_keys", "asset_pack_items", "sprite_sheet_contract", "sprite_sheet_slice", "identity_cost_ledger"}
 	for _, tbl := range protected {
 		var enabled, forced bool
 		if err := sys.QueryRow(ctx,
@@ -523,6 +523,67 @@ func TestAuthPreTenantAndAPIRoleDenied(t *testing.T) {
 	if _, err := apiRepo.GetActiveAPITokenByPrefix(ctx, prefix); !errors.Is(err, auth.ErrTokenNotFound) {
 		t.Fatalf("API-role lookup with no GUC must be ErrTokenNotFound, got %v", err)
 	}
+}
+
+// TestRLSGovernanceColumnsCrossTenantBlocked proves that a generation_jobs row
+// bearing governance columns (classification_id, governance_envelope) is hidden
+// from a cross-tenant read under the non-superuser image_platform_api role.  The
+// seed row belongs to rlsTenantB; when the API pool GUC is set to rlsTenantA the
+// row (and its classification_id) must be invisible; when GUC is rlsTenantB the
+// row must be visible and classification_id must equal the seeded value.
+func TestRLSGovernanceColumnsCrossTenantBlocked(t *testing.T) {
+	sys := openTestPool(t)
+	defer sys.Close()
+	api := openAPITestPool(t) // skips if POSTGRES_API_DSN unset
+	defer api.Close()
+
+	const govJobID = "job_rls_gov_b"
+	const govClassID = "cls_rls_gov_test"
+
+	ctx := context.Background()
+	// Delete any stale row from a prior run, then seed fresh via the owner pool
+	// (bypasses RLS) so setup does not itself require a GUC.
+	_, _ = sys.Exec(ctx, `DELETE FROM generation_jobs WHERE id = $1`, govJobID)
+	if _, err := sys.Exec(ctx,
+		`INSERT INTO generation_jobs (id, tenant_id, job_type, status, classification_id, governance_envelope)
+		 VALUES ($1, $2, 'artifact', 'queued', $3, '{"schema_version":"1"}')`,
+		govJobID, rlsTenantB, govClassID,
+	); err != nil {
+		t.Fatalf("seed governance job: %v", err)
+	}
+	defer func() {
+		_, _ = sys.Exec(ctx, `DELETE FROM generation_jobs WHERE id = $1`, govJobID)
+	}()
+
+	// Under GUC=tenantA: the tenant-B governance row must be invisible.
+	withGUC(t, api, rlsTenantA, func(tx pgx.Tx) {
+		if got := countTx(t, tx, `SELECT count(*) FROM generation_jobs WHERE id = $1`, govJobID); got != 0 {
+			t.Fatalf("tenant A must NOT see tenant B's governance row; got count=%d", got)
+		}
+		// Directly selecting classification_id must also return no row.
+		var classID string
+		err := tx.QueryRow(ctx, `SELECT classification_id FROM generation_jobs WHERE id = $1`, govJobID).Scan(&classID)
+		if err == nil {
+			t.Fatalf("tenant A must NOT read classification_id of tenant B's row; got %q", classID)
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatalf("expected pgx.ErrNoRows when tenant A reads tenant B governance row, got: %v", err)
+		}
+	})
+
+	// Under GUC=tenantB: the governance row must be visible with the correct value.
+	withGUC(t, api, rlsTenantB, func(tx pgx.Tx) {
+		if got := countTx(t, tx, `SELECT count(*) FROM generation_jobs WHERE id = $1`, govJobID); got != 1 {
+			t.Fatalf("tenant B must see its own governance row; got count=%d", got)
+		}
+		var classID string
+		if err := tx.QueryRow(ctx, `SELECT classification_id FROM generation_jobs WHERE id = $1`, govJobID).Scan(&classID); err != nil {
+			t.Fatalf("tenant B must read classification_id: %v", err)
+		}
+		if classID != govClassID {
+			t.Fatalf("tenant B classification_id: expected %q, got %q", govClassID, classID)
+		}
+	})
 }
 
 // TestWorkerSystemAndRequestPathReads proves the worker/system read path and the

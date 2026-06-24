@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 var envVars = []string{
@@ -214,5 +215,74 @@ func TestFalAvailableOnlyWithKey(t *testing.T) {
 	}
 	if !(&Config{FalKey: "k"}).AvailableProviders()[string(ProviderFal)] {
 		t.Fatal("fal must be available when FAL_KEY is set")
+	}
+}
+
+func TestGovernanceConfigDefaults(t *testing.T) {
+	t.Setenv("POSTGRES_DSN", "x")
+	t.Setenv("REDIS_ADDR", "x")
+	t.Setenv("S3_BUCKET", "x")
+	t.Setenv("S3_REGION", "x")
+	t.Setenv("S3_ENDPOINT", "x")
+	t.Setenv("S3_ACCESS_KEY_ID", "x")
+	t.Setenv("S3_SECRET_ACCESS_KEY", "x")
+	t.Setenv("API_TOKEN_PEPPER", "x")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.GovernanceEnforcement != GovernanceLogOnly {
+		t.Fatalf("default enforcement = %q, want log_only", cfg.GovernanceEnforcement)
+	}
+	if cfg.GovernanceMaxAge != 24*time.Hour {
+		t.Fatalf("default max age = %v, want 24h", cfg.GovernanceMaxAge)
+	}
+	if len(cfg.GovernanceAuthorizedIssuers) != 0 {
+		t.Fatalf("default issuers = %v, want empty", cfg.GovernanceAuthorizedIssuers)
+	}
+}
+
+func TestGovernanceConfigParsed(t *testing.T) {
+	t.Setenv("POSTGRES_DSN", "x")
+	t.Setenv("REDIS_ADDR", "x")
+	t.Setenv("S3_BUCKET", "x")
+	t.Setenv("S3_REGION", "x")
+	t.Setenv("S3_ENDPOINT", "x")
+	t.Setenv("S3_ACCESS_KEY_ID", "x")
+	t.Setenv("S3_SECRET_ACCESS_KEY", "x")
+	t.Setenv("API_TOKEN_PEPPER", "x")
+	t.Setenv("GOVERNANCE_ENFORCEMENT", "enforce")
+	t.Setenv("GOVERNANCE_MAX_AGE", "1h")
+	t.Setenv("GOVERNANCE_AUTHORIZED_ISSUERS", "core-signer-1, core-signer-2")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.GovernanceEnforcement != GovernanceEnforce {
+		t.Fatalf("enforcement = %q, want enforce", cfg.GovernanceEnforcement)
+	}
+	if cfg.GovernanceMaxAge != time.Hour {
+		t.Fatalf("max age = %v, want 1h", cfg.GovernanceMaxAge)
+	}
+	if len(cfg.GovernanceAuthorizedIssuers) != 2 || cfg.GovernanceAuthorizedIssuers[0] != "core-signer-1" || cfg.GovernanceAuthorizedIssuers[1] != "core-signer-2" {
+		t.Fatalf("issuers = %v, want [core-signer-1 core-signer-2] (trimmed)", cfg.GovernanceAuthorizedIssuers)
+	}
+}
+
+func TestGovernanceEnforcementInvalid(t *testing.T) {
+	t.Setenv("POSTGRES_DSN", "x")
+	t.Setenv("REDIS_ADDR", "x")
+	t.Setenv("S3_BUCKET", "x")
+	t.Setenv("S3_REGION", "x")
+	t.Setenv("S3_ENDPOINT", "x")
+	t.Setenv("S3_ACCESS_KEY_ID", "x")
+	t.Setenv("S3_SECRET_ACCESS_KEY", "x")
+	t.Setenv("API_TOKEN_PEPPER", "x")
+	t.Setenv("GOVERNANCE_ENFORCEMENT", "bogus")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error for invalid GOVERNANCE_ENFORCEMENT")
 	}
 }

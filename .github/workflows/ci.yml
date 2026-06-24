@@ -395,6 +395,25 @@ jobs:
           PGPASSWORD=image_platform psql -h localhost -U image_platform -d image_platform -c \
             "DELETE FROM generation_jobs WHERE id IN ('ci_rls_a','ci_rls_b','ci_rls_x')"
 
+      - name: assert RLS blocks cross-tenant access to governance-column rows
+        run: |
+          set -euo pipefail
+          # Seed a governance-bearing row for ci_tenant_b as the owner (bypass).
+          PGPASSWORD=image_platform psql -h localhost -U image_platform -d image_platform -v ON_ERROR_STOP=1 -c \
+            "INSERT INTO generation_jobs (id, tenant_id, job_type, status, classification_id, governance_envelope)
+             VALUES ('ci_gov_b', 'ci_tenant_b', 'artifact', 'queued', 'cls_ci_gov', '{\"schema_version\":\"1\"}')
+             ON CONFLICT (id) DO UPDATE
+               SET classification_id = EXCLUDED.classification_id,
+                   governance_envelope = EXCLUDED.governance_envelope"
+          # image_platform_api with GUC=ci_tenant_a must see count=0 for that row.
+          g=$(PGPASSWORD=image_platform_api PGOPTIONS="-c app.current_tenant=ci_tenant_a" \
+            psql -h localhost -U image_platform_api -d image_platform -tAc \
+            "SELECT count(*) FROM generation_jobs WHERE id = 'ci_gov_b'")
+          test "$g" = "0" || { echo "ERROR: tenant_a saw $g governance rows owned by tenant_b (want 0)"; exit 1; }
+          # Clean up.
+          PGPASSWORD=image_platform psql -h localhost -U image_platform -d image_platform -c \
+            "DELETE FROM generation_jobs WHERE id = 'ci_gov_b'"
+
       - name: integration tests
         env:
           # The pre-existing suite runs on the system/owner DSN (bypasses RLS).

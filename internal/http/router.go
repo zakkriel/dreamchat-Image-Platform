@@ -1,15 +1,22 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/zakkriel/drchat-image-platform/internal/assets"
+	"github.com/zakkriel/drchat-image-platform/internal/audit"
 	"github.com/zakkriel/drchat-image-platform/internal/auth"
 	"github.com/zakkriel/drchat-image-platform/internal/config"
+	appdb "github.com/zakkriel/drchat-image-platform/internal/db"
+	"github.com/zakkriel/drchat-image-platform/internal/db/dbgen"
+	"github.com/zakkriel/drchat-image-platform/internal/governance"
 	"github.com/zakkriel/drchat-image-platform/internal/http/handlers"
 	"github.com/zakkriel/drchat-image-platform/internal/httperr"
 	"github.com/zakkriel/drchat-image-platform/internal/identities"
@@ -54,6 +61,21 @@ type Deps struct {
 	// limits. Nil-safe: a nil or store-less limiter passes every request through
 	// (dev/test without Redis), so existing tests need no Redis.
 	RateLimiter *ratelimit.Limiter
+
+	// GovernanceVerifier is the media-eligibility gate. When non-nil the
+	// generations handler calls Verify on every POST /v1/generations request.
+	// Nil-safe: a nil verifier skips the gate entirely (dev / migration).
+	GovernanceVerifier governance.Verifier
+
+	// GovernanceMode is the enforcement posture for the governance gate.
+	// ModeEnforce → block+403 on a failed check; ModeLogOnly → emit an audit
+	// event but proceed. Defaults to ModeLogOnly when zero-valued.
+	GovernanceMode governance.Mode
+
+	// TenantPool is the RLS-enforced tenant pool. Required for the real
+	// governance AuditSink (appdb.WithTenant + audit.Emit). Nil-safe: when nil
+	// the generations handler is mounted without an audit sink (no audit rows).
+	TenantPool *pgxpool.Pool
 }
 
 type HealthResponse struct {
@@ -153,6 +175,7 @@ func mountV1(r chi.Router, deps Deps) {
 		mountIdentities(v1, deps)
 		mountAssets(v1, deps)
 		mountArtifacts(v1, deps)
+		mountGenerations(v1, deps)
 		mountPacks(v1, deps)
 		mountJobs(v1, deps)
 		mountAdminCost(v1, deps)
@@ -232,6 +255,53 @@ func mountArtifacts(v1 chi.Router, deps Deps) {
 	}
 	h := handlers.NewArtifactsHandler(deps.JobsService, deps.StylesRepo, deps.Resolver, string(deps.Config.ImageProvider), reuse)
 	v1.With(auth.RequireScopes("images:write")).Post("/artifacts/{artifact_id}/generate", h.Generate)
+}
+
+// dbAuditSink is the production AuditSink for the generations handler. It
+// opens a tenant-scoped transaction (appdb.WithTenant → set_config
+// app.current_tenant) and calls audit.Emit to insert the audit_events row.
+// Errors are logged but never propagated: audit failure must not fail the
+// request (fire-and-forget, best-effort).
+type dbAuditSink struct{ pool *pgxpool.Pool }
+
+func (s dbAuditSink) Emit(ctx context.Context, tenantID string, ev audit.Event) error {
+	err := appdb.WithTenant(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		return audit.Emit(ctx, dbgen.New(tx), ev)
+	})
+	if err != nil {
+		slog.WarnContext(ctx, "audit emit failed; governance decision not recorded",
+			"error", err,
+			"event_type", ev.EventType,
+			"tenant_id", tenantID,
+		)
+	}
+	return err
+}
+
+// mountGenerations wires POST /v1/generations — the Chunk 2 combined-contract
+// chokepoint. Requires JobsService, Resolver, and IdentitiesRepo; nil-safe
+// (skipped when any dep is missing).
+func mountGenerations(v1 chi.Router, deps Deps) {
+	if deps.JobsService == nil || deps.Resolver == nil || deps.IdentitiesRepo == nil {
+		return
+	}
+	h := handlers.NewGenerationsHandler(deps.JobsService, deps.Resolver, deps.IdentitiesRepo)
+
+	// Wire the governance gate when a verifier is configured. The mode defaults
+	// to log_only (safe open) when zero-valued. The audit sink is wired when a
+	// tenant pool is available; when nil, audit rows are silently skipped.
+	if deps.GovernanceVerifier != nil {
+		h.Verifier = deps.GovernanceVerifier
+		h.Mode = deps.GovernanceMode
+		if deps.GovernanceMode == "" {
+			h.Mode = governance.ModeLogOnly
+		}
+		if deps.TenantPool != nil {
+			h.Audit = dbAuditSink{pool: deps.TenantPool}
+		}
+	}
+
+	v1.With(auth.RequireScopes("images:write")).Post("/generations", h.Create)
 }
 
 // mountPacks wires the Phase 5A generate-pack endpoints. They mirror the

@@ -4,10 +4,18 @@
 -- name: InsertGenerationJob :one
 INSERT INTO generation_jobs (
     id, tenant_id, world_id, job_type, status,
-    requested_by_token_id, input_payload, fallback_policy, cache_result
+    requested_by_token_id, input_payload, fallback_policy, cache_result,
+    governance_envelope, classification_id, visibility, content_class,
+    authorized_by, governance_verified_at,
+    intent, transform_only, transform, max_megapixels, lazy,
+    anchor_asset_id, derive_from
 ) VALUES (
     $1, $2, $3, $4, 'queued',
-    $5, $6, $7, $8
+    $5, $6, $7, $8,
+    $9, $10, $11, $12,
+    $13, $14,
+    $15, $16, $17, $18, $19,
+    $20, $21
 )
 RETURNING id, tenant_id, world_id, job_type, status,
           requested_by_token_id, visual_identity_id, asset_pack_id,
