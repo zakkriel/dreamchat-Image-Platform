@@ -27,13 +27,18 @@ The Image Platform is intended to be built as an independent API/service that ca
 7. `07_superpowers_implementation_prompt.md`
    - A direct implementation prompt for Superpowers.
 
-8. `schemas/image_platform_openapi_draft.yaml`
+8. `08_npc_expression_sprite_pipeline.md`
+   - Defines the NPC expression sprite-sheet pipeline: one coherent governed sprite-sheet
+     generation sliced into reusable, individually addressable expression assets. Supersedes the
+     NPC portrait/expression-pack content of `04_asset_packs_variants_and_expressions.md` §4.
+
+9. `schemas/image_platform_openapi_draft.yaml`
    - A draft OpenAPI-style API contract for the standalone service.
 
-9. `schemas/image_platform_data_model.json`
+10. `schemas/image_platform_data_model.json`
    - Draft data model for assets, jobs, style profiles, visual identities, packs, and provider metadata.
 
-10. `schemas/benchmark_corpus_template.md`
+11. `schemas/benchmark_corpus_template.md`
    - Template for evaluating quality, consistency, latency, cost, and failure cases.
 
 ## Implementation principle
