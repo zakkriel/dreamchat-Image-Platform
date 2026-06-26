@@ -28,6 +28,14 @@ Artifact assets may later have packs, but the first version can treat them as si
 
 ## 4. Character Starter Pack
 
+> **Superseded (NPC expression packs & sprite sheets):** the NPC portrait/expression-pack
+> approach in this section is superseded by **PRD 08 — NPC Expression Sprite-Sheet Pipeline**
+> (`prds/08_npc_expression_sprite_pipeline.md`), which is the authoritative source for generating
+> NPC expressions as one coherent governed sprite sheet sliced into reusable assets (single source
+> of truth, D-6). The text below is retained for context and pack-mechanics reference, not deleted.
+> Place packs (§5), artifact assets (§6), preview/final (§7), pack templates (§8), and UI consumption
+> (§11) remain in force.
+
 ### 4.1 When to Generate
 
 Generate a character starter pack when:
