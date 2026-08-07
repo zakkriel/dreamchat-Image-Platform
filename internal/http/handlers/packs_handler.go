@@ -34,6 +34,9 @@ type PacksHandler struct {
 	// *assets.Retriever). When nil the handler skips reuse and prices/generates
 	// the whole pack (the pre-6A3 behavior).
 	Retriever RetrievalService
+	// Gate is the shared media-eligibility gate (ADR-P002 Follow-up 1). Zero
+	// value = unwired (gate skipped); wired from deps by the router.
+	Gate GovernanceGate
 }
 
 func NewPacksHandler(service jobs.Creator, stylesRepo styles.Repository, identitiesRepo identities.Repository, resolver RouteResolver, providerPreference string) *PacksHandler {
@@ -271,6 +274,9 @@ func (h *PacksHandler) generate(w http.ResponseWriter, r *http.Request, kind pac
 	if req.FallbackPolicy != nil {
 		fallback = string(*req.FallbackPolicy)
 	}
+	if !requireAdminForAnyExisting(w, r, principal.HasScope("admin:read"), fallback) {
+		return
+	}
 
 	// Resolve the effective quality tier once (default "standard"). The same
 	// value feeds the reuse lookup and the stored/generated assets so a request
@@ -333,6 +339,14 @@ func (h *PacksHandler) generate(w http.ResponseWriter, r *http.Request, kind pac
 	endpoint := r.Method + " " + r.URL.Path
 	requestHash := jobs.HashRequestBody(raw)
 	if idemKey != "" && handleReplay(w, r, h.Service, principal.TenantID, principal.TokenID, idemKey, endpoint, requestHash) {
+		return
+	}
+
+	// Governance gate (ADR-P002 Follow-up 1): same verification as
+	// POST /v1/generations, after replay and before reuse planning, route
+	// resolution, and cost reservation.
+	gov, ok := h.Gate.run(w, r, principal.TenantID, principal.TokenID, req.Governance)
+	if !ok {
 		return
 	}
 
@@ -431,6 +445,7 @@ func (h *PacksHandler) generate(w http.ResponseWriter, r *http.Request, kind pac
 		Units:             int32(len(missing)),
 		MaxConcurrentJobs: principal.Limits.MaxConcurrentJobs,
 	}
+	gov.apply(&params)
 	applyResolvedRoute(&params, payload, resolved)
 	// Phase 7C-4: resolve the ordered fallback chain with the same request and
 	// thread the alternates (chain minus the applied primary) onto the params; the

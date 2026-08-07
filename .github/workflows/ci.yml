@@ -160,8 +160,9 @@ jobs:
           v=$(psql -h localhost -U image_platform -d image_platform -tAc \
             "SELECT max(version_id) FROM goose_db_version WHERE is_applied")
           echo "goose version: $v"
-          # Chunk 1 added migrations 0012-0017; head is now 17.
-          test "$v" = "17"
+          # Chunk 1 added 0012-0017; Wave 2 added the 0018 fal identity route
+          # seed. Head is now 18.
+          test "$v" = "18"
 
       - name: assert migrations round-trip above baseline (up -> down-to 11 -> up)
         env:
@@ -184,7 +185,7 @@ jobs:
           go run ./cmd/migrate up
           v=$(psql -h localhost -U image_platform -d image_platform -tAc \
             "SELECT max(version_id) FROM goose_db_version WHERE is_applied")
-          test "$v" = "17" || { echo "ERROR: after re-up, version=$v (want 17)"; exit 1; }
+          test "$v" = "18" || { echo "ERROR: after re-up, version=$v (want 18)"; exit 1; }
           count=$(psql -h localhost -U image_platform -d image_platform -tAc \
             "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'")
           test "$count" = "24" || { echo "ERROR: after re-up, table count=$count (want 24)"; exit 1; }

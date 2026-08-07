@@ -61,7 +61,10 @@ ENVIRONMENT                  # dev | test | live (matches token environments)
 LOG_LEVEL                    # info | debug
 WORKER_CONCURRENCY           # asynq worker pool size
 
-POSTGRES_DSN                 # pgx-compatible connection string
+POSTGRES_DSN                 # pgx-compatible connection string (RLS-enforced
+                             # image_platform_api role in production)
+POSTGRES_SYSTEM_DSN          # BYPASSRLS system role (image_platform_system);
+                             # falls back to POSTGRES_DSN in local/dev/CI
 REDIS_ADDR                   # host:port; auth via REDIS_PASSWORD if set
 REDIS_PASSWORD               # optional
 
@@ -71,9 +74,19 @@ S3_ENDPOINT                  # full URL; configurable so MinIO/R2 work
 S3_ACCESS_KEY_ID
 S3_SECRET_ACCESS_KEY
 S3_USE_PATH_STYLE            # true for MinIO/local; false/default for AWS S3/R2 virtual-hosted style
+S3_PRESIGN_TTL               # presigned read-URL lifetime (default 15m)
 
-IMAGE_PROVIDER               # mock | bfl  — the single provider switch
+IMAGE_PROVIDER               # mock | bfl | fal — the single provider switch
 BFL_API_KEY                  # only required when IMAGE_PROVIDER=bfl
+FAL_KEY                      # registers the fal reference-conditioned adapter
+                             # (identity/pack routes) when set
+ALLOW_SYNTHETIC_PROVIDERS    # default false EVERYWHERE: mock may back
+                             # identity/pack routes only when explicitly true
+
+GOVERNANCE_ENFORCEMENT       # log_only (default) | enforce; enforce+stub
+                             # signature verifier is REFUSED at startup in live
+GOVERNANCE_MAX_AGE           # envelope issued_at freshness window (default 24h)
+GOVERNANCE_AUTHORIZED_ISSUERS # comma-separated authorized_by allowlist
 
 API_TOKEN_PEPPER             # for hashed token storage (ADR-005)
 OPENAPI_DOCS_ENABLED         # true in dev/test; gated in live

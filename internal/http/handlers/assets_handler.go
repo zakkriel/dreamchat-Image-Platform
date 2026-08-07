@@ -209,6 +209,12 @@ func (h *AssetsHandler) Search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// any_existing is a debug facility (it may return matrix-invalid assets):
+	// admin:read only, on search exactly as on the generate endpoints.
+	if !requireAdminForAnyExisting(w, r, principal.HasScope("admin:read"), string(deref(req.FallbackPolicy))) {
+		return
+	}
+
 	q, ok := h.buildRetrievalQuery(w, r, principal.TenantID, req)
 	if !ok {
 		return

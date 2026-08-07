@@ -3,16 +3,21 @@
 Standalone Go service that generates, stores, retrieves, versions, and serves
 persistent images for DreamChat worlds.
 
-This repository is Phase 0: the walking skeleton — project layout, local dev
-loop, and CI. Auth, OpenAPI handlers, codegen wiring, and business logic land
-in later phases.
+Implementation status: the Phase 0–7 track is complete (auth, identities,
+styles, async generation, cost pre-flight, packs, retrieval-before-generation,
+delivery, provider routing, rate limits, RLS, webhooks — see
+`IMPLEMENTATION_STATUS.md`, the single source of truth for sequencing), plus
+the combined governance/cost contract `POST /v1/generations` (ADR-P002) and
+the cost-optimization waves (`docs/superpowers/plans/2026-08-07-cost-optimization-waves.md`).
 
 ## Authoritative docs
 
 - `DECISIONS.md` — locked stack, env vars, provider interface, deferrals.
-- `docs/api/openapi.yaml` — canonical API contract (v0.5.0).
-- `docs/db/initial_schema.sql` — DB schema (mirrored to `migrations/0001_initial.up.sql`).
+- `docs/api/openapi.yaml` — canonical API contract (version in the file's
+  `info.version`; `api/openapi.yaml` is a byte-identical mirror enforced by CI).
+- `IMPLEMENTATION_STATUS.md` — what's done / what's next.
 - `docs/architecture/` — overview + component boundaries.
+- `migrations/` — goose migrations (`go run ./cmd/migrate up`).
 
 ## Layout
 
@@ -71,6 +76,11 @@ schema is at version 11.
 `DECISIONS.md`:
 
 - `mock/` — deterministic placeholder bytes, works without provider keys.
-- `bfl/` — skeleton: `Capabilities()` only; other methods return
-  `providers.ErrNotImplemented`. Selected via `IMAGE_PROVIDER=bfl`; missing
-  `BFL_API_KEY` fails fast at config load.
+  Synthetic: it backs identity/pack routes only with
+  `ALLOW_SYNTHETIC_PROVIDERS=true` (default false everywhere).
+- `bfl/` — real Black Forest Labs adapter (`flux-pro-1.1`, scene/artifact
+  work; prompt-only, so not identity-capable). Selected via
+  `IMAGE_PROVIDER=bfl`; requires `BFL_API_KEY`.
+- `fal/` — real reference-conditioned fal.ai adapter (FLUX.1 Kontext multi;
+  identity/pack-capable, requires identity anchor references). Registered
+  when `FAL_KEY` is set.

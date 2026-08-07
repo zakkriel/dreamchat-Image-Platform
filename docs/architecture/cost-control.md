@@ -140,7 +140,10 @@ return synchronously and don't waste provider attempts.
 
 If §3 step 4 finds no active `provider_model_price` row for the selected
 (provider × model × operation_type), the platform **must reject the
-request** with `provider_unpriced` error code (HTTP 503).
+request** with the `no_price_entry` error code (HTTP **422** — see
+`docs/api/rate-limits.md` §"What 429 owns vs what 422 owns"; earlier drafts
+of this document said `503 provider_unpriced`, which was reconciled to the
+implemented behavior in Phase 4).
 
 The single exception: a route may be explicitly flagged
 `allow_unpriced_provider = true` for internal testing. Such a route MUST
@@ -201,9 +204,9 @@ counter.
 
 | Failure | Where | Status code | Surface |
 |---|---|---|---|
-| No price entry | §3 step 4 | 503 `provider_unpriced` | Reservation `failed`, `failure_reason=no_price_entry`. |
-| Budget exceeded | §3 step 6/7 | 429 `budget_exceeded` | Reservation `failed`, `failure_reason=budget_exceeded`. Error body names the offending `cost_budget.id`. |
-| Reservation race lost | §3 step 7 | 429 `budget_exceeded` | Same as above. |
+| No price entry | §3 step 4 | 422 `no_price_entry` | Reservation `failed`, `failure_reason=no_price_entry`. |
+| Budget exceeded | §3 step 6/7 | 422 `budget_exceeded` | Reservation `failed`, `failure_reason=budget_exceeded`. |
+| Reservation race lost | §3 step 7 | 422 `budget_exceeded` | Same as above. |
 | Provider charges more than estimated | §3 step 9 | None (logged) | `committed` records `actual_amount`. Cost-spike monitor watches the estimate-vs-actual ratio and warns at +50% / +100% (`observability.md`). |
 | Provider doesn't report cost | §3 step 9 | None | `actual_amount = estimated_amount`; `cost_event.notes` flags `actual_inferred_from_estimate`. |
 

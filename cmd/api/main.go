@@ -137,6 +137,14 @@ func main() {
 	if w := governance.EnforceWithStubWarning(gmode, sig); w != "" {
 		logger.Warn(w)
 	}
+	// Wave 2: enforce mode with the STUB verifier is refused outright in the
+	// live environment — enforce would assert an integrity guarantee that is
+	// never actually checked. Dev/test keep the WARN so enforcement flows can
+	// be exercised before core ships real signing.
+	if err := governance.EnforceWithStubError(cfg.Environment == config.EnvLive, gmode, sig); err != nil {
+		logger.Error("governance startup refused", "error", err)
+		os.Exit(1)
+	}
 
 	deps := apphttp.Deps{
 		Logger: logger,

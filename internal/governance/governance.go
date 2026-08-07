@@ -7,6 +7,7 @@ package governance
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -110,6 +111,19 @@ func EnforceWithStubWarning(mode Mode, sig SignatureVerifier) string {
 		return "GOVERNANCE_ENFORCEMENT=enforce but signature verification is STUBBED — signatures are not verified; do not trust enforce for signature integrity (TODO core-signing)"
 	}
 	return ""
+}
+
+// EnforceWithStubError returns a startup-fatal error when enforce mode is
+// configured in the LIVE environment while signature verification is still the
+// stub: enforce would assert an integrity guarantee that is not actually
+// checked, which is a silent lie in production. Dev/test keep the WARN-only
+// posture (EnforceWithStubWarning) so enforcement flows can be exercised
+// locally before core ships real signing.
+func EnforceWithStubError(liveEnvironment bool, mode Mode, sig SignatureVerifier) error {
+	if liveEnvironment && mode == ModeEnforce && IsStub(sig) {
+		return errors.New("governance: GOVERNANCE_ENFORCEMENT=enforce is not allowed in the live environment while signature verification is stubbed (TODO core-signing): enforce would claim an integrity check that never runs")
+	}
+	return nil
 }
 
 // Decide maps (mode, result) to (proceed, auditEventType). proceed is false only
