@@ -83,6 +83,10 @@ func (noopAssetsRepo) FindReadyArtifactByPromptHash(context.Context, assets.Arti
 	return assets.VisualAsset{}, assets.ErrNotFound
 }
 
+func (noopAssetsRepo) FindReadyGenerationByPromptHash(context.Context, string, string) (assets.VisualAsset, error) {
+	return assets.VisualAsset{}, assets.ErrNotFound
+}
+
 type noopJobsRepo struct{}
 
 func (noopJobsRepo) Insert(context.Context, jobs.InsertParams) (jobs.Job, error) {
@@ -137,6 +141,9 @@ func (noopJobsRepo) InsertPackItemWithAssetSuperseding(context.Context, assets.I
 	return nil
 }
 func (noopJobsRepo) ListAssetPackItems(context.Context, string) ([]jobs.AssetPackItem, error) {
+	return nil, nil
+}
+func (noopJobsRepo) ListAssetPackItemsForTenant(context.Context, string, string) ([]jobs.AssetPackItem, error) {
 	return nil, nil
 }
 

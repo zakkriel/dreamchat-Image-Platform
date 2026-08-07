@@ -13,6 +13,16 @@ var (
 	// fail-closed guard that prevents a recurring-character provider from silently
 	// producing a different character off a text prompt alone (PRD 03 §8).
 	ErrReferenceRequired = errors.New("provider: reference image required")
+	// ErrContentPolicyRejected marks a provider-side CONTENT-POLICY rejection
+	// (e.g. BFL "Request Moderated" / "Content Moderated") as distinct from an
+	// infrastructure/provider failure. The worker treats it as terminal for the
+	// job and NEVER walks fallback routes past it: retrying the same content on
+	// another route would silently circumvent the rejecting provider's policy
+	// decision and bill additional attempts for a deterministic rejection. The
+	// platform itself takes no content stance — the rejection is surfaced to the
+	// caller verbatim as provider_content_rejected (docs/api/errors.md), never
+	// sanitized or hidden.
+	ErrContentPolicyRejected = errors.New("provider: content policy rejected")
 )
 
 type PreviewCapability string

@@ -40,7 +40,7 @@ type AssetURLSigner interface {
 // jobs.Repository satisfies it.
 type JobAssetsLookup interface {
 	GetByIDForTenant(ctx context.Context, id, tenantID string) (jobs.Job, error)
-	ListAssetPackItems(ctx context.Context, packID string) ([]jobs.AssetPackItem, error)
+	ListAssetPackItemsForTenant(ctx context.Context, packID, tenantID string) ([]jobs.AssetPackItem, error)
 }
 
 type AssetsHandler struct {
@@ -177,7 +177,7 @@ func (h *AssetsHandler) JobAssets(w http.ResponseWriter, r *http.Request) {
 // response exactly as before.
 func (h *AssetsHandler) deliveryOrder(ctx context.Context, job jobs.Job) ([]string, error) {
 	if job.AssetPackID != nil && *job.AssetPackID != "" {
-		items, err := h.Jobs.ListAssetPackItems(ctx, *job.AssetPackID)
+		items, err := h.Jobs.ListAssetPackItemsForTenant(ctx, *job.AssetPackID, job.TenantID)
 		if err != nil {
 			return nil, err
 		}

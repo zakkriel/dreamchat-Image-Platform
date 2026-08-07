@@ -84,6 +84,9 @@ func (s *stubJobsRepo) InsertPackItemWithAssetSuperseding(context.Context, asset
 func (s *stubJobsRepo) ListAssetPackItems(context.Context, string) ([]jobs.AssetPackItem, error) {
 	return nil, nil
 }
+func (s *stubJobsRepo) ListAssetPackItemsForTenant(context.Context, string, string) ([]jobs.AssetPackItem, error) {
+	return nil, nil
+}
 
 func newJobsRouter(repo jobs.Repository) chi.Router {
 	h := NewJobsHandler(repo)

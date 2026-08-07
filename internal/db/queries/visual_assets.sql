@@ -91,6 +91,34 @@ WHERE tenant_id = sqlc.arg('tenant_id')
 ORDER BY id ASC
 LIMIT 1;
 
+-- name: FindReadyGenerationByPromptHash :one
+-- Combined-contract exact reuse (/v1/generations): the deterministic lookup
+-- behind generation retrieval-before-generation. The generations contract
+-- carries no world/style/quality inputs, so the slot is keyed on tenant + the
+-- deterministic generation render hash alone (assets.GenerationRenderHash,
+-- which folds in identity, display name, anchors, derive_from, intent, and
+-- transform). Highest version first so a superseded-then-regenerated slot
+-- returns the current ready row; id ASC keeps ties deterministic.
+SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
+       variant_family, version, state_version, style_profile_id,
+       style_profile_version, quality_tier, status,
+       compatibility_tags, fallback_allowed, fallback_rank, is_identity_anchor,
+       low_res_url, high_res_url, thumbnail_url,
+       provider_id, model_id, provider_route_id,
+       prompt_hash, seed, reference_asset_ids,
+       generation_job_id, metadata, generated_at,
+       created_at, updated_at, superseded_by_asset_id,
+       anchor_asset_id, derive_from,
+       parent_asset_id, crop_index, crop_box, expression_key
+FROM visual_assets
+WHERE tenant_id = sqlc.arg('tenant_id')
+  AND asset_type = 'artifact'
+  AND variant_key = 'default'
+  AND prompt_hash = sqlc.arg('prompt_hash')
+  AND status = 'ready'
+ORDER BY version DESC, id ASC
+LIMIT 1;
+
 -- name: ListVisualAssetCandidates :many
 -- Phase 6A1 retrieval substrate: candidate ready assets for the same owner
 -- and visual identity that the compatibility matrix
