@@ -84,6 +84,14 @@ type Querier interface {
 	// keeps the single returned row deterministic when several ready rows share the
 	// same hash (e.g. a re-run that raced before this reuse path existed).
 	FindReadyArtifactByPromptHash(ctx context.Context, arg FindReadyArtifactByPromptHashParams) (VisualAsset, error)
+	// Combined-contract exact reuse (/v1/generations): the deterministic lookup
+	// behind generation retrieval-before-generation. The generations contract
+	// carries no world/style/quality inputs, so the slot is keyed on tenant + the
+	// deterministic generation render hash alone (assets.GenerationRenderHash,
+	// which folds in identity, display name, anchors, derive_from, intent, and
+	// transform). Highest version first so a superseded-then-regenerated slot
+	// returns the current ready row; id ASC keeps ties deterministic.
+	FindReadyGenerationByPromptHash(ctx context.Context, arg FindReadyGenerationByPromptHashParams) (VisualAsset, error)
 	GetActiveAPITokenByPrefix(ctx context.Context, tokenPrefix string) (GetActiveAPITokenByPrefixRow, error)
 	// Phase 7C-4 (2/2): outbound webhooks. Queries for the per-tenant endpoint
 	// config and the per-event delivery-attempt log.
@@ -95,6 +103,9 @@ type Querier interface {
 	GetCostBudget(ctx context.Context, id string) (GetCostBudgetRow, error)
 	GetGenerationJobByID(ctx context.Context, arg GetGenerationJobByIDParams) (GenerationJob, error)
 	GetGenerationJobByIDUnchecked(ctx context.Context, id string) (GenerationJob, error)
+	// Live-record lookup: an expired row is treated as absent so a stale key can
+	// never replay past its TTL (the row itself is reclaimed by the insert's
+	// expired-takeover below, or by DeleteExpiredIdempotencyKeys).
 	GetIdempotencyKey(ctx context.Context, arg GetIdempotencyKeyParams) (IdempotencyKey, error)
 	GetProviderModelPrice(ctx context.Context, id string) (GetProviderModelPriceRow, error)
 	GetStyleProfileByID(ctx context.Context, arg GetStyleProfileByIDParams) (StyleProfile, error)
@@ -173,6 +184,12 @@ type Querier interface {
 	// When a migration adds a column, append it to the matching RETURNING/SELECT
 	// lists below, or sqlc emits a per-query *Row type and the build breaks.
 	InsertGenerationJob(ctx context.Context, arg InsertGenerationJobParams) (GenerationJob, error)
+	// First-writer-wins on a LIVE (token_id, key) record. A conflicting row that
+	// has EXPIRED is taken over in place (updated to the new request's record)
+	// instead of blocking the insert forever: without the takeover an expired row
+	// would be invisible to GetIdempotencyKey yet still win every conflict, making
+	// the key permanently unusable. A conflicting LIVE row leaves the DO UPDATE's
+	// WHERE false → no row returned → the caller replays the existing record.
 	InsertIdempotencyKey(ctx context.Context, arg InsertIdempotencyKeyParams) (IdempotencyKey, error)
 	// Phase 7B two-phase preview tier. Identical column mapping to InsertVisualAsset
 	// but the asset always lands status='preview_ready' (not 'ready'): it is the

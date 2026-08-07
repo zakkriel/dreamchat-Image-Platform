@@ -401,6 +401,10 @@ func (r *fakeJobsRepo) ListAssetPackItems(_ context.Context, packID string) ([]A
 	return append([]AssetPackItem(nil), r.packItems[packID]...), nil
 }
 
+func (r *fakeJobsRepo) ListAssetPackItemsForTenant(ctx context.Context, packID, _ string) ([]AssetPackItem, error) {
+	return r.ListAssetPackItems(ctx, packID)
+}
+
 func (r *fakeJobsRepo) lastPackStatus(packID string) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -467,6 +471,10 @@ func (r *fakeAssetsRepo) ListRetrievalCandidatesByCompatTag(context.Context, ass
 }
 
 func (r *fakeAssetsRepo) FindReadyArtifactByPromptHash(context.Context, assets.ArtifactLookup) (assets.VisualAsset, error) {
+	return assets.VisualAsset{}, assets.ErrNotFound
+}
+
+func (r *fakeAssetsRepo) FindReadyGenerationByPromptHash(context.Context, string, string) (assets.VisualAsset, error) {
 	return assets.VisualAsset{}, assets.ErrNotFound
 }
 

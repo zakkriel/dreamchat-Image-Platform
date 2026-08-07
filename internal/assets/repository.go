@@ -121,6 +121,14 @@ type Repository interface {
 	// logic (artifacts reuse on exact hash only).
 	FindReadyArtifactByPromptHash(ctx context.Context, q ArtifactLookup) (VisualAsset, error)
 
+	// FindReadyGenerationByPromptHash returns the single reusable (status =
+	// 'ready') asset whose tenant + generation render hash match exactly, or
+	// ErrNotFound. This is the SQL half of combined-contract exact reuse
+	// (/v1/generations): the contract carries no world/style/quality inputs, so
+	// the slot is the deterministic GenerationRenderHash alone. Exact-hash only —
+	// no matrix/compatibility logic.
+	FindReadyGenerationByPromptHash(ctx context.Context, tenantID, promptHash string) (VisualAsset, error)
+
 	// FindExact returns the single reusable (status = 'ready') asset that
 	// matches the query's owner + variant + state + style exactly, or
 	// ErrNotFound. It is the SQL half of RetrievalResult.exact_match; the
@@ -306,6 +314,32 @@ func (r *pgRepository) FindReadyArtifactByPromptHash(ctx context.Context, q Arti
 			QualityTier:         q.QualityTier,
 			PromptHash:          strPtr(q.PromptHash),
 			StyleProfileVersion: q.StyleProfileVersion,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		out = fromRow(row)
+		return nil
+	})
+	if err != nil {
+		return VisualAsset{}, err
+	}
+	return out, nil
+}
+
+// FindReadyGenerationByPromptHash is the combined-contract exact-reuse read
+// (/v1/generations): tenant + generation render hash only, since the contract
+// carries no world/style/quality inputs. Runs inside the tenant executor so
+// the read is RLS-scoped like every other request-path asset read.
+func (r *pgRepository) FindReadyGenerationByPromptHash(ctx context.Context, tenantID, promptHash string) (VisualAsset, error) {
+	var out VisualAsset
+	err := appdb.WithTenant(ctx, r.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		row, err := dbgen.New(tx).FindReadyGenerationByPromptHash(ctx, dbgen.FindReadyGenerationByPromptHashParams{
+			TenantID:   tenantID,
+			PromptHash: strPtr(promptHash),
 		})
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {

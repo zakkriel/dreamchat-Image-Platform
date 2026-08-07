@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/audit"
 	"github.com/zakkriel/drchat-image-platform/internal/auth"
 	"github.com/zakkriel/drchat-image-platform/internal/governance"
@@ -26,6 +27,15 @@ import (
 // can scope its DB queries without requiring the handler to know about the DB.
 type AuditSink interface {
 	Emit(ctx context.Context, tenantID string, ev audit.Event) error
+}
+
+// GenerationReuseLookup is the narrow combined-contract exact-reuse dependency
+// (the /v1/generations analogue of ArtifactReuseLookup): the deterministic
+// generation-render-hash lookup the handler consults after the governance gate
+// clears and before route resolution or cost reservation. assets.Repository
+// satisfies it; nil disables reuse (the handler generates as before).
+type GenerationReuseLookup interface {
+	FindReadyGenerationByPromptHash(ctx context.Context, tenantID, promptHash string) (assets.VisualAsset, error)
 }
 
 // platformCeiling is the maximum megapixel value the platform will accept
@@ -58,6 +68,10 @@ type GenerationsHandler struct {
 	// Audit emits media.eligibility_verified / media.eligibility_blocked events.
 	// Required when Verifier is non-nil; may be nil-safe (events are best-effort).
 	Audit AuditSink
+
+	// Reuse is the combined-contract exact-reuse lookup (retrieval before
+	// generation, ADR-009). Optional; nil-safe (reuse is skipped when unwired).
+	Reuse GenerationReuseLookup
 }
 
 // NewGenerationsHandler wires a GenerationsHandler.
@@ -259,6 +273,43 @@ func (h *GenerationsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Combined-contract exact reuse (retrieval-before-generation, ADR-009).
+	// The deterministic generation render hash is computed from the request's
+	// render-determining fields (identity, display name, anchors, derive_from,
+	// intent, transform) and doubles as the produced asset's prompt_hash, so
+	// every /v1/generations output joins the reuse economy. A hit completes
+	// synchronously with zero cost — no route resolution, no reservation, no
+	// provider call. Runs AFTER the governance gate (eligibility is verified
+	// and audited even for reused output) and after idempotency replay.
+	transformJSON := ""
+	if req.Render.Transform != nil {
+		if b, merr := json.Marshal(req.Render.Transform); merr == nil {
+			transformJSON = string(b)
+		}
+	}
+	renderHash := assets.GenerationRenderHash(assets.GenerationHashInput{
+		TenantID:      tenantID,
+		IdentityID:    req.Subject.IdentityId,
+		DisplayName:   identity.DisplayName,
+		AnchorAssetID: deref(req.Subject.AnchorAssetId),
+		DeriveFrom:    deref(req.Subject.DeriveFrom),
+		Intent:        string(req.Render.Intent),
+		TransformJSON: transformJSON,
+	})
+	if h.Reuse != nil {
+		existing, rerr := h.Reuse.FindReadyGenerationByPromptHash(r.Context(), tenantID, renderHash)
+		switch {
+		case rerr == nil:
+			h.respondCacheHit(w, r, tenantID, principal.TokenID, req, renderHash, existing.ID, bodyKey, endpoint, requestHash)
+			return
+		case errors.Is(rerr, assets.ErrNotFound):
+			// miss: fall through to the normal resolve/reserve/enqueue path.
+		default:
+			httperr.Write(w, r, http.StatusInternalServerError, httperr.CodeInternalError, "could not check generation reuse")
+			return
+		}
+	}
+
 	// Step 9: build ResolveRequest.
 	// Floor: identity_capable (identity_id is required by this endpoint, so the
 	// floor is always identity_capable; the conditional is for clarity/futureproofing).
@@ -313,6 +364,14 @@ func (h *GenerationsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// Seed payload["description"] from the fetched identity (identity-derived prompt).
 	// This mirrors the pack flow's identity.DisplayName → payload["display_name"] path.
 	payload["description"] = identity.DisplayName
+	// Stamp the deterministic render hash so the worker persists it as the
+	// produced asset's prompt_hash (the reuse cache key) and the effective
+	// quality tier from the resolved route (the intent-driven path resolves
+	// without a hard quality filter, so the route's tier IS the effective tier).
+	payload["prompt_hash"] = renderHash
+	if resolved.QualityTier != "" {
+		payload["quality_tier"] = resolved.QualityTier
+	}
 
 	// Store raw contract objects in the payload for worker observability.
 	payload["identity_id"] = req.Subject.IdentityId
@@ -379,6 +438,42 @@ func (h *GenerationsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJobAccepted(w, result)
+}
+
+// respondCacheHit lands an already-completed cache-hit job for a combined-
+// contract exact reuse (no route resolution, no cost reservation, no provider
+// attempt, no enqueue) and shapes the 202 acceptance envelope. Mirrors the
+// artifact cache-hit path: the synchronously-completed state,
+// cache_result=exact_match, and final_asset_ids are observed via
+// GET /v1/jobs/{job_id}; estimated_cost_usd is "0.0000" — the reuse is free.
+func (h *GenerationsHandler) respondCacheHit(w http.ResponseWriter, r *http.Request, tenantID, tokenID string, req apigen.GenerationRequest, renderHash, assetID, idemKey, endpoint, requestHash string) {
+	result, err := h.Service.CreateCompletedCacheHitJob(r.Context(), jobs.CreateCacheHitParams{
+		TenantID:           tenantID,
+		RequestedByTokenID: tokenID,
+		JobType:            "generation",
+		InputPayload: map[string]any{
+			"identity_id": req.Subject.IdentityId,
+			"intent":      string(req.Render.Intent),
+			"prompt_hash": renderHash,
+		},
+		FinalAssetID:   assetID,
+		IdempotencyKey: idemKey,
+		Endpoint:       endpoint,
+		RequestHash:    requestHash,
+	})
+	if err != nil {
+		writeJobServiceError(w, r, err)
+		return
+	}
+	est := "0.0000"
+	if result.EstimatedCostUSD != "" {
+		est = result.EstimatedCostUSD
+	}
+	writeJSON(w, http.StatusAccepted, apigen.GenerationJobAccepted{
+		JobId:            result.JobID,
+		Status:           apigen.GenerationJobAcceptedStatusQueued,
+		EstimatedCostUsd: &est,
+	})
 }
 
 // clampMegapixels returns the lesser of the requested value and ceiling. When p

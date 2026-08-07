@@ -335,6 +335,35 @@ func (s *stubAssetsRepo) FindReadyArtifactByPromptHash(_ context.Context, q asse
 	return matches[0], nil
 }
 
+// FindReadyGenerationByPromptHash mirrors the combined-contract exact-reuse
+// SQL: tenant + generation render hash on a ready, default-variant
+// artifact-type asset. Highest version wins; id ASC breaks ties.
+func (s *stubAssetsRepo) FindReadyGenerationByPromptHash(_ context.Context, tenantID, promptHash string) (assets.VisualAsset, error) {
+	var matches []assets.VisualAsset
+	for _, a := range s.byID {
+		if a.TenantID != tenantID || a.Status != "ready" {
+			continue
+		}
+		if a.AssetType != "artifact" || a.VariantKey != "default" {
+			continue
+		}
+		if strVal(a.PromptHash) != promptHash {
+			continue
+		}
+		matches = append(matches, a)
+	}
+	if len(matches) == 0 {
+		return assets.VisualAsset{}, assets.ErrNotFound
+	}
+	sort.Slice(matches, func(i, j int) bool {
+		if matches[i].Version != matches[j].Version {
+			return matches[i].Version > matches[j].Version
+		}
+		return matches[i].ID < matches[j].ID
+	})
+	return matches[0], nil
+}
+
 func (s *stubAssetsRepo) Insert(_ context.Context, params assets.InsertParams) (assets.VisualAsset, error) {
 	asset := assets.VisualAsset{
 		ID:                  params.ID,

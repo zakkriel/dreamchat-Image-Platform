@@ -266,7 +266,13 @@ func (p *Provider) poll(ctx context.Context, submitted submitResponse) (string, 
 				return "", fmt.Errorf("%w: ready result missing sample url", ErrProvider)
 			}
 			return result.Result.Sample, nil
-		case statusError, statusModerated, statusContentModerated, statusNotFound:
+		case statusModerated, statusContentModerated:
+			// Content-policy rejection is a DISTINCT terminal outcome: the
+			// provider refused this content, so the platform must surface it
+			// verbatim (provider_content_rejected) and never fallback/retry
+			// around it (see providers.ErrContentPolicyRejected).
+			return "", fmt.Errorf("%w: %w: provider returned terminal status %q", ErrProvider, providers.ErrContentPolicyRejected, result.Status)
+		case statusError, statusNotFound:
 			return "", fmt.Errorf("%w: provider returned terminal status %q", ErrProvider, result.Status)
 		case statusPending, "":
 			// keep polling

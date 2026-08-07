@@ -52,7 +52,7 @@ func (s *stubJobAssetsLookup) GetByIDForTenant(_ context.Context, id, tenantID s
 	return job, nil
 }
 
-func (s *stubJobAssetsLookup) ListAssetPackItems(_ context.Context, packID string) ([]jobs.AssetPackItem, error) {
+func (s *stubJobAssetsLookup) ListAssetPackItemsForTenant(_ context.Context, packID, _ string) ([]jobs.AssetPackItem, error) {
 	return s.items[packID], nil
 }
 

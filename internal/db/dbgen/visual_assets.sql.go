@@ -317,6 +317,86 @@ func (q *Queries) FindReadyArtifactByPromptHash(ctx context.Context, arg FindRea
 	return i, err
 }
 
+const findReadyGenerationByPromptHash = `-- name: FindReadyGenerationByPromptHash :one
+SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
+       variant_family, version, state_version, style_profile_id,
+       style_profile_version, quality_tier, status,
+       compatibility_tags, fallback_allowed, fallback_rank, is_identity_anchor,
+       low_res_url, high_res_url, thumbnail_url,
+       provider_id, model_id, provider_route_id,
+       prompt_hash, seed, reference_asset_ids,
+       generation_job_id, metadata, generated_at,
+       created_at, updated_at, superseded_by_asset_id,
+       anchor_asset_id, derive_from,
+       parent_asset_id, crop_index, crop_box, expression_key
+FROM visual_assets
+WHERE tenant_id = $1
+  AND asset_type = 'artifact'
+  AND variant_key = 'default'
+  AND prompt_hash = $2
+  AND status = 'ready'
+ORDER BY version DESC, id ASC
+LIMIT 1
+`
+
+type FindReadyGenerationByPromptHashParams struct {
+	TenantID   string  `json:"tenant_id"`
+	PromptHash *string `json:"prompt_hash"`
+}
+
+// Combined-contract exact reuse (/v1/generations): the deterministic lookup
+// behind generation retrieval-before-generation. The generations contract
+// carries no world/style/quality inputs, so the slot is keyed on tenant + the
+// deterministic generation render hash alone (assets.GenerationRenderHash,
+// which folds in identity, display name, anchors, derive_from, intent, and
+// transform). Highest version first so a superseded-then-regenerated slot
+// returns the current ready row; id ASC keeps ties deterministic.
+func (q *Queries) FindReadyGenerationByPromptHash(ctx context.Context, arg FindReadyGenerationByPromptHashParams) (VisualAsset, error) {
+	row := q.db.QueryRow(ctx, findReadyGenerationByPromptHash, arg.TenantID, arg.PromptHash)
+	var i VisualAsset
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.WorldID,
+		&i.VisualIdentityID,
+		&i.AssetType,
+		&i.VariantKey,
+		&i.VariantFamily,
+		&i.Version,
+		&i.StateVersion,
+		&i.StyleProfileID,
+		&i.StyleProfileVersion,
+		&i.QualityTier,
+		&i.Status,
+		&i.CompatibilityTags,
+		&i.FallbackAllowed,
+		&i.FallbackRank,
+		&i.IsIdentityAnchor,
+		&i.LowResUrl,
+		&i.HighResUrl,
+		&i.ThumbnailUrl,
+		&i.ProviderID,
+		&i.ModelID,
+		&i.ProviderRouteID,
+		&i.PromptHash,
+		&i.Seed,
+		&i.ReferenceAssetIds,
+		&i.GenerationJobID,
+		&i.Metadata,
+		&i.GeneratedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.SupersededByAssetID,
+		&i.AnchorAssetID,
+		&i.DeriveFrom,
+		&i.ParentAssetID,
+		&i.CropIndex,
+		&i.CropBox,
+		&i.ExpressionKey,
+	)
+	return i, err
+}
+
 const getVisualAssetByID = `-- name: GetVisualAssetByID :one
 SELECT id, tenant_id, world_id, visual_identity_id, asset_type, variant_key,
        variant_family, version, state_version, style_profile_id,

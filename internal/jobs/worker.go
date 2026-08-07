@@ -37,6 +37,14 @@ const (
 	// no resolvable high-res object). Distinct from missing_reference_assets so an
 	// operator can tell "no anchors attached" from "an attached anchor is bad".
 	errorCodeInvalidReference = "invalid_reference_asset"
+	// errorCodeContentRejected is the terminal failure code when a provider
+	// rejected the request on CONTENT-POLICY grounds (providers.
+	// ErrContentPolicyRejected, e.g. BFL "Request Moderated"). It is distinct
+	// from provider_failure so callers see the provider's policy decision
+	// verbatim (docs/api/errors.md vocabulary). The platform itself takes no
+	// content stance: the rejection is surfaced, never sanitized, and never
+	// walked around via fallback routes or asynq retries.
+	errorCodeContentRejected = "provider_content_rejected"
 
 	// deliveryRenderEdge is the square edge (px) the worker asks the provider
 	// to produce so the "final" tier is genuinely higher resolution than the
@@ -311,6 +319,17 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 		return w.processPreviewFirst(ctx, job, resolved, attemptNumber, finalAttempt)
 	}
 
+	// Reference-conditioned single-image generation: when any route in the
+	// resolved chain is backed by a provider that REQUIRES reference images
+	// (fal Kontext), gather the subject identity's anchor references ONCE and
+	// thread them into every provider request — exactly like the pack path.
+	// Failing closed here (missing/invalid references) is what keeps a
+	// recurring character from being silently rendered as a different person.
+	refs, terminal, rferr := w.singleImageReferences(ctx, job, resolved)
+	if terminal || rferr != nil {
+		return rferr
+	}
+
 	if _, err := w.Jobs.MarkRunning(ctx, job.ID, job.TenantID); err != nil {
 		w.log().Error("worker: mark running", "job_id", jobID, "error", err)
 		return err
@@ -328,17 +347,26 @@ func (w *Worker) Process(ctx context.Context, jobID string, retryCount int32) er
 	// route fails, do the terminal job-fail/release here on the final asynq
 	// attempt, then return so asynq retries the whole chain.
 	out, gerr := w.generateWithFallback(ctx, job, resolved, providers.ProviderGenerateRequest{
-		JobID:     job.ID,
-		Operation: providers.OperationTextToImage,
-		Prompt:    description,
-		Width:     deliveryRenderEdge,
-		Height:    deliveryRenderEdge,
+		JobID:         job.ID,
+		Operation:     providers.OperationTextToImage,
+		Prompt:        description,
+		Width:         deliveryRenderEdge,
+		Height:        deliveryRenderEdge,
+		ReferenceURLs: refs,
 		Metadata: map[string]any{
 			"world_id": worldID,
 			"job_type": job.JobType,
 		},
 	}, attemptNumber)
 	if gerr != nil {
+		if errors.Is(gerr, providers.ErrContentPolicyRejected) {
+			// Content-policy rejection is terminal regardless of remaining asynq
+			// attempts: retrying identical content re-bills a deterministic
+			// rejection. Fail the job now (provider_content_rejected) and return
+			// nil so asynq does not retry.
+			w.failJobOnFinalAttempt(ctx, job, gerr, true)
+			return nil
+		}
 		w.failJobOnFinalAttempt(ctx, job, gerr, finalAttempt)
 		return gerr
 	}
@@ -482,6 +510,14 @@ func (w *Worker) processPreviewFirst(ctx context.Context, job Job, resolved reso
 	}
 	description, _ := job.InputPayload["description"].(string)
 
+	// Reference-conditioned two-phase generation: gather the identity's
+	// references once; both the preview and the final walk condition on the
+	// same anchors (presigned fresh for this attempt).
+	refs, terminal, rferr := w.singleImageReferences(ctx, job, resolved)
+	if terminal || rferr != nil {
+		return rferr
+	}
+
 	// --- Phase A: preview ---------------------------------------------------
 	// Resume safety: a non-empty preview_asset_ids means a prior attempt already
 	// generated and committed the preview. Skip straight to final so a retry
@@ -495,11 +531,12 @@ func (w *Worker) processPreviewFirst(ctx context.Context, job Job, resolved reso
 		// Phase 7C-4: the preview phase walks the chain independently — its
 		// provenance reflects whichever route produced the preview bytes.
 		out, gerr := w.generateWithFallback(ctx, job, resolved, providers.ProviderGenerateRequest{
-			JobID:     job.ID,
-			Operation: providers.OperationTextToImage,
-			Prompt:    description,
-			Width:     previewRenderEdge,
-			Height:    previewRenderEdge,
+			JobID:         job.ID,
+			Operation:     providers.OperationTextToImage,
+			Prompt:        description,
+			Width:         previewRenderEdge,
+			Height:        previewRenderEdge,
+			ReferenceURLs: refs,
 			Metadata: map[string]any{
 				"world_id": worldID,
 				"job_type": job.JobType,
@@ -509,7 +546,12 @@ func (w *Worker) processPreviewFirst(ctx context.Context, job Job, resolved reso
 		if gerr != nil {
 			// Preview-phase chain exhausted: no preview asset is created. On the
 			// terminal attempt fail the job + release the reservation. Per-route
-			// failures were already recorded inside the walk.
+			// failures were already recorded inside the walk. A content-policy
+			// rejection is terminal immediately (see the single-phase path).
+			if errors.Is(gerr, providers.ErrContentPolicyRejected) {
+				w.failJobOnFinalAttempt(ctx, job, gerr, true)
+				return nil
+			}
 			w.failJobOnFinalAttempt(ctx, job, gerr, finalAttempt)
 			return gerr
 		}
@@ -557,11 +599,12 @@ func (w *Worker) processPreviewFirst(ctx context.Context, job Job, resolved reso
 	// phase — its winner (and thus the final asset's provenance + the success cost
 	// event) may differ from the preview phase's winner.
 	out, gerr := w.generateWithFallback(ctx, job, resolved, providers.ProviderGenerateRequest{
-		JobID:     job.ID,
-		Operation: providers.OperationTextToImage,
-		Prompt:    description,
-		Width:     deliveryRenderEdge,
-		Height:    deliveryRenderEdge,
+		JobID:         job.ID,
+		Operation:     providers.OperationTextToImage,
+		Prompt:        description,
+		Width:         deliveryRenderEdge,
+		Height:        deliveryRenderEdge,
+		ReferenceURLs: refs,
 		Metadata: map[string]any{
 			"world_id": worldID,
 			"job_type": job.JobType,
@@ -572,6 +615,11 @@ func (w *Worker) processPreviewFirst(ctx context.Context, job Job, resolved reso
 		// Final-phase chain exhausted AFTER the preview was delivered: on the
 		// terminal attempt the job is marked failed and the reservation released.
 		// The preview asset stays preview_ready and final_asset_ids stays empty.
+		// A content-policy rejection is terminal immediately.
+		if errors.Is(gerr, providers.ErrContentPolicyRejected) {
+			w.failJobOnFinalAttempt(ctx, job, gerr, true)
+			return nil
+		}
 		w.failJobOnFinalAttempt(ctx, job, gerr, finalAttempt)
 		return gerr
 	}
@@ -641,6 +689,54 @@ func (w *Worker) processPreviewFirst(ctx context.Context, job Job, resolved reso
 	})
 
 	return nil
+}
+
+// singleImageReferences gathers the subject identity's reference URLs for a
+// single-image job when any route in the resolved chain is backed by a
+// reference-conditioned provider (Capabilities().RequiresReferenceImage). It
+// is the single-image analogue of the pack path's gather-once step: the
+// identity id comes from the job payload (persisted by the generations
+// handler), and the anchors are validated + presigned by
+// referenceURLsForIdentity. Prompt-only chains return (nil, false, nil) and
+// are unchanged.
+//
+// terminal=true means the job was failed terminally here (missing or invalid
+// references — fail closed, never render a different character; PRD 03 §8)
+// and the returned error is failTerminal's result: the caller returns it
+// as-is without further provider work.
+func (w *Worker) singleImageReferences(ctx context.Context, job Job, primary resolvedRoute) ([]string, bool, error) {
+	routes := append([]resolvedRoute{primary}, fallbackRoutesFromPayload(job.InputPayload)...)
+	needs := false
+	for _, rt := range routes {
+		if adapter, ok := w.Providers.Get(rt.providerID); ok && adapter.Capabilities().RequiresReferenceImage {
+			needs = true
+			break
+		}
+	}
+	if !needs {
+		return nil, false, nil
+	}
+	identityID := payloadString(job.InputPayload, "identity_id")
+	if identityID == "" {
+		msg := "reference-conditioned provider routed but the job carries no identity_id to gather references from"
+		w.log().Error("worker: reference route without identity", "job_id", job.ID, "provider_id", primary.providerID)
+		return nil, true, w.failTerminal(ctx, job, errorCodeMissingReference, msg)
+	}
+	refs, err := w.referenceURLsForIdentity(ctx, identityID, job.TenantID)
+	if err != nil {
+		code := errorCodeInvalidReference
+		if !errors.Is(err, errInvalidReference) {
+			code = errorCodeMissingReference
+		}
+		w.log().Error("worker: gather reference assets", "job_id", job.ID, "identity_id", identityID, "error", err)
+		return nil, true, w.failTerminal(ctx, job, code, err.Error())
+	}
+	if len(refs) == 0 {
+		msg := fmt.Sprintf("visual identity %q has no reference assets for reference-conditioned generation", identityID)
+		w.log().Error("worker: no reference assets", "job_id", job.ID, "identity_id", identityID)
+		return nil, true, w.failTerminal(ctx, job, errorCodeMissingReference, msg)
+	}
+	return refs, false, nil
 }
 
 // buildArtifactInsertParams assembles the visual_assets InsertParams shared by
@@ -886,6 +982,14 @@ func (w *Worker) generateWithFallback(ctx context.Context, job Job, primary reso
 			// Terminal job-fail/release is the caller's job once the whole chain is
 			// exhausted on the final asynq attempt.
 			w.recordAttemptFailure(ctx, job, attempt.ID, attempt.ProviderID, providerErr, latency)
+			if errors.Is(providerErr, providers.ErrContentPolicyRejected) {
+				// A content-policy rejection MUST NOT be walked around: trying the
+				// same content on another route would circumvent the rejecting
+				// provider's policy decision (and bill more attempts for a
+				// deterministic outcome). Stop the walk; the caller fails the job
+				// terminally with provider_content_rejected.
+				return genResult{}, providerErr
+			}
 			lastErr = providerErr
 			continue
 		}
@@ -988,6 +1092,12 @@ func errorCodeFor(err error) string {
 	}
 	if errors.Is(err, errPersistence) {
 		return errorCodePersistenceError
+	}
+	if errors.Is(err, providers.ErrContentPolicyRejected) {
+		return errorCodeContentRejected
+	}
+	if errors.Is(err, providers.ErrReferenceRequired) {
+		return errorCodeMissingReference
 	}
 	return errorCodeProviderFailure
 }

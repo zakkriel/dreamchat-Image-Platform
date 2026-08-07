@@ -157,6 +157,15 @@ type Repository interface {
 	InsertPackItemWithAssetSuperseding(ctx context.Context, asset assets.InsertParams, item AssetPackItemInsertParams, slot assets.VariantSlot) error
 	InsertAssetPackItem(ctx context.Context, params AssetPackItemInsertParams) error
 	ListAssetPackItems(ctx context.Context, packID string) ([]AssetPackItem, error)
+	// ListAssetPackItemsForTenant is the request-path pack-items read: it runs
+	// inside the tenant executor so the read is scoped by app.current_tenant
+	// under RLS (asset_pack_items has no tenant_id column of its own; its
+	// policy joins to the parent asset_pack, so the query relies on the GUC).
+	// Without it this read returns ZERO rows under the RLS-enforced API role
+	// even for the owning tenant. The worker keeps ListAssetPackItems on its
+	// BYPASSRLS system pool, where the GUC is irrelevant. Ported from the
+	// stranded fix on claude/zealous-ritchie-84qd37 (e14153f).
+	ListAssetPackItemsForTenant(ctx context.Context, packID, tenantID string) ([]AssetPackItem, error)
 }
 
 type pgRepository struct {
@@ -454,6 +463,30 @@ func (r *pgRepository) ListAssetPackItems(ctx context.Context, packID string) ([
 	if err != nil {
 		return nil, err
 	}
+	return rowsToAssetPackItems(rows), nil
+}
+
+// ListAssetPackItemsForTenant runs the pack-items read inside a tenant
+// executor (WithTenant → set_config app.current_tenant), mirroring
+// GetByIDForTenant, so the asset_pack_items parent-join RLS policy admits the
+// owning tenant's rows on the RLS-enforced API pool.
+func (r *pgRepository) ListAssetPackItemsForTenant(ctx context.Context, packID, tenantID string) ([]AssetPackItem, error) {
+	var out []AssetPackItem
+	err := appdb.WithTenant(ctx, r.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := dbgen.New(tx).ListAssetPackItems(ctx, packID)
+		if err != nil {
+			return err
+		}
+		out = rowsToAssetPackItems(rows)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func rowsToAssetPackItems(rows []dbgen.AssetPackItem) []AssetPackItem {
 	out := make([]AssetPackItem, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, AssetPackItem{
@@ -464,7 +497,7 @@ func (r *pgRepository) ListAssetPackItems(ctx context.Context, packID string) ([
 			SortOrder:     row.SortOrder,
 		})
 	}
-	return out, nil
+	return out
 }
 
 func (r *pgRepository) InsertCostEvent(ctx context.Context, params CostEventInsertParams) error {

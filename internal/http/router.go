@@ -301,6 +301,13 @@ func mountGenerations(v1 chi.Router, deps Deps) {
 		}
 	}
 
+	// Combined-contract exact reuse (retrieval-before-generation, ADR-009):
+	// wired when the assets repo is available so /v1/generations both consults
+	// and feeds the reuse cache. Nil-safe (reuse skipped when unwired).
+	if deps.AssetsRepo != nil {
+		h.Reuse = deps.AssetsRepo
+	}
+
 	v1.With(auth.RequireScopes("images:write")).Post("/generations", h.Create)
 }
 
