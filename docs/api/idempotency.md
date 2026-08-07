@@ -10,6 +10,13 @@ Generation endpoints are expensive and should not accidentally create duplicate 
 Idempotency-Key: <unique-client-generated-key>
 ```
 
+The `Idempotency-Key` **header is the canonical carrier** on every generation
+endpoint (v0.13.0). `POST /v1/generations` additionally accepts the key in the
+request body (`idempotency_key`): header-only, body-only, or both-identical
+are accepted; a request with neither is rejected 422 on that endpoint, and a
+header/body mismatch is rejected 422. The legacy generation endpoints treat a
+missing header as a non-idempotent create (unchanged).
+
 ## Recommended Keys
 
 For initial character pack:

@@ -20,7 +20,7 @@
   substitution for identity-critical output requires an explicit caller
   policy (`fallback_policy`).
 
-## Wave 1 — Repairs (DONE, this commit)
+## Wave 1 — Repairs (DONE — PR #35)
 
 | # | Change | Where |
 |---|---|---|
@@ -33,25 +33,28 @@
 Verified: `go build`, `go vet`, full unit suite, full `-tags=integration`
 suite against Postgres 15 (migrations v17). OpenAPI mirrors untouched.
 
-## Wave 2 — Governance completion + interface hygiene
+## Wave 2 — Governance completion + interface hygiene (DONE)
 
-1. **Real signature verification** (blocked on core's signing contract):
-   replace `StubSignatureVerifier`; production MUST fail startup when
-   `GOVERNANCE_ENFORCEMENT=enforce` with a stub verifier; bind the signature
-   to tenant + subject + operation + request hash + expiry.
-2. **One governed chokepoint:** route artifact/pack/style-preview through the
-   governance gate or deprecate them in favor of `/v1/generations`
-   (ADR-P002 Follow-up 1). Contract change — coordinate with backend callers.
-3. **`any_existing` becomes admin/debug-only** (scope-gated): it can return
-   matrix-invalid assets and must not be reachable by ordinary `images:read`
-   callers, nor persist invalid assets as pack items.
-4. **Seed an `identity_capable` fal route** (DML migration, mirrors 0011) now
-   that references are wired; keeps route semantics legible.
-5. **Idempotency-Key header canonicalization** across endpoints (docs vs
-   `/v1/generations` body-key divergence).
-6. Docs reconciliation: `cost-control.md` §5 status codes (503/429 → 422),
-   README phase status, `DECISIONS.md` fal/env drift, ADR-014 vs actual error
-   body shape.
+> Spec: `docs/superpowers/specs/2026-08-07-wave2-governance-interfaces-design.md`
+
+1. ~~Startup guard~~ DONE: live + `enforce` + stub verifier refuses startup
+   (`governance.EnforceWithStubError`). **Real signature crypto remains
+   blocked** on core's signing contract (`TODO(core-signing)`); signature
+   binding to tenant/subject/operation/request-hash/expiry ships with it.
+2. ~~One governed chokepoint~~ DONE (additive, not retirement): artifact,
+   pack, and style-preview run the shared `GovernanceGate` with an optional
+   envelope (v0.13.0) — log_only audits and proceeds, enforce blocks
+   missing/invalid envelopes 403. Retiring the legacy endpoints is now
+   product timing, not a safety hole.
+3. ~~`any_existing` admin/debug-only~~ DONE: requires `admin:read` on
+   artifact/pack generation and asset search.
+4. ~~Seed `identity_capable` fal route~~ DONE: migration 0018 (head 17→18,
+   CI assertions updated).
+5. ~~Idempotency-Key header canonicalization~~ DONE on `/v1/generations`
+   (header canonical, body still accepted, neither → 422).
+6. ~~Docs reconciliation~~ DONE: cost-control §4.1/§5 status codes, README
+   status, DECISIONS env vars, ADR-014 implementation note,
+   idempotency.md canonical header.
 
 ## Wave 3 — Measurement + cost accounting truth
 

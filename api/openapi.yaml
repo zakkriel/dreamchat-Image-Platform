@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: DreamChat Image Platform API
-  version: 0.12.0
+  version: 0.13.0
   description: |
     Standalone API for generating, storing, retrieving, and versioning persistent visual assets for DreamChat worlds.
 
@@ -1655,6 +1655,16 @@ components:
       type: object
       required: [world_id, style_profile_id]
       properties:
+        governance:
+          $ref: '#/components/schemas/GovernanceEnvelope'
+          description: |
+            Optional media-eligibility envelope (v0.13.0, additive). When
+            present it is verified by the same gate as `POST /v1/generations`
+            (integrity/authorization only — content is never inspected) and
+            audited. Under `GOVERNANCE_ENFORCEMENT=enforce` a missing or
+            invalid envelope is rejected `403 governance_blocked`; the default
+            `log_only` posture records the verdict and proceeds, so existing
+            callers are unaffected until enforcement is switched on.
         world_id: { type: string }
         style_profile_id: { type: string }
         provider_id:
@@ -1718,6 +1728,10 @@ components:
       type: object
       required: [world_id, style_profile_id]
       properties:
+        governance:
+          $ref: '#/components/schemas/GovernanceEnvelope'
+          description: |
+            See GenerateCharacterPackRequest.governance (v0.13.0, additive).
         world_id: { type: string }
         style_profile_id: { type: string }
         provider_id:
@@ -1755,6 +1769,10 @@ components:
       type: object
       required: [world_id, style_profile_id, description]
       properties:
+        governance:
+          $ref: '#/components/schemas/GovernanceEnvelope'
+          description: |
+            See GenerateCharacterPackRequest.governance (v0.13.0, additive).
         world_id: { type: string }
         style_profile_id: { type: string }
         description: { type: string }
@@ -1848,14 +1866,21 @@ components:
           items: { type: object, additionalProperties: true }
     GenerationRequest:
       type: object
-      required: [governance, subject, render, idempotency_key]
+      required: [governance, subject, render]
       properties:
         governance: { $ref: '#/components/schemas/GovernanceEnvelope' }
         subject: { $ref: '#/components/schemas/GenerationSubject' }
         render: { $ref: '#/components/schemas/RenderOptions' }
         grid: { $ref: '#/components/schemas/GridOptions' }
         lazy: { type: boolean, default: false }
-        idempotency_key: { type: string }
+        idempotency_key:
+          type: string
+          description: |
+            Idempotency key (v0.13.0: the `Idempotency-Key` HEADER is the
+            canonical carrier across all generation endpoints; this body field
+            remains supported). Exactly one key must be supplied via header or
+            body — a request with neither is rejected 422, and when both are
+            present they must be identical (mismatch → 422).
     # ------------------------------------------------------------------------
     # Jobs
     # ------------------------------------------------------------------------
@@ -2108,6 +2133,10 @@ components:
         because generated visual assets are world-scoped (Phase 6B).
       properties:
         world_id: { type: string }
+        governance:
+          $ref: '#/components/schemas/GovernanceEnvelope'
+          description: |
+            See GenerateCharacterPackRequest.governance (v0.13.0, additive).
         quality_tier:
           $ref: '#/components/schemas/QualityTier'
         delivery_mode:
@@ -2529,6 +2558,25 @@ components:
 # Confidence to Implement
 #
 # Score: 94/100 — Very High
+#
+# v0.13.0 — governed legacy endpoints + canonical idempotency header (additive):
+#   * `GenerateArtifactRequest.governance`, `GenerateCharacterPackRequest.
+#     governance`, `GeneratePlacePackRequest.governance`, and
+#     `StylePreviewRequest.governance` — optional GovernanceEnvelope. The
+#     legacy generation endpoints now run the SAME media-eligibility gate as
+#     `POST /v1/generations` (ADR-P002 Follow-up 1): the envelope is verified
+#     (integrity/authorization only; content never inspected; content_class
+#     opaque) and audited on every generation request. Default log_only
+#     posture proceeds (existing callers unaffected); enforce rejects a
+#     missing/invalid envelope `403 governance_blocked`.
+#   * `GenerationRequest.idempotency_key` is no longer required: the
+#     `Idempotency-Key` header is the canonical carrier on every generation
+#     endpoint. Header-only, body-only, or matching both are accepted;
+#     neither → 422; mismatch → 422.
+#   * `fallback_policy: any_existing` now requires the `admin:read` scope
+#     (403 otherwise) on artifact/pack generation and asset search: it can
+#     return matrix-invalid assets and is a debug facility, not a normal
+#     retrieval mode.
 #
 # v0.12.0 — per-request provider preference (additive):
 #   * `GenerateArtifactRequest.provider_id`,

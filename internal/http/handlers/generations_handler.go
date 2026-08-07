@@ -188,16 +188,24 @@ func (h *GenerationsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Step 6: idempotency reconcile. Body key is required; header, if present,
-	// must match body key (the caller canonicalizes one key, not two).
-	bodyKey := req.IdempotencyKey
-	if bodyKey == "" {
-		httperr.Write(w, r, http.StatusUnprocessableEntity, httperr.CodeInvalidRequest, "idempotency_key is required in the request body")
+	// Step 6: idempotency reconcile (v0.13.0 canonical contract): the
+	// Idempotency-Key HEADER is the canonical carrier across all generation
+	// endpoints; the body field remains supported. Exactly one key must be
+	// supplied — header-only, body-only, or both-identical are accepted;
+	// neither → 422; a header/body mismatch → 422 (the caller canonicalizes
+	// one key, not two).
+	bodyKey := deref(req.IdempotencyKey)
+	headerKey := r.Header.Get(idempotency.HeaderKey)
+	if bodyKey != "" && headerKey != "" && headerKey != bodyKey {
+		httperr.Write(w, r, http.StatusUnprocessableEntity, httperr.CodeInvalidRequest, "Idempotency-Key header must match body idempotency_key when both are present")
 		return
 	}
-	headerKey := r.Header.Get(idempotency.HeaderKey)
-	if headerKey != "" && headerKey != bodyKey {
-		httperr.Write(w, r, http.StatusUnprocessableEntity, httperr.CodeInvalidRequest, "Idempotency-Key header must match body idempotency_key when both are present")
+	idemKey := headerKey
+	if idemKey == "" {
+		idemKey = bodyKey
+	}
+	if idemKey == "" {
+		httperr.Write(w, r, http.StatusUnprocessableEntity, httperr.CodeInvalidRequest, "an idempotency key is required: send the Idempotency-Key header (canonical) or body idempotency_key")
 		return
 	}
 
@@ -216,8 +224,8 @@ func (h *GenerationsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Step 8: handleReplay pre-check (the effective key is the body key).
-	if handleReplay(w, r, h.Service, tenantID, principal.TokenID, bodyKey, endpoint, requestHash) {
+	// Step 8: handleReplay pre-check (on the effective idempotency key).
+	if handleReplay(w, r, h.Service, tenantID, principal.TokenID, idemKey, endpoint, requestHash) {
 		return
 	}
 
@@ -300,7 +308,7 @@ func (h *GenerationsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		existing, rerr := h.Reuse.FindReadyGenerationByPromptHash(r.Context(), tenantID, renderHash)
 		switch {
 		case rerr == nil:
-			h.respondCacheHit(w, r, tenantID, principal.TokenID, req, renderHash, existing.ID, bodyKey, endpoint, requestHash)
+			h.respondCacheHit(w, r, tenantID, principal.TokenID, req, renderHash, existing.ID, idemKey, endpoint, requestHash)
 			return
 		case errors.Is(rerr, assets.ErrNotFound):
 			// miss: fall through to the normal resolve/reserve/enqueue path.
@@ -424,7 +432,7 @@ func (h *GenerationsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Idempotency.
-	params.IdempotencyKey = bodyKey
+	params.IdempotencyKey = idemKey
 	params.Endpoint = endpoint
 	params.RequestHash = requestHash
 

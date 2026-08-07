@@ -12,6 +12,16 @@ The platform's clients (web app, admin tool, benchmark runner, future creator cl
 
 All error responses use **RFC 7807 Problem Details** (`application/problem+json`) with a fixed shape: `type` (stable URL), `title` (short summary), `status` (HTTP code), `detail` (human-readable), `request_id` (mandatory, links to logs). Provider-specific errors are normalized to a fixed vocabulary (`provider_timeout`, `provider_rate_limited`, `provider_content_rejected`, `provider_auth_failed`, `provider_capacity_error`, `provider_invalid_request`, `provider_unknown_error`) before they leave the adapter layer.
 
+> **Implementation note (reconciled):** the shipped body is the compact shape
+> in `docs/api/errors.md` — `{code, message, request_id}` served with
+> `Content-Type: application/problem+json` (`internal/httperr/errors.go`) —
+> not the full 7807 field set (`type`/`title`/`status`/`detail`). `code` plays
+> the role of `type`, `message` of `detail`, and the HTTP status line carries
+> `status`. Clients MUST key on `code`. Of the provider vocabulary below,
+> `provider_content_rejected` is implemented (Wave 1: surfaced verbatim,
+> terminal, never fallback-walked); other provider failures currently surface
+> as `provider_failure`.
+
 ## Alternatives considered
 
 - **Free-form error messages.** Easiest to ship: just write whatever feels right per endpoint. Highest long-term cost: every client implements N error parsers, error semantics drift, and "is this retryable?" becomes guesswork.

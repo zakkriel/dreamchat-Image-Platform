@@ -628,7 +628,8 @@ type GenerateArtifactRequest struct {
 	// asset becomes the single ready row a later non-forced request
 	// reuses, with `version` incremented. Default `false` is the
 	// unchanged Phase 6A2 reuse behavior.
-	ForceRegenerate *bool `json:"force_regenerate,omitempty"`
+	ForceRegenerate *bool               `json:"force_regenerate,omitempty"`
+	Governance      *GovernanceEnvelope `json:"governance,omitempty"`
 
 	// LatencyTier Latency preference for provider routing.
 	LatencyTier *LatencyTier `json:"latency_tier,omitempty"`
@@ -662,7 +663,8 @@ type GenerateCharacterPackRequest struct {
 	// ready row a later non-forced request reuses. Whole-pack only;
 	// per-role regeneration is not supported. Default `false` is the
 	// unchanged reuse-first behavior.
-	ForceRegenerate *bool `json:"force_regenerate,omitempty"`
+	ForceRegenerate *bool               `json:"force_regenerate,omitempty"`
+	Governance      *GovernanceEnvelope `json:"governance,omitempty"`
 
 	// LatencyTier Latency preference for provider routing.
 	LatencyTier *LatencyTier `json:"latency_tier,omitempty"`
@@ -708,7 +710,8 @@ type GeneratePlacePackRequest struct {
 	FallbackPolicy *FallbackPolicy `json:"fallback_policy,omitempty"`
 
 	// ForceRegenerate See GenerateCharacterPackRequest.force_regenerate.
-	ForceRegenerate *bool `json:"force_regenerate,omitempty"`
+	ForceRegenerate *bool               `json:"force_regenerate,omitempty"`
+	Governance      *GovernanceEnvelope `json:"governance,omitempty"`
 
 	// LatencyTier Latency preference for provider routing.
 	LatencyTier *LatencyTier `json:"latency_tier,omitempty"`
@@ -816,12 +819,18 @@ type GenerationJobStatus string
 
 // GenerationRequest defines model for GenerationRequest.
 type GenerationRequest struct {
-	Governance     GovernanceEnvelope `json:"governance"`
-	Grid           *GridOptions       `json:"grid,omitempty"`
-	IdempotencyKey string             `json:"idempotency_key"`
-	Lazy           *bool              `json:"lazy,omitempty"`
-	Render         RenderOptions      `json:"render"`
-	Subject        GenerationSubject  `json:"subject"`
+	Governance GovernanceEnvelope `json:"governance"`
+	Grid       *GridOptions       `json:"grid,omitempty"`
+
+	// IdempotencyKey Idempotency key (v0.13.0: the `Idempotency-Key` HEADER is the
+	// canonical carrier across all generation endpoints; this body field
+	// remains supported). Exactly one key must be supplied via header or
+	// body — a request with neither is rejected 422, and when both are
+	// present they must be identical (mismatch → 422).
+	IdempotencyKey *string           `json:"idempotency_key,omitempty"`
+	Lazy           *bool             `json:"lazy,omitempty"`
+	Render         RenderOptions     `json:"render"`
+	Subject        GenerationSubject `json:"subject"`
 }
 
 // GenerationSubject defines model for GenerationSubject.
@@ -1032,7 +1041,8 @@ type StylePreviewRequest struct {
 	//   asset (`status=ready`) and completes the same job with
 	//   `final_asset_ids`. Cost is reserved once and committed once, only
 	//   after final success.
-	DeliveryMode *DeliveryMode `json:"delivery_mode,omitempty"`
+	DeliveryMode *DeliveryMode       `json:"delivery_mode,omitempty"`
+	Governance   *GovernanceEnvelope `json:"governance,omitempty"`
 
 	// QualityTier Output quality tier requested for generation.
 	QualityTier *QualityTier `json:"quality_tier,omitempty"`

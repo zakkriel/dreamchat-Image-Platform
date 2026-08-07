@@ -197,6 +197,7 @@ func mountStyles(v1 chi.Router, deps Deps) {
 	// Requires the job service + the route resolver; nil-safe (skipped otherwise).
 	if deps.JobsService != nil && deps.Resolver != nil {
 		preview := handlers.NewStylePreviewHandler(deps.JobsService, deps.StylesRepo, deps.Resolver, string(deps.Config.ImageProvider))
+		preview.Gate = governanceGateFromDeps(deps)
 		v1.With(auth.RequireScopes("images:write")).Post("/styles/{style_id}/preview", preview.GeneratePreview)
 	}
 }
@@ -254,7 +255,29 @@ func mountArtifacts(v1 chi.Router, deps Deps) {
 		reuse = deps.AssetsRepo
 	}
 	h := handlers.NewArtifactsHandler(deps.JobsService, deps.StylesRepo, deps.Resolver, string(deps.Config.ImageProvider), reuse)
+	h.Gate = governanceGateFromDeps(deps)
 	v1.With(auth.RequireScopes("images:write")).Post("/artifacts/{artifact_id}/generate", h.Generate)
+}
+
+// governanceGateFromDeps builds the shared media-eligibility gate for the
+// legacy generation endpoints (ADR-P002 Follow-up 1) from the same deps the
+// generations mount uses: verifier, mode (default log_only), and the
+// tenant-scoped audit sink. Zero-valued (no-op) when no verifier is wired.
+func governanceGateFromDeps(deps Deps) handlers.GovernanceGate {
+	if deps.GovernanceVerifier == nil {
+		return handlers.GovernanceGate{}
+	}
+	gate := handlers.GovernanceGate{
+		Verifier: deps.GovernanceVerifier,
+		Mode:     deps.GovernanceMode,
+	}
+	if gate.Mode == "" {
+		gate.Mode = governance.ModeLogOnly
+	}
+	if deps.TenantPool != nil {
+		gate.Audit = dbAuditSink{pool: deps.TenantPool}
+	}
+	return gate
 }
 
 // dbAuditSink is the production AuditSink for the generations handler. It
@@ -319,6 +342,7 @@ func mountPacks(v1 chi.Router, deps Deps) {
 		return
 	}
 	h := handlers.NewPacksHandler(deps.JobsService, deps.StylesRepo, deps.IdentitiesRepo, deps.Resolver, string(deps.Config.ImageProvider))
+	h.Gate = governanceGateFromDeps(deps)
 	// Phase 6A3: wire the per-role reuse decision layer so pack generation is
 	// retrieval-first (prices + generates only the missing roles). Nil-safe: the
 	// handler generates the whole pack when AssetsRepo is unwired.

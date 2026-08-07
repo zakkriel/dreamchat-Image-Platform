@@ -363,8 +363,9 @@ func TestGenerationsHeaderBodyIdempotencyKeyMismatch422(t *testing.T) {
 	assertError(t, rec, http.StatusUnprocessableEntity, "invalid_request")
 }
 
-// header-only (no body idempotency_key) → 422.
-func TestGenerationsHeaderOnlyIdempotencyKey422(t *testing.T) {
+// header-only (no body idempotency_key) → 202: the Idempotency-Key header is
+// the canonical carrier (v0.13.0); the body field remains supported.
+func TestGenerationsHeaderOnlyIdempotencyKey202(t *testing.T) {
 	creator := newStubCreator()
 	idRepo := seededGenIDRepo()
 	router := newGenerationsRouter(creator, idRepo, okResolver())
@@ -386,7 +387,53 @@ func TestGenerationsHeaderOnlyIdempotencyKey422(t *testing.T) {
 	}
 	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/generations", tenantA,
 		[]string{"images:write"}, body, map[string]string{idempotency.HeaderKey: "header-only-011"})
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(creator.calls) != 1 || creator.calls[0].IdempotencyKey != "header-only-011" {
+		t.Fatalf("expected the header key threaded to the service, got %+v", creator.calls)
+	}
+
+	// A retry carrying the SAME key in the BODY instead replays the job the
+	// header-created request made — one key contract across both carriers.
+	rec2 := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/generations", tenantA,
+		[]string{"images:write"}, body, map[string]string{idempotency.HeaderKey: "header-only-011"})
+	if rec2.Code != http.StatusAccepted {
+		t.Fatalf("replay: expected 202, got %d body=%s", rec2.Code, rec2.Body.String())
+	}
+	first := decode[map[string]any](t, rec)
+	second := decode[map[string]any](t, rec2)
+	if first["job_id"] != second["job_id"] {
+		t.Fatalf("expected same job on replay, got %v vs %v", first["job_id"], second["job_id"])
+	}
+}
+
+// neither header nor body key → 422 (an idempotency key is still required on
+// the combined contract).
+func TestGenerationsNoIdempotencyKey422(t *testing.T) {
+	creator := newStubCreator()
+	idRepo := seededGenIDRepo()
+	router := newGenerationsRouter(creator, idRepo, okResolver())
+
+	body := map[string]any{
+		"governance": map[string]any{
+			"schema_version":    "1.0",
+			"classification_id": "cls_test",
+			"visibility":        "private",
+			"content_class":     "safe",
+			"authorized_by":     "auth_test",
+			"issued_at":         "2026-06-18T00:00:00Z",
+			"signature":         "sig_test",
+		},
+		"subject": map[string]any{"identity_id": testIdentityID},
+		"render":  map[string]any{"intent": "draft"},
+	}
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/generations", tenantA,
+		[]string{"images:write"}, body, nil)
 	assertError(t, rec, http.StatusUnprocessableEntity, "invalid_request")
+	if len(creator.calls) != 0 {
+		t.Fatalf("expected no service call without a key, got %d", len(creator.calls))
+	}
 }
 
 // body idempotency_key present (no header) → 202.
