@@ -464,7 +464,8 @@ func qualityTierRank(tier string) int {
 // The existing latency/preference/priority/id tie-break follows in both cases.
 func ranksBefore(a, b Route, req ResolveRequest) bool {
 	// Intent-driven ranking (prepended when Intent is set).
-	if req.Intent == "draft" {
+	switch req.Intent {
+	case "draft":
 		switch {
 		case a.Price == nil && b.Price == nil:
 			// both unpriced: fall through to tie-break.
@@ -475,7 +476,7 @@ func ranksBefore(a, b Route, req ResolveRequest) bool {
 		case *a.Price != *b.Price:
 			return *a.Price < *b.Price // cheapest first
 		}
-	} else if req.Intent == "commit" {
+	case "commit":
 		aRank := qualityTierRank(a.QualityTier)
 		bRank := qualityTierRank(b.QualityTier)
 		if aRank != bRank {
