@@ -86,14 +86,43 @@ services:
       S3_BUCKET: image-platform
       S3_REGION: us-east-1
       S3_ENDPOINT: http://minio:9000
+      # Presigned read URLs are signed for this origin instead of S3_ENDPOINT:
+      # the containers reach MinIO at `minio:9000` (a Docker network name the
+      # browser cannot resolve), while the host publishes it on localhost:9000.
+      # SigV4 signs the Host header, so the URL must be signed for the host the
+      # client will call — it cannot be rewritten after signing.
+      # Override it (shell export or ./.env) with a PUBLIC tunnel URL when a real
+      # provider must fetch reference images: fal downloads image_urls from its
+      # own servers, so a localhost URL fails with file_download_error. See
+      # docs/runbooks/local-development.md.
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-http://localhost:9000}
       S3_ACCESS_KEY_ID: minioadmin
       S3_SECRET_ACCESS_KEY: minioadmin
       S3_USE_PATH_STYLE: "true"
       IMAGE_PROVIDER: mock
+      # Real provider keys come from the HOST environment (shell export or the
+      # gitignored ./.env, which compose interpolates) — never hardcoded here.
+      # Empty means the provider is not registered and its routes stay
+      # unselectable, which is the default local setup.
+      BFL_API_KEY: ${BFL_API_KEY:-}
+      FAL_KEY: ${FAL_KEY:-}
+      # Local dev only. Mock is a SYNTHETIC provider, so by default it may not
+      # satisfy identity-axis routes (identity/pack/production) and every
+      # character/place pack request fails closed with 422 (PRD 03 §8). This
+      # stack has no real provider key by default, so it is enabled here to
+      # exercise pack generation with mock placeholders. Overridable from the
+      # host so a real-provider run can turn it off without editing this file;
+      # real deployments (deploy/railway) MUST leave it unset.
+      ALLOW_SYNTHETIC_PROVIDERS: ${ALLOW_SYNTHETIC_PROVIDERS:-true}
       API_TOKEN_PEPPER: dev-pepper-change-me
       OPENAPI_DOCS_ENABLED: "true"
     ports:
-      - "8080:8080"
+      # Host 8081, not 8080: the sibling dreamchat-world-backend `core/api`
+      # owns host 8080 in the shared dev environment, and both stacks must be
+      # able to run at the same time. The in-container port stays 8080, so
+      # APP_PORT, the healthcheck, and every service-to-service URL are
+      # unchanged.
+      - "8081:8080"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
       interval: 3s
@@ -122,10 +151,23 @@ services:
       S3_BUCKET: image-platform
       S3_REGION: us-east-1
       S3_ENDPOINT: http://minio:9000
+      # See the API service. The worker is what presigns REFERENCE image URLs
+      # for a reference-conditioned provider, so this value must be publicly
+      # fetchable whenever fal is used — and must match the API's.
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-http://localhost:9000}
       S3_ACCESS_KEY_ID: minioadmin
       S3_SECRET_ACCESS_KEY: minioadmin
       S3_USE_PATH_STYLE: "true"
       IMAGE_PROVIDER: mock
+      # Same host-supplied keys as the API. The worker is the process that
+      # actually calls the provider, so a key set only on the API resolves a
+      # route the worker then cannot execute.
+      BFL_API_KEY: ${BFL_API_KEY:-}
+      FAL_KEY: ${FAL_KEY:-}
+      # See the API service: mock may satisfy identity/pack routes in this local
+      # stack only. Must match the API's value or the worker and the resolver
+      # disagree about which routes are servable.
+      ALLOW_SYNTHETIC_PROVIDERS: ${ALLOW_SYNTHETIC_PROVIDERS:-true}
       API_TOKEN_PEPPER: dev-pepper-change-me
       OPENAPI_DOCS_ENABLED: "true"
 

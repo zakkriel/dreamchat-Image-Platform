@@ -9,12 +9,17 @@ import react from '@vitejs/plugin-react'
 // This is a dev-server convenience only — no backend code is touched.
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
-  const target = env.VITE_API_TARGET || 'http://localhost:8080'
+  const target = env.VITE_API_TARGET || 'http://localhost:8081'
 
   return {
     plugins: [react()],
     server: {
-      port: 5173,
+      // Port 5174, not Vite's default 5173: the sibling `dreamchat-frontend`
+      // dev server owns 5173 (`--strictPort`) in the shared dev environment,
+      // and both must run concurrently. strictPort makes a clash fail loudly
+      // instead of silently drifting to a port the docs don't mention.
+      port: 5174,
+      strictPort: true,
       proxy: {
         '/api': {
           target,

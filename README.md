@@ -46,18 +46,31 @@ the cost-optimization waves (`docs/superpowers/plans/2026-08-07-cost-optimizatio
 ## Dev loop
 
 ```bash
-make dev
-curl -i http://localhost:8080/health
+make start
+```
+
+One command, no manual steps: infra containers, migrations, dev tokens, the API
+and worker (as host `go run` processes, so a code change costs a ~5s restart
+instead of an image rebuild), the playground with its tokens pre-filled, and a
+browser tab. Ctrl-C stops everything it started. Warm restart is ~10s.
+
+`make dev` is the all-in-docker variant: same stack, but the API and worker run
+as containers you must rebuild after every Go change.
+
+```bash
+curl -i http://localhost:8081/health
 ```
 
 ### Published host ports
 
 `docker-compose.yml` publishes **Postgres on host `5433`** (container port stays
-`5432`). The sibling `dreamchat-world-backend` stack owns host `5432` in the
-shared dev environment, and both must be able to run concurrently. `make migrate`
-and `.env.example` default to `localhost:5433` to match. Redis (`6379`), MinIO
-(`9000`/`9001`), and the API (`8080`) are still published on their default host
-ports — remap them the same way if a sibling stack ever claims one.
+`5432`) and the **API on host `8081`** (container port stays `8080`). The sibling
+`dreamchat-world-backend` stack owns host `5432` and host `8080` in the shared dev
+environment, and both must be able to run concurrently. `make migrate` and
+`.env.example` default to `localhost:5433` to match, and `playground/.env.example`
+proxies to `localhost:8081`. Redis (`6379`) and MinIO (`9000`/`9001`) are still
+published on their default host ports — remap them the same way if a sibling stack
+ever claims one.
 
 Expected:
 

@@ -1,3 +1,5 @@
+# scripts/dev.sh runtime state: cached tokens, tunnel URL, child logs.
+.dev/
 .env
 .env.local
 *.log

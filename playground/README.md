@@ -65,7 +65,7 @@ A single page with stacked panels:
 ```bash
 cd playground
 npm install
-npm run dev        # http://localhost:5173
+npm run dev        # http://localhost:5174 (5173 belongs to dreamchat-frontend)
 ```
 
 ### How it reaches the API (CORS)
@@ -73,12 +73,12 @@ npm run dev        # http://localhost:5173
 The backend ships no CORS middleware, so a browser cannot call it cross-origin
 directly. The Vite dev server therefore **proxies** `/api/*` to the API. The
 Connection panel's base URL defaults to `/api`, which is proxied to
-`http://localhost:8080`.
+`http://localhost:8081` (the host port `docker-compose.yml` publishes the API on).
 
 - To point at a different local API, copy `.env.example` to `.env` and set
   `VITE_API_TARGET`, then restart `npm run dev`.
 - If your API *does* serve CORS, you can instead set the base URL field to a
-  full origin (e.g. `http://localhost:8080`) and bypass the proxy.
+  full origin (e.g. `http://localhost:8081`) and bypass the proxy.
 
 ## Validate
 
@@ -241,6 +241,13 @@ without touching any Railway variable.
 - It never silently falls back. Pinning a scene-only provider (e.g. `bfl`) to a
   pack request fails closed rather than quietly resolving fal/mock.
 - Leave it unset (`(unset)`) to keep the existing default route resolution.
+
+Against the local `docker compose` stack only `mock` is configured (`bfl` needs
+`BFL_API_KEY`, `fal` needs `FAL_KEY`), so picking either of those is the usual
+cause of `422 provider_preference_unavailable` locally — leave the select
+**unset**. Note also that mock is a *synthetic* provider and may not serve
+identity/pack routes unless `ALLOW_SYNTHETIC_PROVIDERS=true`; the compose stack
+sets it so pack generation works with mock placeholders.
 
 The committed [`examples/seren-recurring-character.json`](examples/seren-recurring-character.json)
 sample demonstrates the recurring-character flow end to end: the **artifact**
