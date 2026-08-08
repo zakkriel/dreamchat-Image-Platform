@@ -2,58 +2,147 @@
 
 ## Requirements
 
-- Go
-- Docker
-- Postgres
-- Redis
-- MinIO or local S3-compatible storage
+- Go (see `go.mod`)
+- Docker (Compose v2)
+- Node 20+ (only for the `playground/` console)
 
-## Local Services
+Postgres, Redis and MinIO all run in the compose stack — nothing to install.
 
-Recommended docker-compose services:
-
-```txt
-postgres
-redis
-minio
-```
-
-## Start API
+## Start everything
 
 ```bash
-go run ./cmd/api
+make start
 ```
 
-## Start Worker
+`scripts/dev.sh`. One command, no manual steps, ~10s warm:
+
+| Step | What it does |
+| --- | --- |
+| infra | `docker compose up -d postgres redis minio` |
+| tunnel | public MinIO origin, **only** when `FAL_KEY`/`BFL_API_KEY` is set |
+| migrate | goose, idempotent |
+| tokens | reused from `.dev/tokens.env` while they still authenticate, else seeded |
+| api + worker | host `go run`, so a Go change costs a ~5s restart, not an image rebuild |
+| playground | vite on `:5174` with both tokens pre-filled, opened in a browser |
+
+Ctrl-C stops every process it started, including the tunnel. Infra containers
+stay up (`make down` removes them and their volumes).
+
+Because the API and worker run on the host, the script stops their container
+counterparts — two workers would double-consume the job queue.
+
+Nothing is prompted for and nothing is pasted: a raw token is unrecoverable
+once printed, so the script caches it in `.dev/tokens.env` (gitignored) and
+writes `playground/.env.local`, which the Connection panel reads as its default.
+A token you type yourself is kept in `localStorage` and always wins.
+
+`make dev` remains the all-in-docker variant: same stack, API and worker as
+containers, rebuilt with `docker compose build` after every Go change.
 
 ```bash
-go run ./cmd/worker
+curl -i http://localhost:8081/health     # {"status":"ok"}
 ```
 
-## Open Docs
+## Published host ports
 
-```txt
-http://localhost:8080/docs
+Two ports are deliberately non-default so this stack can run alongside its
+siblings in the shared dev environment:
+
+| Service | Host | Container | Why not the default |
+| --- | --- | --- | --- |
+| Postgres | `5433` | `5432` | `dreamchat-world-backend` owns host `5432` |
+| API | `8081` | `8080` | `dreamchat-world-backend/core/api` owns host `8080` |
+| Redis | `6379` | `6379` | — |
+| MinIO | `9000` / `9001` | same | — |
+| Playground UI | `5174` | — | `dreamchat-frontend` owns `5173` (`--strictPort`) |
+
+OpenAPI docs: <http://localhost:8081/docs>.
+
+## Playground console
+
+```bash
+cd playground && npm install && npm run dev    # http://localhost:5174
 ```
 
-## Mock Provider
+It proxies `/api/*` to `http://localhost:8081` (the backend ships no CORS).
+Paste the tenant and admin tokens into the Connection panel.
 
-Use mock provider by default locally.
+## Presigned URLs: `S3_PUBLIC_ENDPOINT`
 
-```txt
-IMAGE_PROVIDER=mock
+Containers write to MinIO at `http://minio:9000` — a Docker network name no
+browser can resolve. `S3_PUBLIC_ENDPOINT` is the origin presigned READ URLs are
+signed for; compose defaults it to `http://localhost:9000`. SigV4 signs the Host
+header, so a presigned URL can never be rewritten after signing — it must be
+signed for the host the client will actually call. Leave it unset in a
+deployment where reads and writes share an origin.
+
+## Providers
+
+`IMAGE_PROVIDER=mock` is the default and needs no key. Real keys come from your
+gitignored `./.env` (compose interpolates it) — never hardcode them in
+`docker-compose.yml`:
+
+```bash
+FAL_KEY=...        # fal.ai — real, identity/pack-capable (reference-conditioned)
+BFL_API_KEY=...    # Black Forest Labs — real, scene-only
 ```
 
-## Create Dev Token
+Both are read by the API *and* the worker; the worker is what actually calls the
+provider, so a key set on only one resolves a route that cannot execute.
 
-Use local admin CLI or seed migration to create a dev token.
+Two gotchas:
 
-The raw token should only be shown once.
+- **Mock is synthetic.** It may not satisfy identity-axis routes
+  (identity/pack/production) unless `ALLOW_SYNTHETIC_PROVIDERS=true`, which
+  compose sets for local dev. Without it, every character/place pack request
+  fails closed with `422`. Production must leave it off.
+- **Route priority is lower-is-preferred**: mock `100`, fal `200`. With
+  synthetic identity allowed, an unpinned request keeps resolving mock even when
+  `FAL_KEY` is set. Pin `provider_id: "fal"` per request, set
+  `IMAGE_PROVIDER=fal`, or turn `ALLOW_SYNTHETIC_PROVIDERS` off.
 
----
+Confirm what registered:
 
-## Confidence to Implement
+```bash
+docker compose logs image-platform-api | grep readiness
+# real_identity_capable_provider=true real_identity_providers=["fal"]
+```
 
-**Score: 80/100 — High**
+## Running fal locally (reference images must be public)
 
-The shape is right (Docker compose with Postgres/Redis/MinIO, `go run ./cmd/api` and `./cmd/worker`, mock provider env var, Swagger at `:8080/docs`). To actually be runnable on day one this needs: an actual `docker-compose.yml`, a `Makefile` (or `task`/`just` recipes) for `make up` / `make seed` / `make dev`, a seed migration that creates a `dci_dev_*` token, and a one-line bootstrap that pre-loads a `mock` row into `provider_models`. None of that is hard, just absent.
+fal is reference-conditioned: it downloads `image_urls` **from fal's servers**.
+A presigned `localhost` URL fails with
+`file_download_error: Failed to download the file`. The identity must also have
+anchor assets attached, or the job fails closed with `missing_reference_assets`
+before any provider call.
+
+Expose MinIO through a tunnel and presign against it:
+
+```bash
+cloudflared tunnel --url http://localhost:9000     # prints https://<name>.trycloudflare.com
+echo "S3_PUBLIC_ENDPOINT=https://<name>.trycloudflare.com" >> .env
+docker compose up -d image-platform-api image-platform-worker
+```
+
+> The compose bucket has anonymous download enabled, so while the tunnel is up
+> every object in it is world-readable to anyone holding a URL. Stop the tunnel
+> and drop the `.env` override as soon as you are done.
+
+## Common failures
+
+| Symptom | Cause |
+| --- | --- |
+| `422 provider_preference_unavailable` | request pinned a `provider_id` whose key is unset, so the provider is not registered |
+| `422 route_capability_mismatch` on a pack | mock is synthetic and `ALLOW_SYNTHETIC_PROVIDERS` is off |
+| pack fails `missing_reference_assets` | the visual identity has no anchor assets and the route is reference-conditioned |
+| `fal: … file_download_error` | `S3_PUBLIC_ENDPOINT` is not reachable from the public internet |
+| broken image thumbnails in the playground | `S3_PUBLIC_ENDPOINT` not set, so URLs point at `minio:9000` |
+| `compile: signal: killed` during build | Docker ran out of memory building both binaries at once — build them serially |
+
+## Other commands
+
+```bash
+make migrate-status
+make down          # stops the stack and DELETES its volumes
+go test ./...
+```

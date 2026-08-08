@@ -53,6 +53,7 @@ func main() {
 		Bucket:          cfg.S3Bucket,
 		Region:          cfg.S3Region,
 		Endpoint:        cfg.S3Endpoint,
+		PublicEndpoint:  cfg.S3PublicEndpoint,
 		AccessKeyID:     cfg.S3AccessKeyID,
 		SecretAccessKey: cfg.S3SecretAccessKey,
 		UsePathStyle:    cfg.S3UsePathStyle,

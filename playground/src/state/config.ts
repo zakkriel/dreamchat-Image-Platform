@@ -19,7 +19,7 @@ export interface PlaygroundConfig {
 const STORAGE_KEY = 'image-platform-playground.config'
 
 // Default base URL is the Vite dev proxy prefix (`/api`), which forwards to the
-// local API (http://localhost:8080 by default). Using the proxy avoids the
+// local API (http://localhost:8081 by default). Using the proxy avoids the
 // backend's lack of CORS. Override to a full origin if your API serves CORS.
 const DEFAULT_CONFIG: PlaygroundConfig = {
   baseUrl: '/api',
@@ -32,14 +32,24 @@ const DEFAULT_CONFIG: PlaygroundConfig = {
   activeVisualIdentityWorldId: '',
 }
 
+// Tokens injected by scripts/dev.sh via playground/.env.local, so a freshly
+// started stack needs no copy/paste. They are only a DEFAULT: anything already
+// saved in localStorage wins, and typing a token overwrites them.
+const INJECTED_TOKEN = import.meta.env.VITE_DEV_TENANT_TOKEN ?? ''
+const INJECTED_ADMIN_TOKEN = import.meta.env.VITE_DEV_ADMIN_TOKEN ?? ''
+
 function load(): PlaygroundConfig {
+  let stored: Partial<PlaygroundConfig> = {}
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return { ...DEFAULT_CONFIG }
-    return { ...DEFAULT_CONFIG, ...(JSON.parse(raw) as Partial<PlaygroundConfig>) }
+    if (raw) stored = JSON.parse(raw) as Partial<PlaygroundConfig>
   } catch {
-    return { ...DEFAULT_CONFIG }
+    // localStorage may be unavailable (private mode); fall back to defaults.
   }
+  const cfg = { ...DEFAULT_CONFIG, ...stored }
+  if (!cfg.token) cfg.token = INJECTED_TOKEN
+  if (!cfg.adminToken) cfg.adminToken = INJECTED_ADMIN_TOKEN
+  return cfg
 }
 
 let config: PlaygroundConfig = load()

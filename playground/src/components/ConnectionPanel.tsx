@@ -63,7 +63,7 @@ export function ConnectionPanel() {
     >
       <div className="grid">
         <Field label="API base URL">
-          <TextInput value={baseUrl} onChange={setBaseUrl} placeholder="/api or http://localhost:8080" />
+          <TextInput value={baseUrl} onChange={setBaseUrl} placeholder="/api or http://localhost:8081" />
         </Field>
         <Field label="Bearer token (tenant)">
           <TextInput value={token} onChange={setToken} placeholder="dci_dev_..." />
