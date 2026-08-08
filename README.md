@@ -10,6 +10,14 @@ delivery, provider routing, rate limits, RLS, webhooks — see
 the combined governance/cost contract `POST /v1/generations` (ADR-P002) and
 the cost-optimization waves (`docs/superpowers/plans/2026-08-07-cost-optimization-waves.md`).
 
+Integration status: the `dreamchat-world-backend` service is a **live consumer**
+through the **pull** contract (`POST /v1/generations` → poll `GET /v1/jobs/{id}` →
+`GET /v1/jobs/{id}/assets`), and the frontend renders portraits end to end through
+it. Outbound webhooks are deliberately **not** on that path — they are a future
+latency hint, never the readiness mechanism. See "Integration state" and
+"Before production (integration track)" in `IMPLEMENTATION_STATUS.md`, and
+`docs/api/integration-quickstart.md` to integrate.
+
 ## Authoritative docs
 
 - `DECISIONS.md` — locked stack, env vars, provider interface, deferrals.

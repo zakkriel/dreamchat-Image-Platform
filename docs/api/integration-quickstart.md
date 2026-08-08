@@ -126,11 +126,23 @@ belongs to a **different world**, or is already bound to a different identity
 (`422 invalid_anchor_asset`). The anchor set is replaced wholesale on each call.
 
 **When both are configured** (`FAL_KEY` set *and* `ALLOW_SYNTHETIC_PROVIDERS=true`,
-as in the current handshake stack) both providers are eligible and the resolver
-picks by route `priority` ascending: the mock route is `100`, fal's is `200`, so
-**mock wins and you get placeholders**. Turning synthetic off is what promotes fal
-— and immediately makes Sequence B's anchor mandatory. Confirm which one you got
-from the boot log:
+as in the handshake stack) both providers satisfy the identity floor and the
+resolver picks by route `priority` **ascending**: the mock route is `100`, fal's is
+`200`, so **mock wins and every portrait is a placeholder**. This is the single most
+common "why are my images grey squares" cause, and nothing about the response
+indicates it — you get a normal `202` and a normal `ready` asset.
+
+Two ways to tell which provider actually served a job, after the fact:
+
+```bash
+# per asset: provider_id / model_id are stamped provenance
+curl "$BASE/v1/assets/<asset_id>" -H "Authorization: Bearer $TOKEN" \
+  | jq '{provider_id, model_id}'
+# -> {"provider_id":"mock","model_id":"pm_mock_v1"}      placeholders
+# -> {"provider_id":"fal","model_id":"pm_fal_flux_kontext_multi"}   real
+```
+
+…and the boot log's one-line verdict:
 
 ```json
 {"msg":"provider capability readiness","real_identity_capable_provider":true,
@@ -138,6 +150,26 @@ from the boot log:
  "synthetic_identity_providers":["mock"],"synthetic_identity_allowed":true,
  "invalid_routes":1}
 ```
+
+**To flip to real output**, remove mock from the identity axis rather than trying to
+out-prioritise it:
+
+```bash
+export FAL_KEY=<key>
+export ALLOW_SYNTHETIC_PROVIDERS=false   # or unset it; false is the default
+make start                               # restart so the API re-reads config
+```
+
+Both `scripts/dev.sh` and `docker-compose.yml` read `ALLOW_SYNTHETIC_PROVIDERS`
+from the host (`${ALLOW_SYNTHETIC_PROVIDERS:-true}` locally), so exporting it is
+enough — no file edit. After the restart the boot log must show
+`synthetic_identity_allowed:false`, and mock's routes are then excluded from the
+identity axis, leaving `route_fal_text_to_image_identity` as the only match.
+
+**This immediately makes Sequence B's anchor mandatory** — fal is
+reference-conditioned, so any identity without a usable anchor now fails with
+`missing_reference_assets` instead of quietly returning a placeholder. Flip the
+provider and add the anchor step in the same change, not separately.
 
 ### 1.2 Token and scopes
 
@@ -240,8 +272,9 @@ Traps (both hit on the first attempts of the verification run, both `400`):
 of `open_prompt | preset_style | creator_style | provider_native`.
 
 Style profiles created through the API are **tenant-wide** (`world_id` is NULL);
-per-world style profiles are not creatable via the API. Create one and reuse its
-`id`, or list with `GET /v1/styles`.
+per-world style profiles are not creatable via the API. Create one and **persist its
+`id`** — listing via `GET /v1/styles` needs `styles:read`, which is deliberately not
+in the four scopes below, so that call returns `403` for a minimal client.
 
 ### Step 2 — visual identity (required, once per entity)
 
@@ -259,6 +292,29 @@ curl -X POST "$BASE/v1/characters/char_mira/visual-identity" \
  "style_profile_id":"sty_17c36e08344742e1","current_version":1,"status":"active",
  "canonical_visual_traits":{"build":"tall","eyes":"grey","hair":"short silver"}}
 ```
+
+**Every one of these six body fields is required.** Verified responses:
+
+| Field | Missing → | Notes |
+|---|---|---|
+| `owner_type` | `400 invalid_request` | must equal the route's type (`character` / `place`) |
+| `owner_id` | `400 invalid_request` | must equal the `{character_id}` path parameter |
+| `world_id` | `400 invalid_request` | part of the upsert key; **not** derived from the token |
+| `display_name` | `400 invalid_request` | also seeds the render description |
+| `style_profile_id` | `400 invalid_request` | invalid/foreign id → `422 invalid_style_profile` |
+| `canonical_visual_traits` | `400 invalid_request` — `"canonical_visual_traits is required"` | see below |
+
+`canonical_visual_traits` is the one that trips clients, because it is easy to miss
+in a request builder and its rule is presence, not content: **the key must be
+present, but `{}` is accepted** (verified — an empty object returns `200`). So a
+client can satisfy the validator while supplying nothing meaningful. Don't: these
+traits are the durable description of the subject and feed the render, so an empty
+map means every portrait for that entity is generated from the display name alone.
+Send the real traits.
+
+Note the mixed status codes — missing fields are `400 invalid_request`, while a
+style id that doesn't belong to your tenant is `422 invalid_style_profile`. Handle
+both.
 
 `owner_type` must match the route and `owner_id` must equal the path parameter.
 Upsert is keyed on `(tenant_id, world_id, owner_type, owner_id)`, so replaying this
