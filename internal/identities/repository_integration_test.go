@@ -47,6 +47,9 @@ const (
 func cleanup(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `DELETE FROM identity_cost_ledger WHERE tenant_id = $1`, itTenantID); err != nil {
+		t.Fatalf("cleanup identity ledger: %v", err)
+	}
 	if _, err := pool.Exec(ctx, `DELETE FROM visual_identity_versions WHERE visual_identity_id IN (SELECT id FROM visual_identities WHERE tenant_id = $1)`, itTenantID); err != nil {
 		t.Fatalf("cleanup versions: %v", err)
 	}

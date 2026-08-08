@@ -45,6 +45,9 @@ type fakeJobsRepo struct {
 	// failNextMarkCompleted makes the next MarkCompleted fail once, to force
 	// the asynq-retry path after a successful fan-out.
 	failNextMarkCompleted bool
+	// failNextMarkFailed makes the next terminal status CAS fail, proving the
+	// worker does not release a reservation it did not terminalize.
+	failNextMarkFailed bool
 
 	// Phase 6A4 pack supersede modeling. packTable is an in-memory visual_assets
 	// for pack-role slots; supersedeVariantCalls records each
@@ -145,7 +148,7 @@ func (r *fakeJobsRepo) MarkRunning(_ context.Context, id, tenantID string) (Job,
 	defer r.mu.Unlock()
 	r.markRunningCalls++
 	job, ok := r.jobs[id]
-	if !ok || job.TenantID != tenantID {
+	if !ok || job.TenantID != tenantID || job.Status != "queued" {
 		return Job{}, ErrNotFound
 	}
 	job.Status = "running"
@@ -161,7 +164,7 @@ func (r *fakeJobsRepo) MarkCompleted(_ context.Context, id, tenantID string, fin
 		return Job{}, errors.New("forced mark-completed failure")
 	}
 	job, ok := r.jobs[id]
-	if !ok || job.TenantID != tenantID {
+	if !ok || job.TenantID != tenantID || (job.Status != "running" && job.Status != "preview_ready") {
 		return Job{}, ErrNotFound
 	}
 	job.Status = "completed"
@@ -171,11 +174,34 @@ func (r *fakeJobsRepo) MarkCompleted(_ context.Context, id, tenantID string, fin
 	return job, nil
 }
 
+// ClaimPreviewFinalization models the production CAS that owns the
+// non-lazy final provider phase after a preview is committed.
+func (r *fakeJobsRepo) ClaimPreviewFinalization(_ context.Context, id, tenantID string) (Job, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	job, ok := r.jobs[id]
+	if !ok || job.TenantID != tenantID || (job.Status != "preview_ready" && job.Status != "queued") || len(job.PreviewAssetIds) == 0 || len(job.FinalAssetIds) != 0 || payloadBool(job.InputPayload, "lazy") {
+		return Job{}, ErrNotFound
+	}
+	if payloadBool(job.InputPayload, "preview_finalization_claimed") {
+		return Job{}, ErrNotFound
+	}
+	if job.InputPayload == nil {
+		job.InputPayload = map[string]any{}
+	}
+	job.InputPayload["preview_finalization_claimed"] = true
+	if job.Status == "queued" {
+		job.Status = "running"
+	}
+	r.jobs[id] = job
+	return job, nil
+}
+
 func (r *fakeJobsRepo) MarkPreviewReady(_ context.Context, id, tenantID string, previewAssetIDs []string) (Job, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	job, ok := r.jobs[id]
-	if !ok || job.TenantID != tenantID {
+	if !ok || job.TenantID != tenantID || job.Status != "running" {
 		return Job{}, ErrNotFound
 	}
 	job.Status = "preview_ready"
@@ -200,6 +226,18 @@ func (r *fakeJobsRepo) InsertFinalAssetAndCompleteJobIfNotCancelled(ctx context.
 	if job.Status == statusCancelled {
 		r.mu.Unlock()
 		return assets.VisualAsset{}, PersistSkippedCancelled, nil
+	}
+	if job.Status == "completed" {
+		r.mu.Unlock()
+		return assets.VisualAsset{}, PersistAlreadyCompleted, nil
+	}
+	if job.Status == "failed" {
+		r.mu.Unlock()
+		return assets.VisualAsset{}, PersistAlreadyTerminal, nil
+	}
+	if job.Status != "running" && job.Status != "preview_ready" {
+		r.mu.Unlock()
+		return assets.VisualAsset{}, PersistPersisted, errors.New("job is not active")
 	}
 	r.mu.Unlock()
 
@@ -234,6 +272,22 @@ func (r *fakeJobsRepo) InsertPreviewAssetAndMarkPreviewReadyIfNotCancelled(ctx c
 		r.mu.Unlock()
 		return assets.VisualAsset{}, PersistSkippedCancelled, nil
 	}
+	if job.Status == "preview_ready" {
+		r.mu.Unlock()
+		return assets.VisualAsset{}, PersistAlreadyPreviewReady, nil
+	}
+	if job.Status == "completed" {
+		r.mu.Unlock()
+		return assets.VisualAsset{}, PersistAlreadyCompleted, nil
+	}
+	if job.Status == "failed" {
+		r.mu.Unlock()
+		return assets.VisualAsset{}, PersistAlreadyTerminal, nil
+	}
+	if job.Status != "running" {
+		r.mu.Unlock()
+		return assets.VisualAsset{}, PersistPersisted, errors.New("job is not running")
+	}
 	r.mu.Unlock()
 
 	asset, err := r.assets.InsertPreview(ctx, params)
@@ -249,8 +303,12 @@ func (r *fakeJobsRepo) InsertPreviewAssetAndMarkPreviewReadyIfNotCancelled(ctx c
 func (r *fakeJobsRepo) MarkFailed(_ context.Context, id, tenantID, errorCode, errorMessage string, retryable bool) (Job, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.failNextMarkFailed {
+		r.failNextMarkFailed = false
+		return Job{}, errors.New("forced mark-failed failure")
+	}
 	job, ok := r.jobs[id]
-	if !ok || job.TenantID != tenantID {
+	if !ok || job.TenantID != tenantID || (job.Status != "queued" && job.Status != "running" && job.Status != "preview_ready") {
 		return Job{}, ErrNotFound
 	}
 	job.Status = "failed"
@@ -301,6 +359,11 @@ func (r *fakeJobsRepo) CountProviderAttempts(_ context.Context, jobID string) (i
 func (r *fakeJobsRepo) InsertCostEvent(_ context.Context, params CostEventInsertParams) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	for _, existing := range r.costEvents {
+		if existing.ID == params.ID {
+			return errors.New("duplicate cost event")
+		}
+	}
 	r.costEvents = append(r.costEvents, params)
 	return nil
 }
@@ -764,6 +827,31 @@ func TestWorkerProcessProviderErrorOnFinalAttemptMarksFailed(t *testing.T) {
 	}
 	if job.Retryable == nil || *job.Retryable {
 		t.Fatalf("expected retryable=false on final failure, got %v", job.Retryable)
+	}
+}
+
+func TestWorkerIgnoresTaskAfterReservationChanged(t *testing.T) {
+	jobsRepo := newFakeJobsRepo()
+	assetsRepo := &fakeAssetsRepo{}
+	jobsRepo.assets = assetsRepo
+	newReservation := "resv_retry"
+	jobsRepo.jobs["job_stale_task"] = Job{
+		ID:                "job_stale_task",
+		TenantID:          "tenant_a",
+		JobType:           "artifact",
+		Status:            "queued",
+		CostReservationID: &newReservation,
+		InputPayload:      withDefaultResolvedRoute(map[string]any{"description": "stale"}),
+	}
+	w := &Worker{
+		Jobs: jobsRepo, Assets: assetsRepo, Storage: &fakeStorage{},
+		Providers: testRegistry(mock.New()), Finalizer: &fakeFinalizer{},
+	}
+	if err := w.ProcessForReservation(context.Background(), "job_stale_task", "resv_old", 0); err != nil {
+		t.Fatalf("stale task should be ignored, got %v", err)
+	}
+	if jobsRepo.markRunningCalls != 0 || len(jobsRepo.attempts) != 0 || len(assetsRepo.stored) != 0 {
+		t.Fatalf("stale task had side effects: running=%d attempts=%+v assets=%+v", jobsRepo.markRunningCalls, jobsRepo.attempts, assetsRepo.stored)
 	}
 }
 

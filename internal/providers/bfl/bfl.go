@@ -171,17 +171,18 @@ func (p *Provider) Generate(ctx context.Context, req providers.ProviderGenerateR
 
 	imageURL, err := p.poll(ctx, submitted)
 	if err != nil {
-		return providers.ProviderGenerateResult{}, err
+		return providers.ProviderGenerateResult{ProviderJobID: submitted.ID, ProviderRequestID: submitted.ID}, err
 	}
 
 	imgBytes, contentType, err := p.download(ctx, imageURL)
 	if err != nil {
-		return providers.ProviderGenerateResult{}, err
+		return providers.ProviderGenerateResult{ProviderJobID: submitted.ID, ProviderRequestID: submitted.ID}, err
 	}
 
 	return providers.ProviderGenerateResult{
-		ProviderJobID: submitted.ID,
-		Status:        providers.JobStatusCompleted,
+		ProviderJobID:     submitted.ID,
+		ProviderRequestID: submitted.ID,
+		Status:            providers.JobStatusCompleted,
 		Images: []providers.ProviderImage{{
 			URL:         imageURL,
 			Bytes:       imgBytes,

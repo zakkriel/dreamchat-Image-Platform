@@ -2,9 +2,9 @@
 
 > **Goal:** reduce image-generation cost without degrading quality/identity
 > consistency and without compromising the non-censorship boundary.
-> **Wave 1 is implemented** (see
-> `docs/superpowers/specs/2026-08-07-cost-optimization-wave1-design.md`).
-> Waves 2+ are planned work, each its own chunk/PR.
+> **Waves 1–3 are the implementation scope for this pass.** Wave 4 is
+> specification-only and remains behind explicit benchmark, quality, economic,
+> and operational gates. See `docs/superpowers/specs/2026-08-08-wave4-amortization-design.md`.
 
 ## Non-negotiable constraints (apply to every wave)
 
@@ -56,31 +56,49 @@ suite against Postgres 15 (migrations v17). OpenAPI mirrors untouched.
    status, DECISIONS env vars, ADR-014 implementation note,
    idempotency.md canonical header.
 
-## Wave 3 — Measurement + cost accounting truth
+## Wave 3 — Measurement + cost accounting truth (DONE — PR pending)
+
+> Design + verification: `docs/superpowers/specs/2026-08-08-wave3-cost-truth-design.md`.
 
 1. Telemetry: cache-hit rate, $/usable image, policy-reject rate,
    estimated-vs-actual variance, fallback frequency (structured events or
    counters; referee for every later lever).
-2. Billable-operation accounting: preview call, final call, per-route failed
-   attempt, pack cell — reserve for the worst-case billable plan (matters
-   before any real `true_preview` provider exists; today only mock).
+2. Billable-operation accounting: the reservation covers the calls a run
+   *plans* to make — one per missing pack cell, doubled for a true preview's
+   preview + final. Retries and fallback routes are failure paths: they are
+   billed as reservation-scoped cost events and reconciled against the hold,
+   never pre-charged onto it (pre-charging the retry cap denies requests that
+   are inside their budget).
 3. Provider-reported actual cost capture + reconciliation;
-   `identity_cost_ledger` updates from committed cost events (ADR-P003 seam).
+   `identity_cost_ledger` updates from committed cost events; provider events are
+   attributed to the active cost reservation so retries cannot double-charge.
 4. Enforce `max_megapixels` at the worker or reject it — stop silently
    clamping (bump `GenerationRenderHash` version when it becomes behavioral).
 5. Pack fallback execution parity: `ProcessPack` walks persisted same-price
    fallbacks like the single-image path (they are currently persisted but
    unused), with the same content-policy stop rule.
 
-## Wave 4 — Amortization (ADR-P003 / PRD 08)
+## Wave 4 — Amortization (SPEC ONLY — NOT IMPLEMENTED)
 
-1. **Sprite-sheet benchmark FIRST** (no platform code): fal Kontext 2×2 / 2×5
-   sheets from an anchor; measure per-pane identity consistency, pane
-   separation, usable-pane rate, true $/usable image vs N singles. Gate: only
-   lift the `grid.enabled` 501 if the benchmark clears the quality bar.
+> Specification + release gates:
+> `docs/superpowers/specs/2026-08-08-wave4-amortization-design.md`.
+> The only Wave 4 code that exists is the gate-1 benchmark harness
+> (`cmd/sprite-sheet-benchmark`), which is standalone measurement
+> tooling — no API, worker, or schema path depends on it.
+
+1. **Sprite-sheet benchmark FIRST** (no platform code): run
+   `go run ./cmd/sprite-sheet-benchmark` against fal Kontext 2×2 / 2×5 sheets
+   from an anchor. It records per-pane validity, latency, and provider-reported
+   cost, and prints usable-pane rate and true $/usable image; identity
+   consistency and pane separation are left blank for a human reviewer. Gate
+   thresholds (≥30 samples, ≥90% usable panes, ≤70% of the single-image cost)
+   are in the Wave 4 design spec. Only lift the `grid.enabled` 501 once every
+   gate is recorded as passed.
 2. Sprite-sheet pipeline on the Chunk-1 schema (`sprite_sheet_contract` /
    `sprite_sheet_slice`): one governed generation, deterministic slicing,
-   per-cell validation, targeted regeneration of failed cells only.
+   malformed-sheet fallback to separately governed expression calls, read-path
+   manifests for missing cells, and structural per-cell validation. This is a
+   design target only; no runtime sprite-sheet pipeline is shipped in Wave 3.
 3. Anchor-derive as the default recurring-identity path: premium tier for
    anchors, standard reference-conditioned tier for derivations; never
    regenerate an anchor to produce a variant.
@@ -103,4 +121,8 @@ suite against Postgres 15 (migrations v17). OpenAPI mirrors untouched.
   retry's response).
 - Anchor updates don't bump identity versions; packs don't snapshot
   `visual_identity_version`.
+- Wave 4 amortization is specification-only. Real-provider billing/quality
+  evidence, provider capability gating, vision-based identity/separation
+  assessment, targeted regeneration, anchor-derive defaults, and lazy finalization
+  remain deferred behind the release gates in the Wave 4 design spec.
 - Worker RLS posture (BYPASSRLS by construction) — documented, accepted.

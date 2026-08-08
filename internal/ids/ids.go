@@ -9,22 +9,23 @@ import (
 )
 
 const (
-	PrefixStyleProfile    = "sty"
-	PrefixVisualIdentity  = "vi"
-	PrefixGenerationJob   = "job"
-	PrefixVisualAsset     = "asset"
-	PrefixProviderAttempt = "att"
-	PrefixCostEvent       = "ce"
-	PrefixCostReservation = "resv"
-	PrefixIdempotencyKey  = "idem"
-	PrefixBudgetHold      = "hold"
-	PrefixProviderPrice   = "price"
-	PrefixCostBudget      = "bud"
-	PrefixAuditEvent      = "audit"
-	PrefixAssetPack       = "pack"
-	PrefixAssetPackItem   = "pki"
-	PrefixWebhookEndpoint = "whe"
-	PrefixWebhookDelivery = "whd"
+	PrefixStyleProfile       = "sty"
+	PrefixVisualIdentity     = "vi"
+	PrefixGenerationJob      = "job"
+	PrefixVisualAsset        = "asset"
+	PrefixProviderAttempt    = "att"
+	PrefixCostEvent          = "ce"
+	PrefixCostReservation    = "resv"
+	PrefixIdempotencyKey     = "idem"
+	PrefixBudgetHold         = "hold"
+	PrefixProviderPrice      = "price"
+	PrefixCostBudget         = "bud"
+	PrefixIdentityCostLedger = "icl"
+	PrefixAuditEvent         = "audit"
+	PrefixAssetPack          = "pack"
+	PrefixAssetPackItem      = "pki"
+	PrefixWebhookEndpoint    = "whe"
+	PrefixWebhookDelivery    = "whd"
 )
 
 // New returns an opaque ID of the form "<prefix>_<16 hex chars>".
@@ -32,17 +33,19 @@ func New(prefix string) string {
 	return prefix + "_" + randomHex(8)
 }
 
-func NewStyleProfileID() string    { return New(PrefixStyleProfile) }
-func NewVisualIdentityID() string  { return New(PrefixVisualIdentity) }
-func NewGenerationJobID() string   { return New(PrefixGenerationJob) }
-func NewVisualAssetID() string     { return New(PrefixVisualAsset) }
-func NewProviderAttemptID() string { return New(PrefixProviderAttempt) }
-func NewCostEventID() string       { return New(PrefixCostEvent) }
-func NewCostReservationID() string { return New(PrefixCostReservation) }
-func NewIdempotencyKeyID() string  { return New(PrefixIdempotencyKey) }
-func NewBudgetHoldID() string      { return New(PrefixBudgetHold) }
-func NewProviderPriceID() string   { return New(PrefixProviderPrice) }
-func NewCostBudgetID() string      { return New(PrefixCostBudget) }
+func NewStyleProfileID() string       { return New(PrefixStyleProfile) }
+func NewVisualIdentityID() string     { return New(PrefixVisualIdentity) }
+func NewGenerationJobID() string      { return New(PrefixGenerationJob) }
+func NewVisualAssetID() string        { return New(PrefixVisualAsset) }
+func NewProviderAttemptID() string    { return New(PrefixProviderAttempt) }
+func NewCostEventID() string          { return New(PrefixCostEvent) }
+func NewCostReservationID() string    { return New(PrefixCostReservation) }
+func NewIdempotencyKeyID() string     { return New(PrefixIdempotencyKey) }
+func NewBudgetHoldID() string         { return New(PrefixBudgetHold) }
+func NewProviderPriceID() string      { return New(PrefixProviderPrice) }
+func NewCostBudgetID() string         { return New(PrefixCostBudget) }
+func NewIdentityCostLedgerID() string { return New(PrefixIdentityCostLedger) }
+
 func NewAuditEventID() string      { return New(PrefixAuditEvent) }
 func NewAssetPackID() string       { return New(PrefixAssetPack) }
 func NewAssetPackItemID() string   { return New(PrefixAssetPackItem) }

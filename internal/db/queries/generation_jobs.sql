@@ -8,14 +8,14 @@ INSERT INTO generation_jobs (
     governance_envelope, classification_id, visibility, content_class,
     authorized_by, governance_verified_at,
     intent, transform_only, transform, max_megapixels, lazy,
-    anchor_asset_id, derive_from
+    anchor_asset_id, derive_from, visual_identity_id
 ) VALUES (
     $1, $2, $3, $4, 'queued',
     $5, $6, $7, $8,
     $9, $10, $11, $12,
     $13, $14,
     $15, $16, $17, $18, $19,
-    $20, $21
+    $20, $21, $22
 )
 RETURNING id, tenant_id, world_id, job_type, status,
           requested_by_token_id, visual_identity_id, asset_pack_id,
@@ -39,14 +39,14 @@ RETURNING id, tenant_id, world_id, job_type, status,
 -- never enqueued and the worker never processes it, so the terminal-job
 -- finalizer (which would otherwise commit a reservation) is never invoked on it.
 INSERT INTO generation_jobs (
-    id, tenant_id, world_id, job_type, status,
+    id, tenant_id, world_id, visual_identity_id, job_type, status,
     requested_by_token_id, input_payload, requested_outputs,
     fallback_policy, cache_result, final_asset_ids,
     cost_estimate_usd, actual_cost_usd, completed_at
 ) VALUES (
-    $1, $2, $3, $4, 'completed',
-    $5, $6, sqlc.arg('requested_outputs'),
-    $7, 'exact_match', sqlc.arg('final_asset_ids'),
+    $1, $2, $3, $4, $5, 'completed',
+    $6, $7, sqlc.arg('requested_outputs'),
+    $8, 'exact_match', sqlc.arg('final_asset_ids'),
     0, 0, now()
 )
 RETURNING id, tenant_id, world_id, job_type, status,
@@ -72,14 +72,14 @@ RETURNING id, tenant_id, world_id, job_type, status,
 -- final_asset_ids points at the reused assets, in role order. This row is never
 -- enqueued and the worker never processes it.
 INSERT INTO generation_jobs (
-    id, tenant_id, world_id, job_type, status,
+    id, tenant_id, world_id, visual_identity_id, job_type, status,
     requested_by_token_id, input_payload, requested_outputs,
     fallback_policy, cache_result, final_asset_ids,
     cost_estimate_usd, actual_cost_usd, completed_at
 ) VALUES (
-    $1, $2, $3, $4, 'completed',
-    $5, $6, sqlc.arg('requested_outputs'),
-    $7, sqlc.arg('cache_result'), sqlc.arg('final_asset_ids'),
+    $1, $2, $3, $4, $5, 'completed',
+    $6, $7, sqlc.arg('requested_outputs'),
+    $8, sqlc.arg('cache_result'), sqlc.arg('final_asset_ids'),
     0, 0, now()
 )
 RETURNING id, tenant_id, world_id, job_type, status,
@@ -183,6 +183,7 @@ RETURNING id, tenant_id, world_id, job_type, status,
 -- name: RetryResetGenerationJob :one
 UPDATE generation_jobs
 SET status = 'queued',
+    input_payload = input_payload - 'preview_finalization_claimed',
     error_code = NULL,
     error_message = NULL,
     retryable = NULL,
@@ -225,6 +226,8 @@ SELECT id, tenant_id, world_id, job_type, status,
 FROM generation_jobs
 WHERE id = $1
   AND tenant_id = $2
+  AND (sqlc.narg('cost_reservation_id')::text IS NULL
+       OR cost_reservation_id = sqlc.narg('cost_reservation_id'))
 FOR UPDATE;
 
 -- name: MarkGenerationJobRunning :one
@@ -234,6 +237,40 @@ SET status = 'running',
     updated_at = now()
 WHERE id = $1
   AND tenant_id = $2
+  AND status = 'queued'
+  AND (sqlc.narg('cost_reservation_id')::text IS NULL
+       OR cost_reservation_id = sqlc.narg('cost_reservation_id'))
+RETURNING id, tenant_id, world_id, job_type, status,
+          requested_by_token_id, visual_identity_id, asset_pack_id,
+          input_payload, requested_outputs, fallback_policy, cache_result,
+          preview_asset_ids, final_asset_ids,
+          error_code, error_message, retryable,
+          cost_reservation_id, cost_estimate_usd, actual_cost_usd,
+          queue_duration_ms, generation_duration_ms,
+          created_at, updated_at, started_at, completed_at,
+          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at,
+          intent, transform_only, transform, max_megapixels, lazy,
+          anchor_asset_id, derive_from;
+
+-- ClaimPreviewFinalization atomically claims the final phase after a
+-- non-lazy preview has been committed. It keeps status=preview_ready so readers
+-- can distinguish the delivered preview while the final provider call runs.
+-- A first delivery wins by setting a durable marker; retry deliveries are
+-- admitted by the worker using asynq's retry count after a crash.
+-- name: ClaimPreviewFinalization :one
+UPDATE generation_jobs
+SET status = CASE WHEN status = 'queued' THEN 'running' ELSE status END,
+    started_at = COALESCE(started_at, now()),
+    input_payload = input_payload || jsonb_build_object('preview_finalization_claimed', true),
+    updated_at = now()
+WHERE id = $1
+  AND tenant_id = $2
+  AND status IN ('preview_ready', 'queued')
+  AND cardinality(preview_asset_ids) > 0
+  AND cardinality(final_asset_ids) = 0
+  AND COALESCE(input_payload->>'preview_finalization_claimed', 'false') <> 'true'
+  AND (sqlc.narg('cost_reservation_id')::text IS NULL
+       OR cost_reservation_id = sqlc.narg('cost_reservation_id'))
 RETURNING id, tenant_id, world_id, job_type, status,
           requested_by_token_id, visual_identity_id, asset_pack_id,
           input_payload, requested_outputs, fallback_policy, cache_result,
@@ -254,6 +291,9 @@ SET status = 'completed',
     updated_at = now()
 WHERE id = $1
   AND tenant_id = $2
+  AND status IN ('running', 'preview_ready')
+  AND (sqlc.narg('cost_reservation_id')::text IS NULL
+       OR cost_reservation_id = sqlc.narg('cost_reservation_id'))
 RETURNING id, tenant_id, world_id, job_type, status,
           requested_by_token_id, visual_identity_id, asset_pack_id,
           input_payload, requested_outputs, fallback_policy, cache_result,
@@ -279,6 +319,9 @@ SET status = 'preview_ready',
     updated_at = now()
 WHERE id = $1
   AND tenant_id = $2
+  AND status = 'running'
+  AND (sqlc.narg('cost_reservation_id')::text IS NULL
+       OR cost_reservation_id = sqlc.narg('cost_reservation_id'))
 RETURNING id, tenant_id, world_id, job_type, status,
           requested_by_token_id, visual_identity_id, asset_pack_id,
           input_payload, requested_outputs, fallback_policy, cache_result,
@@ -301,6 +344,9 @@ SET status = 'failed',
     updated_at = now()
 WHERE id = $1
   AND tenant_id = $2
+  AND status IN ('queued', 'running', 'preview_ready')
+  AND (sqlc.narg('cost_reservation_id')::text IS NULL
+       OR cost_reservation_id = sqlc.narg('cost_reservation_id'))
 RETURNING id, tenant_id, world_id, job_type, status,
           requested_by_token_id, visual_identity_id, asset_pack_id,
           input_payload, requested_outputs, fallback_policy, cache_result,

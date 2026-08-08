@@ -102,7 +102,15 @@ return synchronously and don't waste provider attempts.
 5. **Estimated cost calculated.** `estimated_amount = price_per_unit ×
    units(request)` where `units` is derived from the request (image
    count for `unit_type=image`; output area for `megapixel`; etc.).
-   Sum across operations for batch / pack jobs.
+   Sum across operations for batch / pack jobs. The Wave 3 reservation covers the
+   calls one run *plans* to make: priced cells × preview phases (a true preview
+   bills a preview and a final). Retries and same-price fallback routes are
+   failure paths and are deliberately NOT multiplied into the hold — each
+   attempt writes its own reservation-scoped cost event and is reconciled
+   against the hold at terminal finalization, so failure spend is recorded
+   truthfully without denying requests that are inside their budget. Sprite-sheet amortization is not
+   enabled in Wave 3; its reservation and fallback accounting are defined in
+   `docs/superpowers/specs/2026-08-08-wave4-amortization-design.md`.
 6. **Budget checked.** For every applicable budget (tenant always; plus
    token / world / user when set), verify
    `limit_amount - reserved_amount - spent_amount >= estimated_amount`
@@ -131,8 +139,8 @@ return synchronously and don't waste provider attempts.
 11. **Cost event emitted.** Insert a `generation_cost_event` row for
     telemetry (existing table in `docs/db/initial_schema.sql`). This
     row carries provider, model, operation, estimated, actual,
-    duration, and job ID — the same fields the cost-spike runbook
-    queries via `GET /v1/admin/cost-events`.
+    duration, job ID, and the reservation ID that priced the attempt — the same
+    fields the cost-spike runbook queries via `GET /v1/admin/cost-events`.
 
 ## 4. Behavior rules
 
@@ -171,10 +179,11 @@ Jobs always store both:
 
 - **Estimated:** from §3 step 5; immutable after `reserved`.
 - **Actual:** from the provider's billing response, written when the
-  reservation transitions to `committed`. May be null if the provider
-  doesn't report per-call cost — in which case `actual_amount =
-  estimated_amount` is committed and a `cost_event.notes` line records
-  that it's a fallback.
+  reservation reaches terminal finalization. It may be null on a plain release
+  when no provider charge was reported. On a successful commit without a
+  provider actual, `actual_amount = estimated_amount` is used as the explicit
+  estimate fallback; a released job with a reported partial charge commits
+  that partial actual and releases the unused remainder.
 
 ### 4.4 Reservations prevent overselling
 
@@ -208,7 +217,7 @@ counter.
 | Budget exceeded | §3 step 6/7 | 422 `budget_exceeded` | Reservation `failed`, `failure_reason=budget_exceeded`. |
 | Reservation race lost | §3 step 7 | 422 `budget_exceeded` | Same as above. |
 | Provider charges more than estimated | §3 step 9 | None (logged) | `committed` records `actual_amount`. Cost-spike monitor watches the estimate-vs-actual ratio and warns at +50% / +100% (`observability.md`). |
-| Provider doesn't report cost | §3 step 9 | None | `actual_amount = estimated_amount`; `cost_event.notes` flags `actual_inferred_from_estimate`. |
+| Provider doesn't report cost | §3 step 9 | None | `actual_amount = estimated_amount`; the cost event retains billable-operation metadata and no invented provider actual. |
 
 ## 6. Operational integration
 
@@ -236,10 +245,11 @@ counter.
 - **Per-period reset semantics** — daily resets at tenant-local
   midnight or UTC? Spec'd as UTC for MVP; revisit when the platform
   serves customers across timezones.
-- **Provider-reported cost reconciliation** — for providers that report
-  with delay (hours), the reservation stays in `committed` with
-  `actual_amount = estimated_amount` until reconciliation overwrites
-  it. The reconciliation worker is unspecified here.
+- **Scheduled provider-cost polling** — for providers that report with delay
+  (hours), a polling worker is still unspecified here. Wave 3 does reconcile
+  provider events that arrive after worker terminalization against the exact
+  committed/released reservation; delayed provider APIs need a separate
+  ingestion trigger.
 
 ---
 

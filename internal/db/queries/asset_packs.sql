@@ -37,10 +37,22 @@ UPDATE asset_packs
 SET delivered_roles = sqlc.arg('delivered_roles'),
     missing_roles = sqlc.arg('missing_roles'),
     updated_at = now()
-WHERE id = sqlc.arg('id');
+WHERE id = sqlc.arg('id')
+  AND status IN ('planned', 'in_progress');
 
 -- SetGenerationJobAssetPack links the job to the pack it created. Run inside
 -- the create transaction, after both rows exist.
+-- UpdateAssetPackCompletenessForJob is the retry-safe variant. It allows the
+-- same generation job to correct a terminal pack status after a bookkeeping
+-- failure, but never lets an unrelated/stale job rewrite the pack.
+-- name: UpdateAssetPackCompletenessForJob :exec
+UPDATE asset_packs
+SET delivered_roles = sqlc.arg('delivered_roles'),
+    missing_roles = sqlc.arg('missing_roles'),
+    updated_at = now()
+WHERE id = sqlc.arg('id')
+  AND created_by_job_id = sqlc.arg('generation_job_id');
+
 -- name: SetGenerationJobAssetPack :exec
 UPDATE generation_jobs
 SET asset_pack_id = sqlc.arg(asset_pack_id),
@@ -51,7 +63,18 @@ WHERE id = sqlc.arg(id);
 UPDATE asset_packs
 SET status = sqlc.arg(status),
     updated_at = now()
-WHERE id = sqlc.arg(id);
+WHERE id = sqlc.arg(id)
+  AND status IN ('planned', 'in_progress');
+
+-- UpdateAssetPackStatusForJob is the retry-safe variant. Terminal statuses
+-- may be corrected only by the generation job that owns the pack.
+-- name: UpdateAssetPackStatusForJob :exec
+UPDATE asset_packs
+SET status = sqlc.arg(status),
+    updated_at = now()
+WHERE id = sqlc.arg(id)
+  AND created_by_job_id = sqlc.arg(generation_job_id)
+  AND status IN ('planned', 'in_progress', 'completed', 'completed_with_warnings', 'failed');
 
 -- name: InsertAssetPackItem :exec
 INSERT INTO asset_pack_items (

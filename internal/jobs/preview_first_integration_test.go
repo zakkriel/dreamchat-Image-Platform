@@ -231,8 +231,11 @@ func TestEndToEndPreviewFirstArtifact(t *testing.T) {
 	if got := scalar(t, pool, `SELECT status FROM cost_reservations WHERE generation_job_id=$1`, jobID); got != "committed" {
 		t.Fatalf("expected committed reservation, got %s", got)
 	}
-	if got := scalar(t, pool, `SELECT actual_cost_usd::text FROM generation_jobs WHERE id=$1`, jobID); got != "0.0100" {
-		t.Fatalf("expected actual_cost 0.0100 (single charge), got %s", got)
+	// One reservation, charged once. The amount is 2 x the 0.0100 unit price
+	// because a true preview genuinely makes two provider calls (preview and
+	// final) - that is the Wave 3 phase sizing, not a double charge.
+	if got := scalar(t, pool, `SELECT actual_cost_usd::text FROM generation_jobs WHERE id=$1`, jobID); got != "0.0200" {
+		t.Fatalf("expected actual_cost 0.0200 (preview + final, charged once), got %s", got)
 	}
 }
 

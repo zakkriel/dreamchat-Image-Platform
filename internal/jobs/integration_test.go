@@ -109,10 +109,18 @@ func cleanup(t *testing.T, pool *pgxpool.Pool) {
 	// asset_pack_items FKs both visual_assets and asset_packs; clear it first.
 	exec(`DELETE FROM asset_pack_items WHERE asset_pack_id IN (SELECT id FROM asset_packs WHERE tenant_id = $1)`, itTenant)
 	exec(`DELETE FROM visual_assets WHERE tenant_id = $1`, itTenant)
+	// identity_cost_ledger references visual_identities; clear it before the
+	// identity rows used by the test tenant.
+	exec(`DELETE FROM identity_cost_ledger WHERE tenant_id = $1`, itTenant)
 	// asset_packs FKs visual_identities + style_profiles + api_tokens; clear
 	// before all three.
 	exec(`DELETE FROM asset_packs WHERE tenant_id = $1`, itTenant)
 	exec(`DELETE FROM visual_identity_versions WHERE visual_identity_id IN (SELECT id FROM visual_identities WHERE tenant_id = $1)`, itTenant)
+	// generation_jobs.visual_identity_id FKs visual_identities (Wave 3:
+	// generations_handler.go now populates it) — break the link before
+	// deleting the identity rows, mirroring the cost_reservation_id
+	// circular-FK break below.
+	exec(`UPDATE generation_jobs SET visual_identity_id = NULL WHERE tenant_id = $1`, itTenant)
 	exec(`DELETE FROM visual_identities WHERE tenant_id = $1`, itTenant)
 	// cost_reservation_budget_holds references both cost_reservations and
 	// cost_budgets; clear it before either.

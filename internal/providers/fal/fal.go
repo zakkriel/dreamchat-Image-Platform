@@ -224,16 +224,16 @@ func (p *Provider) Generate(ctx context.Context, req providers.ProviderGenerateR
 		if ctx.Err() != nil {
 			p.cancel(submitted)
 		}
-		return providers.ProviderGenerateResult{}, err
+		return providers.ProviderGenerateResult{ProviderJobID: submitted.RequestID, ProviderRequestID: submitted.RequestID}, err
 	}
 	if len(result.Images) == 0 || result.Images[0].URL == "" {
-		return providers.ProviderGenerateResult{}, fmt.Errorf("%w: completed result missing image url", ErrProvider)
+		return providers.ProviderGenerateResult{ProviderJobID: submitted.RequestID, ProviderRequestID: submitted.RequestID}, fmt.Errorf("%w: completed result missing image url", ErrProvider)
 	}
 
 	img := result.Images[0]
 	imgBytes, contentType, err := p.download(ctx, img.URL)
 	if err != nil {
-		return providers.ProviderGenerateResult{}, err
+		return providers.ProviderGenerateResult{ProviderJobID: submitted.RequestID, ProviderRequestID: submitted.RequestID}, err
 	}
 	if img.ContentType != "" {
 		contentType = img.ContentType
@@ -245,8 +245,9 @@ func (p *Provider) Generate(ctx context.Context, req providers.ProviderGenerateR
 	}
 
 	return providers.ProviderGenerateResult{
-		ProviderJobID: submitted.RequestID,
-		Status:        providers.JobStatusCompleted,
+		ProviderJobID:     submitted.RequestID,
+		ProviderRequestID: submitted.RequestID,
+		Status:            providers.JobStatusCompleted,
 		Images: []providers.ProviderImage{{
 			URL:         img.URL,
 			Bytes:       imgBytes,

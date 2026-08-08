@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/identities"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
 	"github.com/zakkriel/drchat-image-platform/internal/providers/routing"
+	"github.com/zakkriel/drchat-image-platform/internal/telemetry"
 )
 
 // AuditSink is the handler-facing audit-emission seam. Implementations open a
@@ -39,7 +41,8 @@ type GenerationReuseLookup interface {
 }
 
 // platformCeiling is the maximum megapixel value the platform will accept
-// from a caller. Requests above this are clamped to this ceiling.
+// from a caller. Requests above this value are rejected; they are never
+// silently rewritten into a cheaper/different render contract.
 const platformCeiling float64 = 4.0
 
 // capabilityIdentityCapable is required by the POST /v1/generations endpoint:
@@ -160,6 +163,12 @@ func (h *GenerationsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// Render: intent must be "draft" or "commit".
 	if req.Render.Intent != apigen.IntentDraft && req.Render.Intent != apigen.IntentCommit {
 		httperr.Write(w, r, http.StatusUnprocessableEntity, httperr.CodeInvalidRequest, "render.intent must be one of: draft, commit")
+		return
+	}
+
+	maxMegapixels, mpErr := validateMegapixels(req.Render.MaxMegapixels, platformCeiling)
+	if mpErr != nil {
+		httperr.Write(w, r, http.StatusUnprocessableEntity, httperr.CodeInvalidRequest, mpErr.Error())
 		return
 	}
 
@@ -302,15 +311,18 @@ func (h *GenerationsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		AnchorAssetID: deref(req.Subject.AnchorAssetId),
 		DeriveFrom:    deref(req.Subject.DeriveFrom),
 		Intent:        string(req.Render.Intent),
+		MaxMegapixels: maxMegapixels,
 		TransformJSON: transformJSON,
 	})
 	if h.Reuse != nil {
 		existing, rerr := h.Reuse.FindReadyGenerationByPromptHash(r.Context(), tenantID, renderHash)
 		switch {
 		case rerr == nil:
-			h.respondCacheHit(w, r, tenantID, principal.TokenID, req, renderHash, existing.ID, idemKey, endpoint, requestHash)
+			telemetry.DefaultMetrics().RecordCacheHit()
+			h.respondCacheHit(w, r, tenantID, principal.TokenID, identity.ID, req, renderHash, existing.ID, idemKey, endpoint, requestHash)
 			return
 		case errors.Is(rerr, assets.ErrNotFound):
+			telemetry.DefaultMetrics().RecordCacheMiss()
 			// miss: fall through to the normal resolve/reserve/enqueue path.
 		default:
 			httperr.Write(w, r, http.StatusInternalServerError, httperr.CodeInternalError, "could not check generation reuse")
@@ -352,22 +364,27 @@ func (h *GenerationsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// Build the job payload and params. applyResolvedRoute stamps the resolved
 	// provider/model/route onto both params and payload.
 	payload := map[string]any{}
+	identityID := identity.ID
 	params := jobs.CreateAndEnqueueParams{
 		TenantID:           tenantID,
 		RequestedByTokenID: principal.TokenID,
 		JobType:            "generation",
+		WorldID:            identity.WorldID,
+		VisualIdentityID:   &identityID,
 		InputPayload:       payload,
+		FallbackPolicy:     string(apigen.CompatibleOnly),
 		CacheResult:        "generated_required",
 		Units:              1,
 		MaxConcurrentJobs:  principal.Limits.MaxConcurrentJobs,
 	}
 	applyResolvedRoute(&params, payload, resolved)
+	// Persist the ordered alternate routes alongside the primary. The worker
+	// must execute this resolved chain without re-resolving or re-pricing.
+	applyFallbackChain(&params, resolveFallbackChain(r.Context(), h.Resolver, resolveReq))
 
-	// Step 11: MP clamp + identity-derived description + contract objects → params.
+	// Step 11: validated MP budget + identity-derived description + contract objects → params.
 
-	// Clamp max_megapixels (nil → ceiling).
-	clamped := clampMegapixels(req.Render.MaxMegapixels, platformCeiling)
-	params.MaxMegapixels = &clamped
+	params.MaxMegapixels = &maxMegapixels
 
 	// Seed payload["description"] from the fetched identity (identity-derived prompt).
 	// This mirrors the pack flow's identity.DisplayName → payload["display_name"] path.
@@ -384,6 +401,7 @@ func (h *GenerationsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// Store raw contract objects in the payload for worker observability.
 	payload["identity_id"] = req.Subject.IdentityId
 	payload["intent"] = string(req.Render.Intent)
+	payload["style_profile_id"] = identity.StyleProfileID
 	if req.Subject.AnchorAssetId != nil {
 		payload["anchor_asset_id"] = *req.Subject.AnchorAssetId
 	}
@@ -393,7 +411,7 @@ func (h *GenerationsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if req.Lazy != nil {
 		payload["lazy"] = *req.Lazy
 	}
-	payload["max_megapixels"] = clamped
+	payload["max_megapixels"] = maxMegapixels
 
 	// Map governance/subject/render fields onto CreateAndEnqueueParams.
 	govJSON, _ := json.Marshal(gov)
@@ -454,11 +472,16 @@ func (h *GenerationsHandler) Create(w http.ResponseWriter, r *http.Request) {
 // artifact cache-hit path: the synchronously-completed state,
 // cache_result=exact_match, and final_asset_ids are observed via
 // GET /v1/jobs/{job_id}; estimated_cost_usd is "0.0000" — the reuse is free.
-func (h *GenerationsHandler) respondCacheHit(w http.ResponseWriter, r *http.Request, tenantID, tokenID string, req apigen.GenerationRequest, renderHash, assetID, idemKey, endpoint, requestHash string) {
+func (h *GenerationsHandler) respondCacheHit(w http.ResponseWriter, r *http.Request, tenantID, tokenID, visualIdentityID string, req apigen.GenerationRequest, renderHash, assetID, idemKey, endpoint, requestHash string) {
+	var identityID *string
+	if visualIdentityID != "" {
+		identityID = &visualIdentityID
+	}
 	result, err := h.Service.CreateCompletedCacheHitJob(r.Context(), jobs.CreateCacheHitParams{
 		TenantID:           tenantID,
 		RequestedByTokenID: tokenID,
 		JobType:            "generation",
+		VisualIdentityID:   identityID,
 		InputPayload: map[string]any{
 			"identity_id": req.Subject.IdentityId,
 			"intent":      string(req.Render.Intent),
@@ -484,15 +507,19 @@ func (h *GenerationsHandler) respondCacheHit(w http.ResponseWriter, r *http.Requ
 	})
 }
 
-// clampMegapixels returns the lesser of the requested value and ceiling. When p
-// is nil (omitted by the caller), the platform ceiling is returned.
-func clampMegapixels(p *float32, ceiling float64) float64 {
+// validateMegapixels returns the effective pixel budget. Omitted values use the
+// platform ceiling; malformed, non-positive, or over-ceiling values are rejected
+// so the request hash and worker contract remain honest.
+func validateMegapixels(p *float32, ceiling float64) (float64, error) {
 	if p == nil {
-		return ceiling
+		return ceiling, nil
 	}
 	requested := float64(*p)
-	if requested > ceiling {
-		return ceiling
+	if math.IsNaN(requested) || math.IsInf(requested, 0) || requested <= 0 {
+		return 0, errors.New("render.max_megapixels must be greater than zero")
 	}
-	return requested
+	if requested > ceiling {
+		return 0, errors.New("render.max_megapixels exceeds the platform ceiling")
+	}
+	return requested, nil
 }

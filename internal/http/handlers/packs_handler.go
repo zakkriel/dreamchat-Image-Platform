@@ -17,6 +17,7 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
 	"github.com/zakkriel/drchat-image-platform/internal/providers/routing"
 	"github.com/zakkriel/drchat-image-platform/internal/styles"
+	"github.com/zakkriel/drchat-image-platform/internal/telemetry"
 )
 
 // PacksHandler accepts the two generate-pack requests (PRD 04 §4/§5) and
@@ -531,6 +532,9 @@ type packReuseInput struct {
 // claimed asset is treated as missing and generated fresh.
 func (h *PacksHandler) planPackReuse(w http.ResponseWriter, r *http.Request, in packReuseInput) ([]jobs.PackReuseItem, []string, bool) {
 	if h.Retriever == nil {
+		for range in.roles {
+			telemetry.DefaultMetrics().RecordCacheMiss()
+		}
 		return nil, append([]string(nil), in.roles...), true
 	}
 	var reuseItems []jobs.PackReuseItem
@@ -553,6 +557,7 @@ func (h *PacksHandler) planPackReuse(w http.ResponseWriter, r *http.Request, in 
 			return nil, nil, false
 		}
 		if res.MatchType != assets.OutcomeGeneratedRequired && res.Asset != nil && !claimed[res.Asset.ID] {
+			telemetry.DefaultMetrics().RecordCacheHit()
 			claimed[res.Asset.ID] = true
 			reuseItems = append(reuseItems, jobs.PackReuseItem{
 				VariantKey: role,
@@ -562,6 +567,7 @@ func (h *PacksHandler) planPackReuse(w http.ResponseWriter, r *http.Request, in 
 			})
 			continue
 		}
+		telemetry.DefaultMetrics().RecordCacheMiss()
 		missing = append(missing, role)
 	}
 	return reuseItems, missing, true

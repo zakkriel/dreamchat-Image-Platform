@@ -74,6 +74,18 @@ func toGenerationJobAPI(job jobs.Job) apigen.GenerationJob {
 		em := *job.ErrorMessage
 		out.ErrorMessage = &em
 	}
+	if job.VisualIdentityID != nil {
+		vid := *job.VisualIdentityID
+		out.VisualIdentityId = &vid
+	}
+	if job.CostEstimateUSD != nil {
+		est := *job.CostEstimateUSD
+		out.CostEstimateUsd = &est
+	}
+	if job.ActualCostUSD != nil {
+		actual := *job.ActualCostUSD
+		out.ActualCostUsd = &actual
+	}
 	if job.Retryable != nil {
 		rb := *job.Retryable
 		out.Retryable = &rb

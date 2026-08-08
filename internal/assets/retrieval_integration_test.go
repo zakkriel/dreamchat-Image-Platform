@@ -53,6 +53,9 @@ func cleanupRetrieval(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
 	for _, tenant := range []string{itTenant, itTenantOther} {
+		if _, err := pool.Exec(ctx, `DELETE FROM identity_cost_ledger WHERE tenant_id = $1`, tenant); err != nil {
+			t.Fatalf("cleanup identity ledger: %v", err)
+		}
 		if _, err := pool.Exec(ctx, `DELETE FROM visual_assets WHERE tenant_id = $1`, tenant); err != nil {
 			t.Fatalf("cleanup assets: %v", err)
 		}

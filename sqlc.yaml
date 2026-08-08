@@ -15,6 +15,7 @@ sql:
       - "migrations/0014_anchor_lineage.sql"
       - "migrations/0015_grid_and_sprite_sheets.sql"
       - "migrations/0016_identity_cost_ledger.sql"
+      - "migrations/0019_cost_event_reservation.sql"
     gen:
       go:
         package: "dbgen"

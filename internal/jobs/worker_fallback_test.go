@@ -163,6 +163,48 @@ func TestWorkerFallbackPrimaryFailsFallbackSucceeds(t *testing.T) {
 	}
 }
 
+// TestWorkerFallbackMissingPrimaryAdapterUsesFallback proves a route that is
+// unavailable in this worker process does not prevent a registered fallback from
+// producing the request.
+func TestWorkerFallbackMissingPrimaryAdapterUsesFallback(t *testing.T) {
+	jobsRepo := newFakeJobsRepo()
+	assetsRepo := &fakeAssetsRepo{}
+	jobsRepo.assets = assetsRepo
+	fin := &fakeFinalizer{}
+	worldID := "w1"
+	_, _ = jobsRepo.Insert(context.Background(), InsertParams{
+		ID:       "job_fb_missing_primary",
+		TenantID: "tenant_a",
+		WorldID:  &worldID,
+		JobType:  "artifact",
+		InputPayload: fallbackPayload("missing primary", map[string]any{
+			"provider_id":       "bfl",
+			"model_id":          "pm_bfl_v1",
+			"provider_route_id": "route_bfl_text_to_image_standard",
+		}),
+	})
+	job := jobsRepo.jobs["job_fb_missing_primary"]
+	job.InputPayload["provider_id"] = "ghost"
+	job.InputPayload["model_id"] = "pm_ghost_v1"
+	job.InputPayload["provider_route_id"] = "route_ghost"
+	jobsRepo.jobs[job.ID] = job
+
+	w := &Worker{
+		Jobs: jobsRepo, Assets: assetsRepo, Storage: &fakeStorage{},
+		Providers: multiRegistry(map[string]providers.ImageProvider{"bfl": mock.New()}),
+		Finalizer: fin,
+	}
+	if err := w.Process(context.Background(), job.ID, 0); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if len(assetsRepo.stored) != 1 || assetsRepo.stored[0].ProviderID == nil || *assetsRepo.stored[0].ProviderID != "bfl" {
+		t.Fatalf("expected fallback asset from bfl, got %+v", assetsRepo.stored)
+	}
+	if len(jobsRepo.attempts) != 1 || jobsRepo.attempts[0].ProviderID != "bfl" {
+		t.Fatalf("expected only the registered fallback attempt, got %+v", jobsRepo.attempts)
+	}
+}
+
 // TestWorkerFallbackAllRoutesFailOnFinalAttempt: every route in the chain fails
 // on the final asynq attempt, so the job is marked failed + the reservation is
 // released, with exactly one provider_attempt recorded per route.

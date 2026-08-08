@@ -12,6 +12,7 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/ids"
 	"github.com/zakkriel/drchat-image-platform/internal/providers"
+	"github.com/zakkriel/drchat-image-platform/internal/telemetry"
 )
 
 // Pack job types and statuses (Phase 5A). Pack orchestration is
@@ -38,7 +39,8 @@ func (w *Worker) NewPackHandlerFunc() func(context.Context, *asynq.Task) error {
 		if err := json.Unmarshal(t.Payload(), &payload); err != nil {
 			return fmt.Errorf("worker: decode pack payload: %w", err)
 		}
-		return w.ProcessPack(ctx, payload.JobID)
+		retryCount, _ := asynq.GetRetryCount(ctx)
+		return w.ProcessPackForReservation(ctx, payload.JobID, payload.CostReservationID, int32(retryCount))
 	}
 }
 
@@ -48,31 +50,76 @@ func (w *Worker) NewPackHandlerFunc() func(context.Context, *asynq.Task) error {
 // loop — only infra errors (job lookup, terminal bookkeeping) return an
 // error for asynq to retry, and the terminal short-circuit plus the
 // existing-items skip make that retry safe.
-func (w *Worker) ProcessPack(ctx context.Context, jobID string) error {
+func (w *Worker) ProcessPack(ctx context.Context, jobID string, retryCounts ...int32) error {
+	return w.processPack(ctx, jobID, "", retryCounts...)
+}
+
+// ProcessPackForReservation rejects a delayed pack task whose reservation no
+// longer owns the reusable generation job after an admin retry.
+func (w *Worker) ProcessPackForReservation(ctx context.Context, jobID, reservationID string, retryCounts ...int32) error {
+	return w.processPack(ctx, jobID, reservationID, retryCounts...)
+}
+
+func (w *Worker) processPack(ctx context.Context, jobID, expectedReservationID string, retryCounts ...int32) error {
+	// A direct call from a unit/integration test is a deliberate invocation and
+	// may represent a retry without an asynq retry count. Queue deliveries pass
+	// the real count through the handler; -1 preserves the direct-call contract.
+	retryCount := int32(-1)
+	if len(retryCounts) > 0 {
+		retryCount = retryCounts[0]
+	}
 	job, err := w.Jobs.GetByID(ctx, jobID)
 	if err != nil {
 		w.log().Error("worker: lookup pack job", "job_id", jobID, "error", err)
 		return err
+	}
+	if expectedReservationID != "" {
+		if job.CostReservationID == nil || *job.CostReservationID != expectedReservationID {
+			w.log().Info("worker: stale pack task ignored after reservation changed", "job_id", jobID, "expected_reservation_id", expectedReservationID, "actual_reservation_id", costReservationID(job))
+			return nil
+		}
 	}
 
 	// Retry-safety short-circuit (same rule as 4B): a terminal job never
 	// re-fans-out; only the idempotent cost finalization may be outstanding.
 	switch job.Status {
 	case "completed":
-		if w.Finalizer != nil {
-			if err := w.Finalizer.Commit(ctx, job.ID); err != nil {
-				w.log().Error("worker: commit cost reservation (terminal pack job)", "job_id", jobID, "error", err)
-				return err
-			}
+		if err := w.commitReservation(ctx, job); err != nil {
+			w.log().Error("worker: commit cost reservation (terminal pack job)", "job_id", jobID, "error", err)
+			return err
 		}
 		return nil
 	case "failed":
-		if w.Finalizer != nil {
-			if err := w.Finalizer.Release(ctx, job.ID); err != nil {
-				w.log().Error("worker: release cost reservation (terminal pack job)", "job_id", jobID, "error", err)
+		// A terminal pack-status write can fail after the job CAS succeeds.
+		// Retry the ownership-guarded correction before finalization so a pack
+		// cannot remain in_progress while its owning job is failed.
+		if job.AssetPackID != nil && *job.AssetPackID != "" {
+			if err := w.updatePackStatus(ctx, *job.AssetPackID, job.ID, packStatusFailed); err != nil {
+				w.log().Error("worker: correct terminal pack status", "job_id", jobID, "error", err)
 				return err
 			}
 		}
+		if err := w.releaseReservation(ctx, job); err != nil {
+			w.log().Error("worker: release cost reservation (terminal pack job)", "job_id", jobID, "error", err)
+			return err
+		}
+		return nil
+	case statusCancelled:
+		// Cancellation is terminal. A duplicate queued task may have read the
+		// row before the admin cancel committed; never fan out provider work and
+		// keep the release idempotent.
+		if err := w.releaseReservation(ctx, job); err != nil {
+			w.log().Error("worker: release cost reservation (cancelled pack job)", "job_id", jobID, "error", err)
+			return err
+		}
+		return nil
+	}
+
+	claimed, err := w.claimQueuedJob(ctx, job, "pack", retryCount, expectedReservationID)
+	if err != nil {
+		return err
+	}
+	if !claimed {
 		return nil
 	}
 
@@ -81,41 +128,43 @@ func (w *Worker) ProcessPack(ctx context.Context, jobID string) error {
 		// A pack job without a pack link / variants is unrunnable; fail it
 		// terminally rather than retrying a payload that can't change.
 		w.log().Error("worker: invalid pack job", "job_id", jobID, "error", planErr)
-		if _, err := w.Jobs.MarkFailed(ctx, job.ID, job.TenantID, errorCodePackInvalidJob, planErr.Error(), false); err != nil {
+		if _, err := w.markJobFailed(ctx, job, errorCodePackInvalidJob, planErr.Error(), false, expectedReservationID); err != nil {
 			return err
 		}
-		if w.Finalizer != nil {
-			if err := w.Finalizer.Release(ctx, job.ID); err != nil {
-				return err
-			}
+		if err := w.releaseReservation(ctx, job); err != nil {
+			return err
 		}
 		return nil
 	}
+	if _, mpErr := maxMegapixelsForWorker(job); mpErr != nil {
+		w.log().Error("worker: invalid max_megapixels (pack)", "job_id", jobID, "error", mpErr)
+		return w.failPackTerminal(ctx, job, plan.packID, errorCodeMaxMegapixelsExceeded, mpErr.Error(), expectedReservationID)
+	}
 
-	// Phase 7A: select the provider adapter from the resolved route persisted on
-	// the job. The worker never re-resolves; a missing route/adapter fails the
-	// pack terminally (an asynq retry could not help).
+	// Phase 7A: read the primary route persisted on the job. The worker never
+	// re-resolves; generateWithFallback skips an unavailable primary and walks
+	// the persisted same-price alternates per cell.
 	resolved, rerr := resolvedRouteFromPayload(job.InputPayload)
 	if rerr != nil {
 		w.log().Error("worker: invalid resolved route (pack)", "job_id", jobID, "error", rerr)
-		return w.failPackTerminal(ctx, job, plan.packID, errorCodeInvalidResolvedRoute, rerr.Error())
+		return w.failPackTerminal(ctx, job, plan.packID, errorCodeInvalidResolvedRoute, rerr.Error(), expectedReservationID)
 	}
-	provider, ok := w.Providers.Get(resolved.providerID)
-	if !ok {
-		msg := fmt.Sprintf("no adapter registered for resolved provider %q", resolved.providerID)
-		w.log().Error("worker: provider adapter missing (pack)", "job_id", jobID, "provider_id", resolved.providerID)
-		return w.failPackTerminal(ctx, job, plan.packID, errorCodeProviderUnavailable, msg)
+	// Reference-conditioned providers require the identity's anchors even when
+	// they are only a persisted fallback. Gather once for the whole pack when
+	// any configured route requires references, and thread the same references
+	// through every route in every cell. This mirrors singleImageReferences and
+	// keeps a fallback from silently changing the recurring subject.
+	routes := append([]resolvedRoute{resolved}, fallbackRoutesFromPayload(job.InputPayload)...)
+	needsReferences := false
+	for _, route := range routes {
+		adapter, routeOK := w.Providers.Get(route.providerID)
+		if routeOK && adapter.Capabilities().RequiresReferenceImage {
+			needsReferences = true
+			break
+		}
 	}
-
-	// Reference-conditioned providers (e.g. fal FLUX.1 Kontext) cannot hold a
-	// recurring character from the role prompt alone — they must be given the
-	// identity's reference images. Gather them ONCE for the whole pack (every role
-	// conditions on the same anchors) and fail the pack closed if the identity has
-	// no anchor assets, rather than fanning out and generating a different
-	// character per role (PRD 03 §8). Prompt-only providers (mock, BFL scene) leave
-	// RequiresReferenceImage false, so this is a no-op and the pack runs unchanged.
 	var referenceURLs []string
-	if provider.Capabilities().RequiresReferenceImage {
+	if needsReferences {
 		refs, refErr := w.referenceURLsForIdentity(ctx, plan.visualIdentityID, job.TenantID)
 		if refErr != nil {
 			// An attached anchor is unusable (wrong tenant / missing / not ready /
@@ -126,21 +175,17 @@ func (w *Worker) ProcessPack(ctx context.Context, jobID string) error {
 				code = errorCodeMissingReference
 			}
 			w.log().Error("worker: gather reference assets (pack)", "job_id", jobID, "identity_id", plan.visualIdentityID, "error", refErr)
-			return w.failPackTerminal(ctx, job, plan.packID, code, refErr.Error())
+			return w.failPackTerminal(ctx, job, plan.packID, code, refErr.Error(), expectedReservationID)
 		}
 		if len(refs) == 0 {
-			msg := fmt.Sprintf("visual identity %q has no reference assets for reference-conditioned provider %q", plan.visualIdentityID, resolved.providerID)
-			w.log().Error("worker: no reference assets (pack)", "job_id", jobID, "identity_id", plan.visualIdentityID, "provider_id", resolved.providerID)
-			return w.failPackTerminal(ctx, job, plan.packID, errorCodeMissingReference, msg)
+			msg := fmt.Sprintf("visual identity %q has no reference assets for reference-conditioned provider", plan.visualIdentityID)
+			w.log().Error("worker: no reference assets (pack)", "job_id", jobID, "identity_id", plan.visualIdentityID)
+			return w.failPackTerminal(ctx, job, plan.packID, errorCodeMissingReference, msg, expectedReservationID)
 		}
 		referenceURLs = refs
 	}
 
-	if _, err := w.Jobs.MarkRunning(ctx, job.ID, job.TenantID); err != nil {
-		w.log().Error("worker: mark pack running", "job_id", jobID, "error", err)
-		return err
-	}
-	if err := w.Jobs.UpdateAssetPackStatus(ctx, plan.packID, packStatusInProgress); err != nil {
+	if err := w.updatePackStatus(ctx, plan.packID, job.ID, packStatusInProgress); err != nil {
 		w.log().Error("worker: mark pack in_progress", "job_id", jobID, "pack_id", plan.packID, "error", err)
 		return err
 	}
@@ -163,7 +208,6 @@ func (w *Worker) ProcessPack(ctx context.Context, jobID string) error {
 	}
 
 	start := time.Now()
-	providerID := resolved.providerID
 	var succeeded []string
 	// deliveredKeys is the ordered set of required roles backed by a ready item
 	// at the end of this run (reused + retry-skipped + freshly generated). It
@@ -177,8 +221,22 @@ func (w *Worker) ProcessPack(ctx context.Context, jobID string) error {
 			deliveredKeys = append(deliveredKeys, variantKey)
 			continue
 		}
-		assetID, itemErr := w.generatePackItem(ctx, job, plan, provider, resolved, variantKey, i, referenceURLs)
+		assetID, itemErr := w.generatePackItem(ctx, job, plan, resolved, variantKey, i, referenceURLs)
 		if itemErr != nil {
+			if errors.Is(itemErr, errPackJobNotActive) {
+				// Cancellation/terminal completion won the guarded item
+				// transaction. Stop fan-out immediately; do not recompute or
+				// overwrite pack terminal state from this stale worker.
+				return w.finishCancelled(ctx, job, "pack")
+			}
+			if errors.Is(itemErr, providers.ErrContentPolicyRejected) {
+				// A policy rejection is terminal for this request. Never try the
+				// next cell or another route after the provider made that decision.
+				if err := w.updatePackCompleteness(ctx, plan.packID, job.ID, deliveredKeys, missingRoles(plan.variantKeys, deliveredKeys)); err != nil {
+					return err
+				}
+				return w.failPackTerminal(ctx, job, plan.packID, errorCodeContentRejected, itemErr.Error(), expectedReservationID)
+			}
 			// Per-item failure (provider/storage/persistence): record it and
 			// continue with the next variant — never abort the batch.
 			w.log().Warn("worker: pack item failed",
@@ -198,7 +256,7 @@ func (w *Worker) ProcessPack(ctx context.Context, jobID string) error {
 	// below (a partial run leaves the failed roles in missing; a total failure
 	// leaves all roles missing). Recomputed identically on an asynq retry.
 	missingKeys := missingRoles(plan.variantKeys, deliveredKeys)
-	if err := w.Jobs.UpdateAssetPackCompleteness(ctx, plan.packID, deliveredKeys, missingKeys); err != nil {
+	if err := w.updatePackCompleteness(ctx, plan.packID, job.ID, deliveredKeys, missingKeys); err != nil {
 		w.log().Error("worker: update pack completeness", "job_id", job.ID, "pack_id", plan.packID, "error", err)
 		return err
 	}
@@ -212,14 +270,19 @@ func (w *Worker) ProcessPack(ctx context.Context, jobID string) error {
 		eventStatus = "failed"
 	}
 	if err := w.Jobs.InsertCostEvent(ctx, CostEventInsertParams{
-		ID:         ids.NewCostEventID(),
-		TenantID:   job.TenantID,
-		JobID:      &job.ID,
-		TokenID:    job.RequestedByTokenID,
-		ProviderID: &providerID,
-		Operation:  string(providers.OperationTextToImage),
-		DurationMs: &latencyInt,
-		Status:     eventStatus,
+		// The pack aggregate is one logical event per job reservation. A
+		// terminal bookkeeping retry must not append another aggregate row.
+		ID:                packAggregateCostEventID(job),
+		TenantID:          job.TenantID,
+		JobID:             &job.ID,
+		CostReservationID: job.CostReservationID,
+		TokenID:           job.RequestedByTokenID,
+		ProviderID:        &resolved.providerID,
+		ModelID:           strPtr(resolved.modelID),
+		Operation:         string(providers.OperationTextToImage),
+		DurationMs:        &latencyInt,
+		Status:            eventStatus,
+		Metadata:          billableMetadata("pack", nil),
 	}); err != nil {
 		w.log().Warn("worker: insert pack cost event", "job_id", job.ID, "error", err)
 	}
@@ -234,19 +297,17 @@ func (w *Worker) ProcessPack(ctx context.Context, jobID string) error {
 	// in full (mirrors 4B). Proportional per-item reconciliation is deferred
 	// to real provider reconciliation.
 	if len(succeeded) == 0 {
-		if err := w.Jobs.UpdateAssetPackStatus(ctx, plan.packID, packStatusFailed); err != nil {
+		if err := w.updatePackStatus(ctx, plan.packID, job.ID, packStatusFailed); err != nil {
 			w.log().Error("worker: mark pack failed", "job_id", job.ID, "pack_id", plan.packID, "error", err)
 			return err
 		}
-		if _, err := w.Jobs.MarkFailed(ctx, job.ID, job.TenantID, errorCodePackAllFailed, errorMessagePackFailed, false); err != nil {
+		if _, err := w.markJobFailed(ctx, job, errorCodePackAllFailed, errorMessagePackFailed, false, expectedReservationID); err != nil {
 			w.log().Error("worker: mark pack job failed", "job_id", job.ID, "error", err)
 			return err
 		}
-		if w.Finalizer != nil {
-			if err := w.Finalizer.Release(ctx, job.ID); err != nil {
-				w.log().Error("worker: release pack cost reservation", "job_id", job.ID, "error", err)
-				return err
-			}
+		if err := w.releaseReservation(ctx, job); err != nil {
+			w.log().Error("worker: release pack cost reservation", "job_id", job.ID, "error", err)
+			return err
 		}
 		return nil
 	}
@@ -255,65 +316,68 @@ func (w *Worker) ProcessPack(ctx context.Context, jobID string) error {
 	if failedItems > 0 {
 		packStatus = packStatusWithWarnings
 	}
-	if err := w.Jobs.UpdateAssetPackStatus(ctx, plan.packID, packStatus); err != nil {
+	if err := w.updatePackStatus(ctx, plan.packID, job.ID, packStatus); err != nil {
 		w.log().Error("worker: mark pack completed", "job_id", job.ID, "pack_id", plan.packID, "error", err)
 		return err
 	}
-	if _, err := w.Jobs.MarkCompleted(ctx, job.ID, job.TenantID, succeeded); err != nil {
+	if _, err := w.markJobCompleted(ctx, job, succeeded, expectedReservationID); err != nil {
 		w.log().Error("worker: mark pack job completed", "job_id", job.ID, "error", err)
 		return err
 	}
-	if w.Finalizer != nil {
-		if err := w.Finalizer.Commit(ctx, job.ID); err != nil {
-			w.log().Error("worker: commit pack cost reservation", "job_id", job.ID, "error", err)
-			return err
-		}
+	if err := w.commitReservation(ctx, job); err != nil {
+		w.log().Error("worker: commit pack cost reservation", "job_id", job.ID, "error", err)
+		return err
 	}
 	return nil
+}
+
+func packAggregateCostEventID(job Job) string {
+	reservationID := "none"
+	if job.CostReservationID != nil && *job.CostReservationID != "" {
+		reservationID = *job.CostReservationID
+	}
+	return fmt.Sprintf("%s_pack_%s_%s", ids.PrefixCostEvent, job.ID, reservationID)
 }
 
 // generatePackItem runs one variant end to end: provider attempt row,
 // provider call, image upload, visual_assets insert, asset_pack_items
 // insert. Returns the new asset id, or the per-item error.
-func (w *Worker) generatePackItem(ctx context.Context, job Job, plan packPlan, provider providers.ImageProvider, resolved resolvedRoute, variantKey string, index int, referenceURLs []string) (string, error) {
-	attempt, err := w.Jobs.InsertProviderAttempt(ctx, ProviderAttemptInsertParams{
-		ID:              ids.NewProviderAttemptID(),
-		GenerationJobID: job.ID,
-		ProviderID:      resolved.providerID,
-		AttemptNumber:   int32(index + 1),
-	})
-	if err != nil {
-		return "", fmt.Errorf("insert attempt: %w", err)
-	}
-
+func (w *Worker) generatePackItem(ctx context.Context, job Job, plan packPlan, resolved resolvedRoute, variantKey string, index int, referenceURLs []string) (string, error) {
 	// 5A keeps the prompt trivial: the variant_key is an opaque role string
 	// appended to the identity's name. Variant semantics are 5B.
 	prompt := plan.displayName + " — " + variantKey
 
-	start := time.Now()
-	result, providerErr := provider.Generate(ctx, providers.ProviderGenerateRequest{
+	// Pack cells use the same persisted primary + same-price fallback chain as
+	// single-image generation. Failed routes are recorded as provider attempts,
+	// and content-policy rejection stops the walk in generateWithFallback.
+	out, providerErr := w.generateWithFallback(ctx, job, resolved, providers.ProviderGenerateRequest{
 		JobID:         job.ID,
 		Operation:     providers.OperationTextToImage,
 		Prompt:        prompt,
-		Width:         deliveryRenderEdge,
-		Height:        deliveryRenderEdge,
+		Width:         renderEdgeForMax(job, deliveryRenderEdge),
+		Height:        renderEdgeForMax(job, deliveryRenderEdge),
 		ReferenceURLs: referenceURLs,
 		Metadata: map[string]any{
 			"world_id":    plan.worldID,
 			"job_type":    job.JobType,
 			"variant_key": variantKey,
 		},
-	})
-	latency := int32(time.Since(start).Milliseconds())
+	}, int32(index+1))
 	if providerErr != nil {
-		w.markPackAttemptFailed(ctx, attempt.ID, providerErr, latency)
 		return "", providerErr
+	}
+	result := out.result
+	resolved = out.route
+	latency := int32(out.latencyMs)
+	if sizeErr := validateProviderImages(job, result.Images); sizeErr != nil {
+		w.recordAttemptFailureWithCost(ctx, job, out.attemptID, resolved.providerID, resolved.modelID, sizeErr, out.latencyMs, reportedProviderCostPtr(result))
+		return "", sizeErr
 	}
 
 	assetID := ids.NewVisualAssetID()
 	urls, err := w.uploadImages(ctx, assetID, result.Images)
 	if err != nil {
-		w.markPackAttemptFailed(ctx, attempt.ID, fmt.Errorf("%w: %v", errStorageFailure, err), latency)
+		w.recordAttemptFailureWithCost(ctx, job, out.attemptID, resolved.providerID, resolved.modelID, fmt.Errorf("%w: %v", errStorageFailure, err), out.latencyMs, reportedProviderCostPtr(result))
 		return "", err
 	}
 
@@ -366,8 +430,41 @@ func (w *Worker) generatePackItem(ctx context.Context, job Job, plan packPlan, p
 	// one (prior_max + 1), in the same transaction and under a slot lock. A
 	// forced pack has no reused items, so every role takes this path; a non-forced
 	// pack uses the byte-for-byte unchanged InsertPackItemWithAsset.
+	packCostEvent := CostEventInsertParams{
+		ID:                ids.NewCostEventID(),
+		TenantID:          job.TenantID,
+		JobID:             &job.ID,
+		CostReservationID: job.CostReservationID,
+		AssetID:           &assetID,
+		TokenID:           job.RequestedByTokenID,
+		ProviderID:        &providerID,
+		ModelID:           strPtr(resolved.modelID),
+		ProviderAttemptID: &out.attemptID,
+		Operation:         string(providers.OperationTextToImage),
+		ActualCostUSD:     reportedProviderCostPtr(result),
+		DurationMs:        &latency,
+		Status:            "completed",
+		Metadata:          billableMetadata("pack_cell", map[string]any{"variant_key": variantKey}),
+	}
+	success := PersistSuccessParams{AttemptID: out.attemptID, LatencyMs: latency, CostEvent: packCostEvent}
 	var insertErr error
-	if plan.forceRegenerate {
+	successAtomic := false
+	if packPersister, ok := w.Jobs.(PackSuccessPersister); ok {
+		if plan.forceRegenerate {
+			insertErr = packPersister.InsertPackItemWithAssetSupersedingAndSuccess(ctx, assetParams, item, assets.VariantSlot{
+				TenantID:         job.TenantID,
+				WorldID:          plan.worldID,
+				VisualIdentityID: plan.visualIdentityID,
+				VariantKey:       variantKey,
+				StateVersion:     packSupersedeStateVersion,
+				StyleProfileID:   derefStr(plan.styleProfileID),
+				QualityTier:      plan.qualityTier,
+			}, success)
+		} else {
+			insertErr = packPersister.InsertPackItemWithAssetAndSuccess(ctx, assetParams, item, success)
+		}
+		successAtomic = true
+	} else if plan.forceRegenerate {
 		insertErr = w.Jobs.InsertPackItemWithAssetSuperseding(ctx, assetParams, item, assets.VariantSlot{
 			TenantID:         job.TenantID,
 			WorldID:          plan.worldID,
@@ -381,38 +478,77 @@ func (w *Worker) generatePackItem(ctx context.Context, job Job, plan packPlan, p
 		insertErr = w.Jobs.InsertPackItemWithAsset(ctx, assetParams, item)
 	}
 	if insertErr != nil {
-		w.markPackAttemptFailed(ctx, attempt.ID, fmt.Errorf("%w: insert asset + pack item: %v", errPersistence, insertErr), latency)
+		if errors.Is(insertErr, errPackJobNotActive) {
+			// The provider call succeeded but cancellation/terminal completion
+			// won the guarded persistence lock. It remains billable even though
+			// no pack item can be published.
+			w.recordDiscardedProviderSuccess(ctx, job, discardedProviderAttempt{
+				AttemptID: out.attemptID, ProviderID: resolved.providerID,
+				ModelID: resolved.modelID, LatencyMs: int64(latency), Result: result,
+			}, "pack_cell")
+			return "", errPackJobNotActive
+		}
+		w.recordAttemptFailureWithCost(ctx, job, out.attemptID, resolved.providerID, resolved.modelID, fmt.Errorf("%w: insert asset + pack item: %v", errPersistence, insertErr), int64(latency), reportedProviderCostPtr(result))
 		return "", insertErr
 	}
 
-	if err := w.Jobs.MarkProviderAttemptSucceeded(ctx, attempt.ID, latency); err != nil {
-		w.log().Warn("worker: mark pack attempt succeeded", "attempt_id", attempt.ID, "error", err)
+	if !successAtomic {
+		if err := w.Jobs.MarkProviderAttemptSucceeded(ctx, out.attemptID, latency); err != nil {
+			w.log().Warn("worker: mark pack attempt succeeded", "attempt_id", out.attemptID, "error", err)
+		}
+		if err := w.Jobs.InsertCostEvent(ctx, packCostEvent); err != nil {
+			w.log().Warn("worker: insert pack cell cost event", "job_id", job.ID, "variant_key", variantKey, "error", err)
+		}
 	}
+
+	telemetry.DefaultMetrics().RecordUsableImage()
 	return assetID, nil
+}
+
+// PackStatusUpdater and PackCompletenessUpdater are optional production
+// extensions that keep a stale worker from changing a terminal pack belonging
+// to a different execution. The legacy methods remain the fallback for small
+// in-memory repositories and older integrations.
+type PackStatusUpdater interface {
+	UpdateAssetPackStatusForJob(ctx context.Context, packID, jobID, status string) error
+}
+
+type PackCompletenessUpdater interface {
+	UpdateAssetPackCompletenessForJob(ctx context.Context, packID, jobID string, delivered, missing []string) error
+}
+
+func (w *Worker) updatePackStatus(ctx context.Context, packID, jobID, status string) error {
+	if updater, ok := w.Jobs.(PackStatusUpdater); ok {
+		return updater.UpdateAssetPackStatusForJob(ctx, packID, jobID, status)
+	}
+	return w.Jobs.UpdateAssetPackStatus(ctx, packID, status)
+}
+
+func (w *Worker) updatePackCompleteness(ctx context.Context, packID, jobID string, delivered, missing []string) error {
+	if updater, ok := w.Jobs.(PackCompletenessUpdater); ok {
+		return updater.UpdateAssetPackCompletenessForJob(ctx, packID, jobID, delivered, missing)
+	}
+	return w.Jobs.UpdateAssetPackCompleteness(ctx, packID, delivered, missing)
 }
 
 // failPackTerminal marks a pack job and its pack row permanently failed (not
 // retryable) and releases the cost reservation. Used for unrunnable pack jobs —
 // a missing provider adapter or a payload missing its resolved route.
-func (w *Worker) failPackTerminal(ctx context.Context, job Job, packID, code, msg string) error {
-	if err := w.Jobs.UpdateAssetPackStatus(ctx, packID, packStatusFailed); err != nil {
+func (w *Worker) failPackTerminal(ctx context.Context, job Job, packID, code, msg string, expectedReservationIDs ...string) error {
+	// Claim the job's terminal state before writing the pack status. If a
+	// concurrent winner already completed or replaced this reservation, the
+	// reservation-bound CAS fails and this stale worker must not overwrite the
+	// winner's terminal pack status.
+	if _, err := w.markJobFailed(ctx, job, code, msg, false, expectedReservationIDs...); err != nil {
 		return err
 	}
-	if _, err := w.Jobs.MarkFailed(ctx, job.ID, job.TenantID, code, msg, false); err != nil {
+	if err := w.updatePackStatus(ctx, packID, job.ID, packStatusFailed); err != nil {
 		return err
 	}
-	if w.Finalizer != nil {
-		if err := w.Finalizer.Release(ctx, job.ID); err != nil {
-			return err
-		}
+	if err := w.releaseReservation(ctx, job); err != nil {
+		return err
 	}
 	return nil
-}
-
-func (w *Worker) markPackAttemptFailed(ctx context.Context, attemptID string, callErr error, latencyMs int32) {
-	if err := w.Jobs.MarkProviderAttemptFailed(ctx, attemptID, errorCodeFor(callErr), callErr.Error(), latencyMs); err != nil {
-		w.log().Warn("worker: mark pack attempt failed", "attempt_id", attemptID, "error", err)
-	}
 }
 
 // packPlan is the per-run view of the pack job's input payload, written by

@@ -1,8 +1,8 @@
 -- name: InsertProviderAttempt :one
 INSERT INTO provider_attempts (
-    id, generation_job_id, provider_id, attempt_number, status
+    id, generation_job_id, provider_id, model_id, provider_route_id, attempt_number, status
 ) VALUES (
-    $1, $2, $3, $4, 'started'
+    $1, $2, $3, $4, $5, $6, 'started'
 )
 RETURNING id, generation_job_id, provider_id, model_id, provider_route_id,
           provider_request_id, attempt_number, status,
@@ -30,3 +30,10 @@ WHERE id = $1;
 SELECT count(*)::int AS attempt_count
 FROM provider_attempts
 WHERE generation_job_id = $1;
+
+-- name: UpdateProviderAttemptCost :exec
+UPDATE provider_attempts
+SET provider_request_id = sqlc.arg(provider_request_id),
+    actual_cost = sqlc.arg(actual_cost),
+    currency = sqlc.arg(currency)
+WHERE id = sqlc.arg(id);

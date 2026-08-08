@@ -125,6 +125,7 @@ type GenerationCostEvent struct {
 	Status            string             `json:"status"`
 	Metadata          []byte             `json:"metadata"`
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	CostReservationID *string            `json:"cost_reservation_id"`
 }
 
 type GenerationJob struct {

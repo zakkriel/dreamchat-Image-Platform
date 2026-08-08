@@ -7,6 +7,8 @@ package dbgen
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const countProviderAttemptsForJob = `-- name: CountProviderAttemptsForJob :one
@@ -24,9 +26,9 @@ func (q *Queries) CountProviderAttemptsForJob(ctx context.Context, generationJob
 
 const insertProviderAttempt = `-- name: InsertProviderAttempt :one
 INSERT INTO provider_attempts (
-    id, generation_job_id, provider_id, attempt_number, status
+    id, generation_job_id, provider_id, model_id, provider_route_id, attempt_number, status
 ) VALUES (
-    $1, $2, $3, $4, 'started'
+    $1, $2, $3, $4, $5, $6, 'started'
 )
 RETURNING id, generation_job_id, provider_id, model_id, provider_route_id,
           provider_request_id, attempt_number, status,
@@ -36,10 +38,12 @@ RETURNING id, generation_job_id, provider_id, model_id, provider_route_id,
 `
 
 type InsertProviderAttemptParams struct {
-	ID              string `json:"id"`
-	GenerationJobID string `json:"generation_job_id"`
-	ProviderID      string `json:"provider_id"`
-	AttemptNumber   int32  `json:"attempt_number"`
+	ID              string  `json:"id"`
+	GenerationJobID string  `json:"generation_job_id"`
+	ProviderID      string  `json:"provider_id"`
+	ModelID         *string `json:"model_id"`
+	ProviderRouteID *string `json:"provider_route_id"`
+	AttemptNumber   int32   `json:"attempt_number"`
 }
 
 func (q *Queries) InsertProviderAttempt(ctx context.Context, arg InsertProviderAttemptParams) (ProviderAttempt, error) {
@@ -47,6 +51,8 @@ func (q *Queries) InsertProviderAttempt(ctx context.Context, arg InsertProviderA
 		arg.ID,
 		arg.GenerationJobID,
 		arg.ProviderID,
+		arg.ModelID,
+		arg.ProviderRouteID,
 		arg.AttemptNumber,
 	)
 	var i ProviderAttempt
@@ -115,5 +121,30 @@ type MarkProviderAttemptSucceededParams struct {
 
 func (q *Queries) MarkProviderAttemptSucceeded(ctx context.Context, arg MarkProviderAttemptSucceededParams) error {
 	_, err := q.db.Exec(ctx, markProviderAttemptSucceeded, arg.ID, arg.LatencyMs)
+	return err
+}
+
+const updateProviderAttemptCost = `-- name: UpdateProviderAttemptCost :exec
+UPDATE provider_attempts
+SET provider_request_id = $1,
+    actual_cost = $2,
+    currency = $3
+WHERE id = $4
+`
+
+type UpdateProviderAttemptCostParams struct {
+	ProviderRequestID *string        `json:"provider_request_id"`
+	ActualCost        pgtype.Numeric `json:"actual_cost"`
+	Currency          string         `json:"currency"`
+	ID                string         `json:"id"`
+}
+
+func (q *Queries) UpdateProviderAttemptCost(ctx context.Context, arg UpdateProviderAttemptCostParams) error {
+	_, err := q.db.Exec(ctx, updateProviderAttemptCost,
+		arg.ProviderRequestID,
+		arg.ActualCost,
+		arg.Currency,
+		arg.ID,
+	)
 	return err
 }

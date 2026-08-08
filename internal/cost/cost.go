@@ -15,6 +15,7 @@ package cost
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math/big"
 
@@ -24,6 +25,7 @@ import (
 
 	"github.com/zakkriel/drchat-image-platform/internal/db/dbgen"
 	"github.com/zakkriel/drchat-image-platform/internal/ids"
+	"github.com/zakkriel/drchat-image-platform/internal/telemetry"
 )
 
 // Sentinel errors the jobs layer maps to 422 responses. They are the public
@@ -269,23 +271,36 @@ func (s *Service) reserveBudgets(ctx context.Context, tx pgx.Tx, in ReserveInput
 		if _, err := spq.ResetBudgetPeriodIfElapsed(ctx, b.ID); err != nil {
 			return false, err
 		}
-		switch b.Status {
-		case "paused":
-			// Recording only: hold against it but never deny. The reset never
-			// unpauses a paused budget, so the pre-read status is still valid.
-			if _, err := spq.ReservePausedBudget(ctx, dbgen.ReservePausedBudgetParams{Amount: amount, ID: b.ID}); err != nil {
-				if errors.Is(err, pgx.ErrNoRows) {
-					continue // status raced away from paused; don't deny
-				}
-				return false, err
+		// The budget list was read before the savepoint acquired the row lock.
+		// Admin can therefore pause or resume it in between. Try the state that
+		// was observed first, then the other state on ErrNoRows so a paused →
+		// active transition cannot silently bypass the cap (and active → paused
+		// does not produce a spurious denial).
+		reservePaused := func() error {
+			_, err := spq.ReservePausedBudget(ctx, dbgen.ReservePausedBudgetParams{Amount: amount, ID: b.ID})
+			return err
+		}
+		reserveActive := func() error {
+			_, err := spq.ReserveActiveBudget(ctx, dbgen.ReserveActiveBudgetParams{Amount: amount, ID: b.ID})
+			return err
+		}
+		var reserveErr error
+		if b.Status == "paused" {
+			reserveErr = reservePaused()
+			if errors.Is(reserveErr, pgx.ErrNoRows) {
+				reserveErr = reserveActive()
 			}
-		default: // active — or exceeded-but-just-reset-to-active in a fresh period.
-			if _, err := spq.ReserveActiveBudget(ctx, dbgen.ReserveActiveBudgetParams{Amount: amount, ID: b.ID}); err != nil {
-				if errors.Is(err, pgx.ErrNoRows) {
-					return false, nil // still exceeded this period, or would exceed the limit
-				}
-				return false, err
+		} else {
+			reserveErr = reserveActive()
+			if errors.Is(reserveErr, pgx.ErrNoRows) {
+				reserveErr = reservePaused()
 			}
+		}
+		if reserveErr != nil {
+			if errors.Is(reserveErr, pgx.ErrNoRows) {
+				return false, nil // current status is exceeded or the active cap would be exceeded
+			}
+			return false, reserveErr
 		}
 		// Record the hold so the terminal transition reverses exactly this row.
 		if err := spq.InsertBudgetHold(ctx, dbgen.InsertBudgetHoldParams{
@@ -334,12 +349,38 @@ func selectBudgets(all []dbgen.ListBudgetsForReservationRow) []dbgen.ListBudgets
 	return out
 }
 
+func numericText(n pgtype.Numeric) string {
+	if !n.Valid {
+		return ""
+	}
+	value, err := n.Value()
+	if err != nil || value == nil {
+		return ""
+	}
+	return fmt.Sprint(value)
+}
+
 func zeroNumeric() pgtype.Numeric {
 	return pgtype.Numeric{Int: big.NewInt(0), Exp: 0, Valid: true}
 }
 
 // nullNumeric is an explicit SQL NULL for a numeric column.
 func nullNumeric() pgtype.Numeric { return pgtype.Numeric{Valid: false} }
+
+// numericIsReported reports whether n is a real value the SQL layer
+// returned (SUM(...) over at least one matching row), as opposed to SQL
+// NULL (no provider ever reported an actual on this job). Valid alone is
+// the correct signal: a provider that genuinely billed $0.00 still
+// produces a valid, zero-valued numeric from SUM, and that must be
+// distinguished from "nothing was ever billed" (NULL) rather than folded
+// into it by also requiring a positive sign.
+func numericIsReported(n pgtype.Numeric) bool {
+	return n.Valid
+}
+
+func numericIsNonZero(n pgtype.Numeric) bool {
+	return n.Valid && n.Int != nil && n.Int.Sign() != 0
+}
 
 // ---------------------------------------------------------------------------
 // Terminal lifecycle (docs/architecture/cost-control.md §3 steps 9–10)
@@ -353,6 +394,22 @@ type Finalizer interface {
 	Commit(ctx context.Context, jobID string) error
 	// Release returns the held estimate to reserved → available (job failed).
 	Release(ctx context.Context, jobID string) error
+}
+
+// ReservationFinalizer is the stale-task-safe extension implemented by the
+// Postgres lifecycle. Workers use the reservation captured with their job
+// snapshot; admin/request paths continue using the broad Finalizer methods.
+type ReservationFinalizer interface {
+	CommitForReservation(ctx context.Context, jobID, reservationID string) error
+	ReleaseForReservation(ctx context.Context, jobID, reservationID string) error
+}
+
+// ReservationReconciler folds provider-reported events that arrive after a
+// reservation was already committed or released. It is separate from the
+// finalizer interface so lightweight test finalizers do not need a database
+// reconciliation implementation.
+type ReservationReconciler interface {
+	ReconcileForReservation(ctx context.Context, jobID, reservationID string) error
 }
 
 // Lifecycle is the Postgres-backed Finalizer. It is dual-context and
@@ -390,6 +447,12 @@ func (l *Lifecycle) Commit(ctx context.Context, jobID string) error {
 	return l.finalize(ctx, jobID, statusCommitted)
 }
 
+// CommitForReservation finalizes the exact reservation captured by a worker
+// task, preventing a stale task from committing a later admin-retry hold.
+func (l *Lifecycle) CommitForReservation(ctx context.Context, jobID, reservationID string) error {
+	return l.finalize(ctx, jobID, statusCommitted, reservationID)
+}
+
 // Release transitions reserved → released for the job's reservation and
 // returns each held amount to its budget's reserved pool (spent untouched).
 // A no-op when the reservation is not in `reserved`.
@@ -397,7 +460,18 @@ func (l *Lifecycle) Release(ctx context.Context, jobID string) error {
 	return l.finalize(ctx, jobID, statusReleased)
 }
 
-func (l *Lifecycle) finalize(ctx context.Context, jobID, target string) error {
+// ReleaseForReservation releases the exact reservation captured by a worker
+// task, preventing a stale task from releasing a later admin-retry hold.
+func (l *Lifecycle) ReleaseForReservation(ctx context.Context, jobID, reservationID string) error {
+	return l.finalize(ctx, jobID, statusReleased, reservationID)
+}
+
+// ReconcileForReservation is safe to call after every discarded provider
+// success. It locks the terminal reservation, sums only provider-reported
+// actuals, and applies the signed delta exactly once to each budget and the
+// identity ledger. This closes the race where cancellation or a duplicate
+// winner finalizes before the losing provider call returns.
+func (l *Lifecycle) ReconcileForReservation(ctx context.Context, jobID, reservationID string) error {
 	tx, err := l.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
@@ -408,7 +482,98 @@ func (l *Lifecycle) finalize(ctx context.Context, jobID, target string) error {
 			_ = tx.Rollback(ctx)
 		}
 	}()
-	if err := l.finalizeInTx(ctx, tx, jobID, target); err != nil {
+	q := dbgen.New(tx)
+	reservation, err := q.GetTerminalReservationForReconciliation(ctx, dbgen.GetTerminalReservationForReconciliationParams{
+		ReservationID:   reservationID,
+		GenerationJobID: jobID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return tx.Commit(ctx)
+	}
+	if err != nil {
+		return err
+	}
+	reservationRef := reservationID
+	jobRef := jobID
+	reported, err := q.SumReportedReservationActual(ctx, dbgen.SumReportedReservationActualParams{
+		ReservationID:   &reservationRef,
+		GenerationJobID: &jobRef,
+	})
+	if err != nil {
+		return err
+	}
+	if !numericIsReported(reported) {
+		if err := tx.Commit(ctx); err != nil {
+			return err
+		}
+		committed = true
+		return nil
+	}
+	delta, err := q.ReconcileReservationActual(ctx, dbgen.ReconcileReservationActualParams{
+		ReservationID:   reservationID,
+		GenerationJobID: jobID,
+		ActualAmount:    reported,
+		PreviousActual:  reservation.ActualAmount,
+	})
+	if err != nil {
+		return err
+	}
+	if err := q.SetGenerationJobActualCostForReservation(ctx, dbgen.SetGenerationJobActualCostForReservationParams{
+		ActualCostUsd:     reported,
+		ID:                jobID,
+		CostReservationID: &reservationRef,
+	}); err != nil {
+		return err
+	}
+	if numericIsNonZero(delta) {
+		holds, err := q.ListFinalizedBudgetHolds(ctx, reservationID)
+		if err != nil {
+			return err
+		}
+		for _, hold := range holds {
+			if err := q.AdjustBudgetSpent(ctx, dbgen.AdjustBudgetSpentParams{
+				DeltaAmount: delta,
+				ID:          hold.CostBudgetID,
+			}); err != nil {
+				return err
+			}
+		}
+		if err := q.UpsertIdentityCostLedgerActualForJob(ctx, dbgen.UpsertIdentityCostLedgerActualForJobParams{
+			LedgerID:        ids.NewIdentityCostLedgerID(),
+			DeltaAmount:     delta,
+			Currency:        reservation.Currency,
+			GenerationJobID: jobID,
+		}); err != nil {
+			return err
+		}
+		// Terminal finalization already recorded the reservation estimate and
+		// actual. Reconciliation contributes only the signed delta; recording
+		// the updated totals again would double-count late events.
+		telemetry.DefaultMetrics().RecordActualDelta(numericText(delta))
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+func (l *Lifecycle) finalize(ctx context.Context, jobID, target string, reservationIDs ...string) error {
+	tx, err := l.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+	reservationID := ""
+	if len(reservationIDs) > 0 {
+		reservationID = reservationIDs[0]
+	}
+	if err := l.finalizeInTxForReservation(ctx, tx, jobID, target, reservationID); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -442,34 +607,74 @@ func (l *Lifecycle) ReleaseInTx(ctx context.Context, tx pgx.Tx, jobID string) er
 // transaction without committing it, so it can be composed into a larger
 // transaction (admin cancel) or wrapped by finalize for the worker path.
 func (l *Lifecycle) finalizeInTx(ctx context.Context, tx pgx.Tx, jobID, target string) error {
+	return l.finalizeInTxForReservation(ctx, tx, jobID, target, "")
+}
+
+func (l *Lifecycle) finalizeInTxForReservation(ctx context.Context, tx pgx.Tx, jobID, target, reservationID string) error {
 	q := dbgen.New(tx)
 
 	var (
-		reservationID string
-		estimated     pgtype.Numeric
-		tenantID      string
+		finalReservationID string
+		estimated          pgtype.Numeric
+		actual             pgtype.Numeric
+		tenantID           string
+		currency           string
 	)
 	noop := false
 	switch target {
 	case statusCommitted:
-		row, err := q.CommitReservationForJob(ctx, jobID)
+		var err error
+		if reservationID != "" {
+			row, queryErr := q.CommitReservationByID(ctx, dbgen.CommitReservationByIDParams{GenerationJobID: jobID, ReservationID: reservationID})
+			err = queryErr
+			if err == nil {
+				finalReservationID, estimated, actual, tenantID, currency = row.ID, row.EstimatedAmount, row.ActualAmount, row.TenantID, row.Currency
+			}
+		} else {
+			row, queryErr := q.CommitReservationForJob(ctx, jobID)
+			err = queryErr
+			if err == nil {
+				finalReservationID, estimated, actual, tenantID, currency = row.ID, row.EstimatedAmount, row.ActualAmount, row.TenantID, row.Currency
+			}
+		}
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
 			noop = true // not reserved → idempotent no-op
 		case err != nil:
 			return err
-		default:
-			reservationID, estimated, tenantID = row.ID, row.EstimatedAmount, row.TenantID
 		}
 	case statusReleased:
-		row, err := q.ReleaseReservationForJob(ctx, jobID)
+		var err error
+		if reservationID != "" {
+			row, queryErr := q.ReleaseReservationByID(ctx, dbgen.ReleaseReservationByIDParams{GenerationJobID: jobID, ReservationID: reservationID})
+			err = queryErr
+			if err == nil {
+				// actual carries a provider-reported partial charge when one
+				// exists (cost-control.md §3 step 10: "preview succeeded, final
+				// failed"), including a genuine $0.00 report; NULL (row.ActualAmount
+				// invalid) means no provider ever billed anything on this job.
+				// currency is needed below for the identity-ledger write on a
+				// partial charge.
+				finalReservationID, estimated, actual, tenantID, currency = row.ID, row.EstimatedAmount, row.ActualAmount, row.TenantID, row.Currency
+			}
+		} else {
+			row, queryErr := q.ReleaseReservationForJob(ctx, jobID)
+			err = queryErr
+			if err == nil {
+				// actual carries a provider-reported partial charge when one
+				// exists (cost-control.md §3 step 10: "preview succeeded, final
+				// failed"), including a genuine $0.00 report; NULL (row.ActualAmount
+				// invalid) means no provider ever billed anything on this job.
+				// currency is needed below for the identity-ledger write on a
+				// partial charge.
+				finalReservationID, estimated, actual, tenantID, currency = row.ID, row.EstimatedAmount, row.ActualAmount, row.TenantID, row.Currency
+			}
+		}
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
 			noop = true
 		case err != nil:
 			return err
-		default:
-			reservationID, estimated, tenantID = row.ID, row.EstimatedAmount, row.TenantID
 		}
 	default:
 		return errors.New("cost: invalid finalize target " + target)
@@ -479,13 +684,25 @@ func (l *Lifecycle) finalizeInTx(ctx context.Context, tx pgx.Tx, jobID, target s
 		return nil
 	}
 
-	holds, err := q.ListReservedBudgetHolds(ctx, reservationID)
+	// partialCharge is cost-control.md §3 step 10: a released (failed/
+	// cancelled) job where a provider nonetheless reported and billed a real
+	// call (e.g. preview succeeded, final failed) — including an explicit
+	// $0.00 report, which is still "billed" (a known outcome), just for zero
+	// money. It is charged exactly like a commit — moved from reserved to
+	// spent, stamped on the job, folded into the identity ledger — while the
+	// reservation itself still ends in `released` (the job did not succeed)
+	// and the unbilled remainder of the hold is simply dropped from
+	// `reserved_amount` (never added to spent).
+	partialCharge := target == statusReleased && numericIsReported(actual)
+	chargedActual := target == statusCommitted || partialCharge
+
+	holds, err := q.ListReservedBudgetHolds(ctx, finalReservationID)
 	if err != nil {
 		return err
 	}
 	for _, h := range holds {
-		if target == statusCommitted {
-			if err := q.CommitBudgetHold(ctx, dbgen.CommitBudgetHoldParams{Amount: h.ReservedAmount, ID: h.CostBudgetID}); err != nil {
+		if chargedActual {
+			if err := q.CommitBudgetHold(ctx, dbgen.CommitBudgetHoldParams{ReservedAmount: h.ReservedAmount, ActualAmount: actual, ID: h.CostBudgetID}); err != nil {
 				return err
 			}
 		} else {
@@ -493,23 +710,54 @@ func (l *Lifecycle) finalizeInTx(ctx context.Context, tx pgx.Tx, jobID, target s
 				return err
 			}
 		}
+		// The hold's own status always follows the reservation's terminal
+		// status (released here, even for a partially-charged release) — it
+		// records what happened to the RESERVATION, not whether this specific
+		// hold moved money via Commit vs Release above.
 		if err := q.MarkBudgetHoldStatus(ctx, dbgen.MarkBudgetHoldStatusParams{Status: target, ID: h.ID}); err != nil {
 			return err
 		}
 	}
 
-	// Cost-event + job actual: on commit, actual = estimate; on release, none.
+	// Cost-event + job actual: on commit, or a release with a provider-
+	// reported partial charge, provider-reported actuals win (estimated cost
+	// is the explicit fallback only when commit never got a provider actual
+	// at all — see CommitReservationForJob's COALESCE). A plain release (no
+	// provider ever charged anything) leaves the job's actual cost untouched
+	// (nil) and no identity ledger row is written.
+	costEventStatus := costEventFailed
+	costEventActual := nullNumeric()
 	if target == statusCommitted {
-		if err := q.SetGenerationJobActualCost(ctx, dbgen.SetGenerationJobActualCostParams{ActualCostUsd: estimated, ID: jobID}); err != nil {
+		costEventStatus = costEventSucceeded
+	}
+	if chargedActual {
+		costEventActual = actual
+		var err error
+		if finalReservationID != "" {
+			err = q.SetGenerationJobActualCostForReservation(ctx, dbgen.SetGenerationJobActualCostForReservationParams{
+				ActualCostUsd:     actual,
+				ID:                jobID,
+				CostReservationID: &finalReservationID,
+			})
+		} else {
+			err = q.SetGenerationJobActualCost(ctx, dbgen.SetGenerationJobActualCostParams{ActualCostUsd: actual, ID: jobID})
+		}
+		if err != nil {
 			return err
 		}
-		if err := l.finalizeCostEvent(ctx, q, jobID, tenantID, estimated, estimated, costEventSucceeded); err != nil {
+		if err := q.UpsertIdentityCostLedgerForJob(ctx, dbgen.UpsertIdentityCostLedgerForJobParams{
+			LedgerID:        ids.NewIdentityCostLedgerID(),
+			EstimatedAmount: estimated,
+			ActualAmount:    actual,
+			Currency:        currency,
+			GenerationJobID: jobID,
+		}); err != nil {
 			return err
 		}
-	} else {
-		if err := l.finalizeCostEvent(ctx, q, jobID, tenantID, estimated, nullNumeric(), costEventFailed); err != nil {
-			return err
-		}
+		telemetry.DefaultMetrics().RecordCost(numericText(estimated), numericText(actual))
+	}
+	if err := l.finalizeCostEvent(ctx, q, jobID, finalReservationID, tenantID, estimated, costEventActual, costEventStatus); err != nil {
+		return err
 	}
 
 	return nil
@@ -518,13 +766,18 @@ func (l *Lifecycle) finalizeInTx(ctx context.Context, tx pgx.Tx, jobID, target s
 // finalizeCostEvent stamps estimated/actual/status onto the job's latest cost
 // event (the one the worker wrote for the terminal attempt). If none exists it
 // writes a fallback row so the cost ledger is never silently missing.
-func (l *Lifecycle) finalizeCostEvent(ctx context.Context, q *dbgen.Queries, jobID, tenantID string, estimated, actual pgtype.Numeric, status string) error {
+func (l *Lifecycle) finalizeCostEvent(ctx context.Context, q *dbgen.Queries, jobID, reservationID, tenantID string, estimated, actual pgtype.Numeric, status string) error {
 	job := jobID
+	var reservationIDPtr *string
+	if reservationID != "" {
+		reservationIDPtr = &reservationID
+	}
 	n, err := q.UpdateLatestJobCostEvent(ctx, dbgen.UpdateLatestJobCostEventParams{
-		EstimatedCostUsd: estimated,
-		ActualCostUsd:    actual,
-		Status:           status,
-		JobID:            &job,
+		EstimatedCostUsd:  estimated,
+		ActualCostUsd:     actual,
+		Status:            status,
+		JobID:             &job,
+		CostReservationID: reservationIDPtr,
 	})
 	if err != nil {
 		return err
@@ -533,12 +786,13 @@ func (l *Lifecycle) finalizeCostEvent(ctx context.Context, q *dbgen.Queries, job
 		return nil
 	}
 	return q.InsertFinalizerCostEvent(ctx, dbgen.InsertFinalizerCostEventParams{
-		ID:               ids.NewCostEventID(),
-		TenantID:         tenantID,
-		JobID:            &job,
-		Operation:        operationTextToImage,
-		EstimatedCostUsd: estimated,
-		ActualCostUsd:    actual,
-		Status:           status,
+		ID:                ids.NewCostEventID(),
+		TenantID:          tenantID,
+		JobID:             &job,
+		CostReservationID: reservationIDPtr,
+		Operation:         operationTextToImage,
+		EstimatedCostUsd:  estimated,
+		ActualCostUsd:     actual,
+		Status:            status,
 	})
 }
