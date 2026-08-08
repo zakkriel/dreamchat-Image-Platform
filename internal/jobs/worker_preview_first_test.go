@@ -9,6 +9,7 @@ import (
 	"image/png"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/providers"
@@ -116,6 +117,31 @@ func (p *previewFirstProvider) Capabilities() providers.ProviderCapabilities {
 	return providers.ProviderCapabilities{ProviderID: "mock", ModelName: "mock-v1"}
 }
 
+// blockingPreviewFinalProvider pauses the first final call so a
+// duplicate first delivery can be attempted while the owner is in flight.
+type blockingPreviewFinalProvider struct {
+	previewFirstProvider
+	started chan struct{}
+	release chan struct{}
+	mu      sync.Mutex
+	blocked bool
+}
+
+func (p *blockingPreviewFinalProvider) Generate(ctx context.Context, req providers.ProviderGenerateRequest) (providers.ProviderGenerateResult, error) {
+	result, err := p.previewFirstProvider.Generate(ctx, req)
+	if req.Width == deliveryRenderEdge {
+		p.mu.Lock()
+		first := !p.blocked
+		p.blocked = true
+		p.mu.Unlock()
+		if first {
+			close(p.started)
+			<-p.release
+		}
+	}
+	return result, err
+}
+
 func (p *previewFirstProvider) callCount() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -203,6 +229,57 @@ func TestPreviewFirstTwoPhaseLifecycle(t *testing.T) {
 	}
 	if len(fin.released) != 0 {
 		t.Fatalf("cost must not be released on success, got %+v", fin.released)
+	}
+}
+
+// TestPreviewFirstFinalDuplicateDeliveryIsClaimedOnce proves that two first
+// deliveries cannot both enter the non-lazy final provider phase after the
+// preview is committed.
+func TestPreviewFirstFinalDuplicateDeliveryIsClaimedOnce(t *testing.T) {
+	jobsRepo := newFakeJobsRepo()
+	assetsRepo := &fakeAssetsRepo{}
+	jobsRepo.assets = assetsRepo
+	id := "job_pf_final_duplicate"
+	seedPreviewFirstJob(jobsRepo, id, previewFirstPayload())
+	jobsRepo.mu.Lock()
+	job := jobsRepo.jobs[id]
+	job.Status = "preview_ready"
+	job.PreviewAssetIds = []string{"asset_preview_prior"}
+	jobsRepo.jobs[id] = job
+	jobsRepo.mu.Unlock()
+
+	provider := &blockingPreviewFinalProvider{
+		previewFirstProvider: previewFirstProvider{repo: jobsRepo, jobID: id},
+		started:              make(chan struct{}),
+		release:              make(chan struct{}),
+	}
+	w := &Worker{Jobs: jobsRepo, Assets: assetsRepo, Storage: &fakeStorage{}, Providers: testRegistry(provider)}
+	done := make(chan error, 1)
+	go func() { done <- w.Process(context.Background(), id, 0) }()
+	select {
+	case <-provider.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first final provider call did not start")
+	}
+
+	if err := w.Process(context.Background(), id, 0); err != nil {
+		t.Fatalf("duplicate Process: %v", err)
+	}
+	if provider.callCount() != 1 {
+		t.Fatalf("duplicate first delivery must not call provider, got %d calls", provider.callCount())
+	}
+
+	close(provider.release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("owner Process: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("owner finalization did not complete")
+	}
+	if jobsRepo.jobs[id].Status != "completed" {
+		t.Fatalf("owner finalization must complete the job, got %q", jobsRepo.jobs[id].Status)
 	}
 }
 

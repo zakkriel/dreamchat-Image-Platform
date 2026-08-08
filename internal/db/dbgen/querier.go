@@ -6,6 +6,8 @@ package dbgen
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Querier interface {
@@ -17,6 +19,9 @@ type Querier interface {
 	// lock auto-releases at commit/rollback. The slot key is built deterministically
 	// by the caller (internal/assets) from the exact slot identity.
 	AcquireSupersedeLock(ctx context.Context, slotKey string) error
+	// AdjustBudgetSpent applies a late provider-cost delta. A negative delta is
+	// valid when an estimate fallback was replaced by a lower reported actual.
+	AdjustBudgetSpent(ctx context.Context, arg AdjustBudgetSpentParams) error
 	// Phase 6A4 supersede: archive every still-ready row of the exact artifact slot
 	// except the just-inserted new asset, linking each forward to it. Slot-scoped and
 	// exact — the same predicate as the reuse lookup — so a forced regenerate never
@@ -34,14 +39,27 @@ type Querier interface {
 	// this write sets the terminal cancel fields in the same transaction as the
 	// reservation release.
 	CancelGenerationJob(ctx context.Context, arg CancelGenerationJobParams) (GenerationJob, error)
-	// CommitBudgetHold moves a hold's amount from reserved → spent on the budget.
-	// GREATEST guards against a negative reserved_amount if accounting ever drifts.
+	// ClaimPreviewFinalization atomically claims the final phase after a
+	// non-lazy preview has been committed. It keeps status=preview_ready so readers
+	// can distinguish the delivered preview while the final provider call runs.
+	// A first delivery wins by setting a durable marker; retry deliveries are
+	// admitted by the worker using asynq's retry count after a crash.
+	ClaimPreviewFinalization(ctx context.Context, arg ClaimPreviewFinalizationParams) (GenerationJob, error)
+	// CommitBudgetHold moves the held estimate out of reserved and records the
+	// provider-reconciled actual in spent. The reservation was held for the
+	// worst-case plan, so reserved_amount is the held amount while actual_amount
+	// may be lower when a provider reports a cheaper outcome.
 	CommitBudgetHold(ctx context.Context, arg CommitBudgetHoldParams) error
+	// CommitReservationByID is the worker-safe lifecycle variant. A worker keeps
+	// the reservation id it read before provider work, so a stale task can never
+	// finalize a newer reservation attached to the same reusable job id.
+	CommitReservationByID(ctx context.Context, arg CommitReservationByIDParams) (CommitReservationByIDRow, error)
 	// CommitReservationForJob flips a reservation reserved → committed exactly
-	// once. No row returned means the reservation was not in `reserved` (already
-	// committed / released / failed) → caller treats it as a no-op and moves no
-	// budget. actual_amount = estimated_amount (Phase 4B: no provider-reported
-	// reconciliation).
+	// once. When provider adapters reported actual spend, sum those committed-job
+	// events; when they did not, fall back to the held estimate. Failed fallback
+	// attempts are included when they carry a provider-reported actual because a
+	// provider can bill a failed request too. No row means the reservation was not
+	// in `reserved` and the lifecycle caller performs an idempotent no-op.
 	CommitReservationForJob(ctx context.Context, generationJobID string) (CommitReservationForJobRow, error)
 	// Phase 7C-2: the hard concurrent-job cap counts a token's live generation
 	// jobs — those still occupying provider/queue capacity. preview_ready is
@@ -109,6 +127,9 @@ type Querier interface {
 	GetIdempotencyKey(ctx context.Context, arg GetIdempotencyKeyParams) (IdempotencyKey, error)
 	GetProviderModelPrice(ctx context.Context, id string) (GetProviderModelPriceRow, error)
 	GetStyleProfileByID(ctx context.Context, arg GetStyleProfileByIDParams) (StyleProfile, error)
+	// GetTerminalReservationForReconciliation locks a terminal reservation while
+	// a late provider event is folded into its already-finalized accounting.
+	GetTerminalReservationForReconciliation(ctx context.Context, arg GetTerminalReservationForReconciliationParams) (GetTerminalReservationForReconciliationRow, error)
 	// CONVENTION: queries here list visual_assets columns EXPLICITLY (not SELECT *).
 	// When a migration adds a column, append it to the matching RETURNING/SELECT
 	// lists below, or sqlc emits a per-query *Row type and the build breaks.
@@ -229,6 +250,9 @@ type Querier interface {
 	// Cost reservations (read-only admin list)
 	// ---------------------------------------------------------------------------
 	ListCostReservationsAdmin(ctx context.Context, arg ListCostReservationsAdminParams) ([]ListCostReservationsAdminRow, error)
+	// ListFinalizedBudgetHolds returns all budget rows already terminalized for a
+	// reservation. Late provider billing adjusts spent on each applicable scope.
+	ListFinalizedBudgetHolds(ctx context.Context, reservationID string) ([]ListFinalizedBudgetHoldsRow, error)
 	ListProviderModelPrices(ctx context.Context) ([]ListProviderModelPricesRow, error)
 	// Provider routing substrate (Phase 7A, internal/providers/routing).
 	//
@@ -326,12 +350,24 @@ type Querier interface {
 	// for the FindExactVisualAsset slot predicate (identity + variant + state + style
 	// + quality), minus the status filter.
 	MaxVersionForVariantSlot(ctx context.Context, arg MaxVersionForVariantSlotParams) (int32, error)
+	// ReconcileReservationActual records the provider-reported total and returns
+	// the signed delta from the amount already charged at terminalization.
+	ReconcileReservationActual(ctx context.Context, arg ReconcileReservationActualParams) (pgtype.Numeric, error)
 	// ReleaseBudgetHold returns a hold's amount to the budget: drop reserved,
 	// leave spent untouched.
 	ReleaseBudgetHold(ctx context.Context, arg ReleaseBudgetHoldParams) error
+	// ReleaseReservationByID is the worker-safe release variant. It targets the
+	// reservation captured by the task rather than whatever reservation a retry
+	// may have attached to the job id later.
+	ReleaseReservationByID(ctx context.Context, arg ReleaseReservationByIDParams) (ReleaseReservationByIDRow, error)
 	// ReleaseReservationForJob flips a reservation reserved → released exactly
-	// once. actual_amount stays NULL (job failed, nothing charged). No row
-	// returned → no-op.
+	// once. actual_amount stays NULL unless a provider reported a partial charge
+	// before the job failed (e.g. preview succeeded, final failed) — cost-
+	// control.md §3 step 10: "commit the partial actual and release the unused
+	// remainder". Unlike CommitReservationForJob, this does NOT fall back to
+	// estimated_amount when no actual was reported — a plain (no partial charge)
+	// release must leave actual_amount null, not silently charge the estimate
+	// for a job that never got a provider bill. No row returned → no-op.
 	ReleaseReservationForJob(ctx context.Context, generationJobID string) (ReleaseReservationForJobRow, error)
 	// ReserveActiveBudget atomically holds `amount` against an active budget.
 	// The conditional WHERE is the consistency point: concurrent requests that
@@ -365,13 +401,17 @@ type Querier interface {
 	RetryResetGenerationJob(ctx context.Context, arg RetryResetGenerationJobParams) (GenerationJob, error)
 	// SetGenerationJobActualCost records the committed actual on the job row.
 	SetGenerationJobActualCost(ctx context.Context, arg SetGenerationJobActualCostParams) error
-	// SetGenerationJobAssetPack links the job to the pack it created. Run inside
-	// the create transaction, after both rows exist.
+	// SetGenerationJobActualCostForReservation prevents an old reservation's late
+	// event from overwriting the actual for a newer retry attached to the same job.
+	SetGenerationJobActualCostForReservation(ctx context.Context, arg SetGenerationJobActualCostForReservationParams) error
 	SetGenerationJobAssetPack(ctx context.Context, arg SetGenerationJobAssetPackParams) error
 	// SetGenerationJobCost links a job to its cost_reservation and records the
 	// pre-flight estimate. Run inside the create transaction, after the
 	// reservation row exists.
 	SetGenerationJobCost(ctx context.Context, arg SetGenerationJobCostParams) error
+	// SumReportedReservationActual excludes the synthetic estimate fallback event.
+	// Only provider-reported actuals participate in late reconciliation.
+	SumReportedReservationActual(ctx context.Context, arg SumReportedReservationActualParams) (pgtype.Numeric, error)
 	// Admin cost surface (docs/architecture/admin-control-surface.md §"Cost
 	// controls"). Phase 4B: price-book create/list/get/update, cost-budget
 	// create/list/update, cost-reservation list, and the audit-event write that
@@ -390,16 +430,25 @@ type Querier interface {
 	// roles a pack run resolved to (Phase 6A3). The worker calls it at the terminal
 	// step so a consumer can read pack completeness off asset_packs directly.
 	UpdateAssetPackCompleteness(ctx context.Context, arg UpdateAssetPackCompletenessParams) error
+	// SetGenerationJobAssetPack links the job to the pack it created. Run inside
+	// the create transaction, after both rows exist.
+	// UpdateAssetPackCompletenessForJob is the retry-safe variant. It allows the
+	// same generation job to correct a terminal pack status after a bookkeeping
+	// failure, but never lets an unrelated/stale job rewrite the pack.
+	UpdateAssetPackCompletenessForJob(ctx context.Context, arg UpdateAssetPackCompletenessForJobParams) error
 	UpdateAssetPackStatus(ctx context.Context, arg UpdateAssetPackStatusParams) error
+	// UpdateAssetPackStatusForJob is the retry-safe variant. Terminal statuses
+	// may be corrected only by the generation job that owns the pack.
+	UpdateAssetPackStatusForJob(ctx context.Context, arg UpdateAssetPackStatusForJobParams) error
 	// UpdateCostBudget mutates only limit_amount and status. reserved_amount,
 	// spent_amount, period_start, and the scope/period identity stay platform-owned
 	// and fixed (period_start advances only via the lazy reservation-time reset).
 	UpdateCostBudget(ctx context.Context, arg UpdateCostBudgetParams) (UpdateCostBudgetRow, error)
 	// UpdateLatestJobCostEvent stamps the estimated/actual cost and final status
-	// onto the most recent cost event for a job (the one the worker wrote for the
-	// terminal attempt). Returns the number of rows touched so the finalizer can
-	// insert one if the worker never wrote it.
+	// onto the most recent cost event for this reservation. Returns the number of
+	// rows touched so the finalizer can insert one if the worker never wrote it.
 	UpdateLatestJobCostEvent(ctx context.Context, arg UpdateLatestJobCostEventParams) (int64, error)
+	UpdateProviderAttemptCost(ctx context.Context, arg UpdateProviderAttemptCostParams) error
 	// UpdateProviderModelPrice mutates only the editable fields (effective_to,
 	// is_active, notes). COALESCE keeps unspecified fields unchanged.
 	UpdateProviderModelPrice(ctx context.Context, arg UpdateProviderModelPriceParams) (UpdateProviderModelPriceRow, error)
@@ -409,6 +458,17 @@ type Querier interface {
 	// The tenant_id predicate is app-level defense-in-depth alongside the Phase
 	// 7C-3 RLS policy (which already scopes the row to app.current_tenant).
 	UpdateWebhookEndpointURL(ctx context.Context, arg UpdateWebhookEndpointURLParams) (WebhookEndpoint, error)
+	// UpsertIdentityCostLedgerActualForJob folds only a late actual delta into the
+	// identity ledger. Estimated totals were accounted for by the original
+	// terminalization when applicable; a late charge after a plain release creates
+	// an actual-only row if necessary.
+	UpsertIdentityCostLedgerActualForJob(ctx context.Context, arg UpsertIdentityCostLedgerActualForJobParams) error
+	// UpsertIdentityCostLedgerForJob adds one committed reservation's estimated and
+	// actual amounts to the identity lifetime ledger. Prefer the first-class
+	// generation_jobs.visual_identity_id, with payload fallbacks for older rows that
+	// predate that column being populated by the jobs service. Jobs without an
+	// identity (for example ad-hoc artifacts) intentionally produce no row.
+	UpsertIdentityCostLedgerForJob(ctx context.Context, arg UpsertIdentityCostLedgerForJobParams) error
 }
 
 var _ Querier = (*Queries)(nil)

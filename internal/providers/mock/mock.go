@@ -46,8 +46,8 @@ func (p *Provider) Capabilities() providers.ProviderCapabilities {
 		SupportedAspects:  []string{"1:1", "16:9", "9:16", "4:3", "3:4"},
 		// Mock is a synthetic/test provider: it advertises the full capability set
 		// so dev/CI can exercise identity/pack routing without a real provider key,
-		// but it must never make production readiness report a real identity-capable
-		// provider (PRD 03 §8 readiness).
+		// but it must never make production readiness report that a real identity-capable
+		// provider is configured (PRD 03 §8 readiness).
 		Synthetic: true,
 	}
 }
@@ -65,8 +65,9 @@ func (p *Provider) Generate(ctx context.Context, req providers.ProviderGenerateR
 
 	providerJobID := "mock_" + hashKey(req.JobID, req.Prompt, req.Seed)
 	result := providers.ProviderGenerateResult{
-		ProviderJobID: providerJobID,
-		Status:        providers.JobStatusCompleted,
+		ProviderJobID:     providerJobID,
+		ProviderRequestID: providerJobID,
+		Status:            providers.JobStatusCompleted,
 		Images: []providers.ProviderImage{{
 			Bytes:       img,
 			ContentType: "image/png",
@@ -118,8 +119,9 @@ func (p *Provider) Upscale(ctx context.Context, req providers.ProviderUpscaleReq
 	}
 	providerJobID := "mock_upscale_" + hashKey(req.JobID, req.SourceURL, fmt.Sprintf("%d", scale))
 	return providers.ProviderGenerateResult{
-		ProviderJobID: providerJobID,
-		Status:        providers.JobStatusCompleted,
+		ProviderJobID:     providerJobID,
+		ProviderRequestID: providerJobID,
+		Status:            providers.JobStatusCompleted,
 		Images: []providers.ProviderImage{{
 			Bytes:       img,
 			ContentType: "image/png",

@@ -119,11 +119,22 @@ type ProviderImage struct {
 
 type ProviderGenerateResult struct {
 	ProviderJobID string
-	Status        JobStatus
-	Images        []ProviderImage
-	PromptHash    string
-	Seed          string
-	Metadata      map[string]any
+	// ProviderRequestID is the provider-side request identifier when the
+	// adapter receives one. It is kept separate from ProviderJobID because
+	// some providers expose a request id for billing and a different polling
+	// job id.
+	ProviderRequestID string
+	Status            JobStatus
+	Images            []ProviderImage
+	PromptHash        string
+	Seed              string
+	Metadata          map[string]any
+	// ActualCostUSD is optional provider-reported spend for this call. A nil
+	// value means the provider did not report a billable amount; cost
+	// finalization then falls back to the reserved estimate instead of
+	// inventing an actual.
+	ActualCostUSD *string
+	CostCurrency  string
 }
 
 type ProviderJobStatus struct {

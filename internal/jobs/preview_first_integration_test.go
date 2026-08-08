@@ -231,8 +231,8 @@ func TestEndToEndPreviewFirstArtifact(t *testing.T) {
 	if got := scalar(t, pool, `SELECT status FROM cost_reservations WHERE generation_job_id=$1`, jobID); got != "committed" {
 		t.Fatalf("expected committed reservation, got %s", got)
 	}
-	if got := scalar(t, pool, `SELECT actual_cost_usd::text FROM generation_jobs WHERE id=$1`, jobID); got != "0.0100" {
-		t.Fatalf("expected actual_cost 0.0100 (single charge), got %s", got)
+	if got := scalar(t, pool, `SELECT actual_cost_usd::text FROM generation_jobs WHERE id=$1`, jobID); got != "0.0600" {
+		t.Fatalf("expected actual_cost 0.0600 (single charge), got %s", got)
 	}
 }
 

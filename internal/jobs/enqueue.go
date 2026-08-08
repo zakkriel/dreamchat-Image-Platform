@@ -23,11 +23,14 @@ const (
 	MaxAttempts = 3
 )
 
-// TaskPayload is the on-the-wire payload for every generation task. The
-// worker re-reads the job from Postgres on each attempt so we keep the queue
-// payload tiny.
+// TaskPayload is the on-the-wire payload for every generation task. The worker
+// re-reads the job from Postgres on each attempt, while CostReservationID binds
+// the task to the reservation created for that execution. This prevents a
+// delayed task from a failed run from claiming a later admin retry that reused
+// the same generation job ID.
 type TaskPayload struct {
-	JobID string `json:"job_id"`
+	JobID             string `json:"job_id"`
+	CostReservationID string `json:"cost_reservation_id,omitempty"`
 }
 
 // Enqueuer enqueues asynq tasks. The interface is small so the API layer can
@@ -36,6 +39,15 @@ type Enqueuer interface {
 	EnqueueGenerateArtifact(ctx context.Context, jobID string) error
 	EnqueueGeneratePack(ctx context.Context, jobID string) error
 	Close() error
+}
+
+// ReservationAwareEnqueuer is the production extension used to include the
+// reservation/run token in a task payload. Older lightweight enqueuers may
+// implement only Enqueuer; callers retain that compatibility for tests and
+// integrations that do not model the queue payload.
+type ReservationAwareEnqueuer interface {
+	EnqueueGenerateArtifactForReservation(ctx context.Context, jobID, reservationID string) error
+	EnqueueGeneratePackForReservation(ctx context.Context, jobID, reservationID string) error
 }
 
 type asynqEnqueuer struct {
@@ -51,15 +63,23 @@ func NewEnqueuer(addr, password string) Enqueuer {
 }
 
 func (e *asynqEnqueuer) EnqueueGenerateArtifact(ctx context.Context, jobID string) error {
-	return e.enqueue(ctx, TaskGenerateArtifact, jobID)
+	return e.enqueue(ctx, TaskGenerateArtifact, jobID, "")
 }
 
 func (e *asynqEnqueuer) EnqueueGeneratePack(ctx context.Context, jobID string) error {
-	return e.enqueue(ctx, TaskGeneratePack, jobID)
+	return e.enqueue(ctx, TaskGeneratePack, jobID, "")
 }
 
-func (e *asynqEnqueuer) enqueue(ctx context.Context, taskName, jobID string) error {
-	payload, err := json.Marshal(TaskPayload{JobID: jobID})
+func (e *asynqEnqueuer) EnqueueGenerateArtifactForReservation(ctx context.Context, jobID, reservationID string) error {
+	return e.enqueue(ctx, TaskGenerateArtifact, jobID, reservationID)
+}
+
+func (e *asynqEnqueuer) EnqueueGeneratePackForReservation(ctx context.Context, jobID, reservationID string) error {
+	return e.enqueue(ctx, TaskGeneratePack, jobID, reservationID)
+}
+
+func (e *asynqEnqueuer) enqueue(ctx context.Context, taskName, jobID, reservationID string) error {
+	payload, err := json.Marshal(TaskPayload{JobID: jobID, CostReservationID: reservationID})
 	if err != nil {
 		return err
 	}

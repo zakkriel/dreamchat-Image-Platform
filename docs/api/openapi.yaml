@@ -1850,7 +1850,7 @@ components:
           description: Validated (requires schema_version) and stored; execution deferred.
         max_megapixels:
           type: number
-          description: Validated and clamped to a platform ceiling, persisted. Not priced or pixel-enforced this chunk.
+          description: Validated against the platform ceiling and persisted. The worker enforces the decoded output pixel budget; values are never silently clamped.
         provider_id: { type: string, nullable: true }
     GridOptions:
       type: object

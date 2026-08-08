@@ -24,13 +24,14 @@ func TestGenerationRenderHashIsDeterministic(t *testing.T) {
 func TestGenerationRenderHashChangesPerField(t *testing.T) {
 	base := GenerationRenderHash(baseGenerationInput())
 	mutations := map[string]func(*GenerationHashInput){
-		"tenant":       func(in *GenerationHashInput) { in.TenantID = "tenant_b" },
-		"identity":     func(in *GenerationHashInput) { in.IdentityID = "vi_other" },
-		"display name": func(in *GenerationHashInput) { in.DisplayName = "Commander Mira" },
-		"anchor":       func(in *GenerationHashInput) { in.AnchorAssetID = "va_anchor" },
-		"derive from":  func(in *GenerationHashInput) { in.DeriveFrom = "va_source" },
-		"intent":       func(in *GenerationHashInput) { in.Intent = "draft" },
-		"transform":    func(in *GenerationHashInput) { in.TransformJSON = `{"schema_version":"1"}` },
+		"tenant":         func(in *GenerationHashInput) { in.TenantID = "tenant_b" },
+		"identity":       func(in *GenerationHashInput) { in.IdentityID = "vi_other" },
+		"display name":   func(in *GenerationHashInput) { in.DisplayName = "Commander Mira" },
+		"anchor":         func(in *GenerationHashInput) { in.AnchorAssetID = "va_anchor" },
+		"derive from":    func(in *GenerationHashInput) { in.DeriveFrom = "va_source" },
+		"intent":         func(in *GenerationHashInput) { in.Intent = "draft" },
+		"max_megapixels": func(in *GenerationHashInput) { in.MaxMegapixels = 3.5 },
+		"transform":      func(in *GenerationHashInput) { in.TransformJSON = `{"schema_version":"1"}` },
 	}
 	for name, mutate := range mutations {
 		in := baseGenerationInput()
@@ -50,5 +51,15 @@ func TestGenerationRenderHashFieldBoundaries(t *testing.T) {
 	b.IdentityID, b.DisplayName = "vi_a", "bc"
 	if GenerationRenderHash(a) == GenerationRenderHash(b) {
 		t.Fatal("field boundary shift collided")
+	}
+}
+
+func TestGenerationRenderHashUsesLosslessMegapixelFormatting(t *testing.T) {
+	a := baseGenerationInput()
+	a.MaxMegapixels = 1.0000001
+	b := a
+	b.MaxMegapixels = 1.0000002
+	if GenerationRenderHash(a) == GenerationRenderHash(b) {
+		t.Fatal("distinct megapixel budgets collided in render hash")
 	}
 }

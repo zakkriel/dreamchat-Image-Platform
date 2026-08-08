@@ -127,6 +127,16 @@ func (s *Service) CancelJob(ctx context.Context, tenantID, jobID string) (jobs.J
 		if err != nil {
 			return jobs.Job{}, err
 		}
+		// A pack has no independent useful lifecycle after its generation job is
+		// cancelled. Mark it failed in this same transaction so a worker that
+		// loses the job-row lock cannot later publish a completed pack status.
+		if packRow, packErr := q.GetGenerationJobByID(ctx, dbgen.GetGenerationJobByIDParams{ID: jobID, TenantID: tenantID}); packErr != nil {
+			return jobs.Job{}, packErr
+		} else if packRow.AssetPackID != nil && *packRow.AssetPackID != "" {
+			if packErr := q.UpdateAssetPackStatusForJob(ctx, dbgen.UpdateAssetPackStatusForJobParams{ID: *packRow.AssetPackID, GenerationJobID: &jobID, Status: statusFailed}); packErr != nil {
+				return jobs.Job{}, packErr
+			}
+		}
 		// Release the reservation in the SAME transaction so the cancel and the
 		// budget reclaim commit together — exactly once.
 		if err := s.releaser.ReleaseInTx(ctx, tx, jobID); err != nil {
@@ -183,6 +193,16 @@ func (s *Service) RetryJob(ctx context.Context, tenantID, jobID string) (jobs.Jo
 		return jobs.Job{}, ErrInvalidState
 	}
 
+	// Finalize the prior failed generation before attaching a new reservation.
+	// The worker normally does this immediately after MarkFailed, but the admin
+	// retry can win that race. Releasing inside this same locked transaction
+	// prevents two reserved rows from surviving under one reusable job id and
+	// gives stale workers a terminal old reservation to target rather than the
+	// fresh retry hold.
+	if err := s.releaser.ReleaseInTx(ctx, tx, jobID); err != nil {
+		return jobs.Job{}, fmt.Errorf("release prior retry reservation: %w", err)
+	}
+
 	rin, err := reserveInputFromRow(jobID, tenantID, row)
 	if err != nil {
 		return jobs.Job{}, err
@@ -217,7 +237,7 @@ func (s *Service) RetryJob(ctx context.Context, tenantID, jobID string) (jobs.Jo
 	if resetRow.AssetPackID != nil {
 		packID = *resetRow.AssetPackID
 	}
-	if err := s.enqueueRetry(ctx, jobID, tenantID, packID); err != nil {
+	if err := s.enqueueRetry(ctx, jobID, tenantID, packID, res.ID); err != nil {
 		return jobs.Job{}, err
 	}
 	return jobs.JobFromGenerationRow(resetRow), nil
@@ -227,12 +247,19 @@ func (s *Service) RetryJob(ctx context.Context, tenantID, jobID string) (jobs.Jo
 // path's enqueue-failure behavior: on failure it marks the job failed, marks a
 // pack job's pack failed, and releases the fresh reservation so it does not sit
 // reserved forever. It never leaves a queued job with no queued task.
-func (s *Service) enqueueRetry(ctx context.Context, jobID, tenantID, packID string) error {
-	enqueueFn := s.enqueuer.EnqueueGenerateArtifact
-	if packID != "" {
-		enqueueFn = s.enqueuer.EnqueueGeneratePack
+func (s *Service) enqueueRetry(ctx context.Context, jobID, tenantID, packID, reservationID string) error {
+	var enqErr error
+	if aware, ok := s.enqueuer.(jobs.ReservationAwareEnqueuer); ok && reservationID != "" {
+		if packID != "" {
+			enqErr = aware.EnqueueGeneratePackForReservation(ctx, jobID, reservationID)
+		} else {
+			enqErr = aware.EnqueueGenerateArtifactForReservation(ctx, jobID, reservationID)
+		}
+	} else if packID != "" {
+		enqErr = s.enqueuer.EnqueueGeneratePack(ctx, jobID)
+	} else {
+		enqErr = s.enqueuer.EnqueueGenerateArtifact(ctx, jobID)
 	}
-	enqErr := enqueueFn(ctx, jobID)
 	if enqErr == nil {
 		return nil
 	}
@@ -246,18 +273,23 @@ func (s *Service) enqueueRetry(ctx context.Context, jobID, tenantID, packID stri
 		ec := "enqueue_failed"
 		em := enqErr.Error()
 		rb := false
+		var reservationIDRef *string
+		if reservationID != "" {
+			reservationIDRef = &reservationID
+		}
 		if _, markErr := q.MarkGenerationJobFailed(ctx, dbgen.MarkGenerationJobFailedParams{
-			ID:           jobID,
-			TenantID:     tenantID,
-			ErrorCode:    &ec,
-			ErrorMessage: &em,
-			Retryable:    &rb,
+			ID:                jobID,
+			TenantID:          tenantID,
+			ErrorCode:         &ec,
+			ErrorMessage:      &em,
+			Retryable:         &rb,
+			CostReservationID: reservationIDRef,
 		}); markErr != nil {
 			cleanupErr = fmt.Errorf("mark-failed: %v", markErr)
 			return cleanupErr
 		}
 		if packID != "" {
-			if packErr := q.UpdateAssetPackStatus(ctx, dbgen.UpdateAssetPackStatusParams{ID: packID, Status: statusFailed}); packErr != nil {
+			if packErr := q.UpdateAssetPackStatusForJob(ctx, dbgen.UpdateAssetPackStatusForJobParams{ID: packID, GenerationJobID: &jobID, Status: statusFailed}); packErr != nil {
 				cleanupErr = fmt.Errorf("mark-pack-failed: %v", packErr)
 				return cleanupErr
 			}

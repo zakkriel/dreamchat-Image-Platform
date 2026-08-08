@@ -8,11 +8,13 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/audit"
 	"github.com/zakkriel/drchat-image-platform/internal/governance"
 	"github.com/zakkriel/drchat-image-platform/internal/idempotency"
 	"github.com/zakkriel/drchat-image-platform/internal/identities"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
+	"github.com/zakkriel/drchat-image-platform/internal/providers/routing"
 )
 
 // ---------------------------------------------------------------------------
@@ -126,6 +128,12 @@ type noopAuditSink struct{}
 
 func (noopAuditSink) Emit(_ context.Context, _ string, _ audit.Event) error { return nil }
 
+type generationReuseHit struct{}
+
+func (generationReuseHit) FindReadyGenerationByPromptHash(context.Context, string, string) (assets.VisualAsset, error) {
+	return assets.VisualAsset{ID: "asset_cached_generation"}, nil
+}
+
 func newGenerationsRouter(creator jobs.Creator, idRepo identities.Repository, resolver RouteResolver) chi.Router {
 	h := NewGenerationsHandler(creator, resolver, idRepo)
 	h.Verifier = alwaysOKVerifier{}
@@ -160,6 +168,30 @@ func TestGenerationsValidMinimal202(t *testing.T) {
 	}
 	if len(creator.calls) != 1 {
 		t.Fatalf("expected exactly 1 service call, got %d", len(creator.calls))
+	}
+}
+
+func TestGenerationsCacheHitPersistsIdentityID(t *testing.T) {
+	creator := newStubCreator()
+	handler := NewGenerationsHandler(creator, okResolver(), seededGenIDRepo())
+	handler.Verifier = alwaysOKVerifier{}
+	handler.Mode = governance.ModeEnforce
+	handler.Audit = noopAuditSink{}
+	handler.Reuse = generationReuseHit{}
+	router := chi.NewRouter()
+	router.Post("/v1/generations", handler.Create)
+
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/generations", tenantA,
+		[]string{"images:write"}, minimalGenBody(testIdentityID, "idem-cache-hit-001"), nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(creator.cacheHitCalls) != 1 {
+		t.Fatalf("expected one cache-hit service call, got %d", len(creator.cacheHitCalls))
+	}
+	got := creator.cacheHitCalls[0].VisualIdentityID
+	if got == nil || *got != testIdentityID {
+		t.Fatalf("expected cache-hit VisualIdentityID=%q, got %v", testIdentityID, got)
 	}
 }
 
@@ -473,6 +505,33 @@ func TestGenerationsResolverReceivesIntentAndCapabilityAndEmptyQualityTier(t *te
 	// CRITICAL: QualityTier MUST be empty — setting it hard-filters before intent ranking.
 	if resolver.lastReq.QualityTier != "" {
 		t.Fatalf("QualityTier must be empty in ResolveRequest (task 7 critical), got %q", resolver.lastReq.QualityTier)
+	}
+}
+
+func TestGenerationsPersistsResolvedFallbackChain(t *testing.T) {
+	creator := newStubCreator()
+	resolver := okResolver()
+	resolver.chain = []routing.ResolvedRoute{
+		resolver.route,
+		{
+			ProviderID:        "bfl",
+			ProviderRouteID:   "route_bfl_text_to_image_standard",
+			ProviderModelID:   "pm_bfl_v1",
+			OperationType:     "text_to_image",
+			PreviewCapability: "no_preview",
+		},
+	}
+	router := newGenerationsRouter(creator, seededGenIDRepo(), resolver)
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/generations", tenantA,
+		[]string{"images:write"}, minimalGenBody(testIdentityID, "idem-key-fallback"), nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(creator.calls) != 1 || len(creator.calls[0].RouteChain) != 1 {
+		t.Fatalf("expected one persisted alternate route, got %+v", creator.calls)
+	}
+	if got := creator.calls[0].RouteChain[0]; got.ProviderID != "bfl" || got.ModelID != "pm_bfl_v1" {
+		t.Fatalf("unexpected persisted fallback route: %+v", got)
 	}
 }
 

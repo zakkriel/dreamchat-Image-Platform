@@ -176,6 +176,15 @@ type CreateAndEnqueueParams struct {
 	Lazy                 *bool
 	AnchorAssetID        *string
 	DeriveFrom           *string
+	// VisualIdentityID is the first-class generation_jobs.visual_identity_id
+	// value (distinct from InputPayload["identity_id"], which the worker reads
+	// for reference gathering and the identity_cost_ledger fallback). Nil for
+	// job types with no subject identity (world/place artifacts); set by the
+	// combined-contract (/v1/generations) handler from the fetched identity so
+	// the job row and its exposed API field are populated for the identity's
+	// primary generation path, matching what the pack path already does via
+	// AssetPackSpec.VisualIdentityID.
+	VisualIdentityID *string
 }
 
 // CreateResult is the service's return shape. Replayed is true when the
@@ -225,8 +234,11 @@ type CreateCacheHitParams struct {
 	RequestedByTokenID string
 	JobType            string
 	WorldID            string
-	InputPayload       map[string]any
-	FallbackPolicy     string
+	// VisualIdentityID is populated for combined-contract generation cache hits
+	// so the terminal job exposes the same subject lineage as a normal job.
+	VisualIdentityID *string
+	InputPayload     map[string]any
+	FallbackPolicy   string
 	// FinalAssetID is the existing ready asset the request reuses; it becomes
 	// the job's single final_asset_ids entry.
 	FinalAssetID string
@@ -375,21 +387,35 @@ func (s *Service) CreateAndEnqueue(ctx context.Context, params CreateAndEnqueueP
 	// context (handlers, tests) gets a worker-consumable job, with no separate
 	// payload-writing step to keep in sync.
 	params.InputPayload = withResolvedRoutePayload(params.InputPayload, params.ProviderID, params.ModelID, params.ProviderRouteID)
-	// Phase 7C-1b: persist the priced operation_type + units alongside the
-	// resolved route so an admin retry can re-reserve cost against the exact same
-	// operation/units/model without re-resolving the route.
-	params.InputPayload = withCostContextPayload(params.InputPayload, params.OperationType, params.Units)
 	// Phase 7C-4: filter the handler-supplied alternate routes to the same-price
 	// class as the primary and persist the survivors on the payload, so the worker
 	// can walk them on a primary-provider failure without re-resolving or
-	// re-reserving cost. This is a pre-transaction read (q := dbgen.New(s.pool));
+	// re-reserving cost. This preliminary read is refreshed inside the
+	// repeatable-read create transaction before the payload and reservation land;
 	// an empty/nil chain or a primary with no price entry leaves the payload
-	// untouched (the primary then fails no_price_entry at reservation anyway).
+	// without fallback routes.
+	fallbacks := []map[string]any(nil)
 	if len(params.RouteChain) > 0 {
-		if fallbacks := s.samePriceFallbacks(ctx, params); len(fallbacks) > 0 {
+		fallbacks = s.samePriceFallbacks(ctx, params)
+		if len(fallbacks) > 0 {
 			params.InputPayload = withFallbackRoutesPayload(params.InputPayload, fallbacks)
+		} else if params.InputPayload != nil {
+			delete(params.InputPayload, "fallback_routes")
 		}
+	} else if params.InputPayload != nil {
+		// RouteChain is the authoritative, handler-resolved source. Never let a
+		// caller-supplied payload route hidden fallbacks without reserving for
+		// them.
+		delete(params.InputPayload, "fallback_routes")
 	}
+	// Wave 3: reserve the billable plan, not only the happy-path image count.
+	// A preview-first job can make preview + final calls, and a pack reserves
+	// one operation per missing cell. The worker never re-reserves while walking
+	// the chain, so this quantity must land before the reservation row does.
+	params.Units = worstCaseBillableUnits(params)
+	// Persist the final priced operation_type + units alongside the resolved route
+	// so an admin retry re-reserves against exactly what this create path priced.
+	params.InputPayload = withCostContextPayload(params.InputPayload, params.OperationType, params.Units)
 
 	payload, err := marshalPayload(params.InputPayload)
 	if err != nil {
@@ -416,6 +442,31 @@ func (s *Service) CreateAndEnqueue(ctx context.Context, params CreateAndEnqueueP
 		return CreateResult{}, fmt.Errorf("set tenant: %w", err)
 	}
 	q := dbgen.New(tx)
+
+	// Reclassify fallbacks inside this transaction, alongside the reservation
+	// that Reserve makes a few statements later, so a persisted fallback chain
+	// is priced against what the reservation actually sees rather than against
+	// the handler's earlier pre-read.
+	//
+	// This transaction stays READ COMMITTED on purpose. The concurrent-job cap
+	// below counts live jobs, and the budget hold updates a shared row; under
+	// REPEATABLE READ both read a snapshot taken before the competing writers
+	// committed, so the cap silently overcounts capacity and concurrent holds
+	// abort with a serialization failure instead of queueing.
+	if len(params.RouteChain) > 0 {
+		fallbacks = s.samePriceFallbacksWithQueries(ctx, q, params)
+		if len(fallbacks) > 0 {
+			params.InputPayload = withFallbackRoutesPayload(params.InputPayload, fallbacks)
+		} else if params.InputPayload != nil {
+			delete(params.InputPayload, "fallback_routes")
+		}
+	}
+	params.Units = worstCaseBillableUnits(params)
+	params.InputPayload = withCostContextPayload(params.InputPayload, params.OperationType, params.Units)
+	payload, err = marshalPayload(params.InputPayload)
+	if err != nil {
+		return CreateResult{}, err
+	}
 
 	// 0. Phase 7C-2 hard concurrent-job cap. This block runs FIRST, before any
 	//    side effect (cost reserve / job insert / idempotency insert / enqueue),
@@ -515,11 +566,12 @@ func (s *Service) CreateAndEnqueue(ctx context.Context, params CreateAndEnqueueP
 		em := preflightMessage(res.FailureReason)
 		rb := false
 		if _, err := q.MarkGenerationJobFailed(ctx, dbgen.MarkGenerationJobFailedParams{
-			ID:           jobID,
-			TenantID:     params.TenantID,
-			ErrorCode:    &ec,
-			ErrorMessage: &em,
-			Retryable:    &rb,
+			ID:                jobID,
+			TenantID:          params.TenantID,
+			ErrorCode:         &ec,
+			ErrorMessage:      &em,
+			Retryable:         &rb,
+			CostReservationID: &res.ID,
 		}); err != nil {
 			return CreateResult{}, fmt.Errorf("mark preflight failed: %w", err)
 		}
@@ -590,7 +642,7 @@ func (s *Service) CreateAndEnqueue(ctx context.Context, params CreateAndEnqueueP
 		}, failureError(res.FailureReason)
 	}
 
-	if err := s.enqueue(ctx, jobID, params.TenantID, packID); err != nil {
+	if err := s.enqueue(ctx, jobID, params.TenantID, packID, res.ID); err != nil {
 		return CreateResult{JobID: jobID, Status: "failed", AssetPackID: packID}, err
 	}
 	result := CreateResult{
@@ -608,6 +660,38 @@ func (s *Service) CreateAndEnqueue(ctx context.Context, params CreateAndEnqueueP
 	return result, nil
 }
 
+// worstCaseBillableUnits prices the provider calls one run of this job plans to
+// make: one operation per missing pack cell (or the requested image count),
+// doubled when a true preview delivers a separate preview and final render.
+//
+// Retries and same-price fallback routes are deliberately NOT multiplied in.
+// They are failure paths, not planned work, and pre-charging every hold for the
+// retry cap would deny requests that sit comfortably inside their budget - a
+// silent capacity cut, not a safety measure. Their real spend is recorded per
+// attempt as reservation-scoped cost events and reconciled against this hold at
+// terminal finalization (internal/cost).
+func worstCaseBillableUnits(params CreateAndEnqueueParams) int32 {
+	cells := params.Units
+	if params.AssetPack != nil && len(params.AssetPack.MissingRoles) > 0 {
+		cells = int32(len(params.AssetPack.MissingRoles))
+	}
+	if cells < 1 {
+		cells = 1
+	}
+	phases := int64(1)
+	if payloadString(params.InputPayload, "delivery_mode") == "preview_first" &&
+		payloadString(params.InputPayload, "preview_capability") == "true_preview" {
+		phases = 2
+	}
+	// Saturate instead of letting a hostile pack size wrap the signed SQLC
+	// integer quantity.
+	maxInt32 := int64(^uint32(0) >> 1)
+	if units := int64(cells) * phases; units <= maxInt32 {
+		return int32(units)
+	}
+	return int32(maxInt32)
+}
+
 // samePriceFallbacks filters the handler-supplied alternate routes
 // (params.RouteChain) down to the same-price class as the primary route (Phase
 // 7C-4): the subset whose active unit price (price_per_unit, unit_type,
@@ -615,9 +699,11 @@ func (s *Service) CreateAndEnqueue(ctx context.Context, params CreateAndEnqueueP
 // without re-reserving cost — the single existing reservation was priced on the
 // primary, and a same-price fallback keeps it exactly valid.
 //
-// It is a READ against the pool (q := dbgen.New(s.pool)) run BEFORE the create
-// transaction begins, so it never holds DB locks while ranging the chain. It
-// looks up the primary's price once; a primary with no active price entry
+// The public helper performs a read against the pool for route inspection;
+// CreateAndEnqueue repeats the same comparison through its repeatable-read
+// transaction immediately before Reserve. The transactional pass avoids a
+// price-change TOCTOU between fallback filtering and reservation. It looks up
+// the primary's price once; a primary with no active price entry
 // returns nil (the primary will fail no_price_entry at reservation anyway, so
 // fallbacks are moot). For each candidate it skips the entry equal to the
 // primary (same provider_id + model_id + route) and any candidate whose price
@@ -625,7 +711,10 @@ func (s *Service) CreateAndEnqueue(ctx context.Context, params CreateAndEnqueueP
 // survivors are returned as []map[string]any (keys: provider_id, model_id,
 // provider_route_id, preview_capability) ready to stamp onto the payload.
 func (s *Service) samePriceFallbacks(ctx context.Context, params CreateAndEnqueueParams) []map[string]any {
-	q := dbgen.New(s.pool)
+	return s.samePriceFallbacksWithQueries(ctx, dbgen.New(s.pool), params)
+}
+
+func (s *Service) samePriceFallbacksWithQueries(ctx context.Context, q *dbgen.Queries, params CreateAndEnqueueParams) []map[string]any {
 	primary, err := q.LookupActiveUnitPrice(ctx, dbgen.LookupActiveUnitPriceParams{
 		ProviderID:    params.ProviderID,
 		ModelID:       params.ModelID,
@@ -723,6 +812,7 @@ func (s *Service) CreateCompletedCacheHitJob(ctx context.Context, params CreateC
 		ID:                 jobID,
 		TenantID:           params.TenantID,
 		WorldID:            &worldID,
+		VisualIdentityID:   params.VisualIdentityID,
 		JobType:            params.JobType,
 		RequestedByTokenID: &tokenID,
 		InputPayload:       payload,
@@ -757,6 +847,7 @@ func (s *Service) CreateCompletedCacheHitJob(ctx context.Context, params CreateC
 			}
 			rolled = true
 			return s.replayExisting(ctx, CreateAndEnqueueParams{
+				TenantID:           params.TenantID,
 				RequestedByTokenID: params.RequestedByTokenID,
 				IdempotencyKey:     params.IdempotencyKey,
 				Endpoint:           params.Endpoint,
@@ -830,10 +921,16 @@ func (s *Service) CreateCompletedPackReuseJob(ctx context.Context, params Create
 	worldID := params.WorldID
 	tokenID := params.RequestedByTokenID
 	fp := params.FallbackPolicy
+	identityID := params.VisualIdentityID
+	var visualIdentityID *string
+	if identityID != "" {
+		visualIdentityID = &identityID
+	}
 	if _, err := q.InsertCompletedPackReuseJob(ctx, dbgen.InsertCompletedPackReuseJobParams{
 		ID:                 jobID,
 		TenantID:           params.TenantID,
 		WorldID:            &worldID,
+		VisualIdentityID:   visualIdentityID,
 		JobType:            params.JobType,
 		RequestedByTokenID: &tokenID,
 		InputPayload:       payload,
@@ -845,7 +942,6 @@ func (s *Service) CreateCompletedPackReuseJob(ctx context.Context, params Create
 		return CreateResult{}, fmt.Errorf("insert completed pack reuse job: %w", err)
 	}
 
-	identityID := params.VisualIdentityID
 	jobIDRef := jobID
 	quality := params.QualityTier
 	if quality == "" {
@@ -904,6 +1000,7 @@ func (s *Service) CreateCompletedPackReuseJob(ctx context.Context, params Create
 			}
 			rolled = true
 			return s.replayExisting(ctx, CreateAndEnqueueParams{
+				TenantID:           params.TenantID,
 				RequestedByTokenID: params.RequestedByTokenID,
 				IdempotencyKey:     params.IdempotencyKey,
 				Endpoint:           params.Endpoint,
@@ -1102,6 +1199,7 @@ func (s *Service) insertJob(ctx context.Context, q *dbgen.Queries, jobID string,
 		Lazy:                 params.Lazy,
 		AnchorAssetID:        params.AnchorAssetID,
 		DeriveFrom:           params.DeriveFrom,
+		VisualIdentityID:     params.VisualIdentityID,
 	})
 	return err
 }
@@ -1248,12 +1346,19 @@ func stylePayloadString(payload map[string]any) string {
 // it doesn't sit at queued forever — and a pack job's asset_packs row is
 // marked failed too, so no pack can sit at status=planned for a job that
 // will never run.
-func (s *Service) enqueue(ctx context.Context, jobID, tenantID, packID string) error {
-	enqueueFn := s.enqueuer.EnqueueGenerateArtifact
-	if packID != "" {
-		enqueueFn = s.enqueuer.EnqueueGeneratePack
+func (s *Service) enqueue(ctx context.Context, jobID, tenantID, packID, reservationID string) error {
+	var enqErr error
+	if aware, ok := s.enqueuer.(ReservationAwareEnqueuer); ok && reservationID != "" {
+		if packID != "" {
+			enqErr = aware.EnqueueGeneratePackForReservation(ctx, jobID, reservationID)
+		} else {
+			enqErr = aware.EnqueueGenerateArtifactForReservation(ctx, jobID, reservationID)
+		}
+	} else if packID != "" {
+		enqErr = s.enqueuer.EnqueueGeneratePack(ctx, jobID)
+	} else {
+		enqErr = s.enqueuer.EnqueueGenerateArtifact(ctx, jobID)
 	}
-	enqErr := enqueueFn(ctx, jobID)
 	if enqErr == nil {
 		return nil
 	}
@@ -1270,20 +1375,26 @@ func (s *Service) enqueue(ctx context.Context, jobID, tenantID, packID string) e
 		ec := "enqueue_failed"
 		em := enqErr.Error()
 		rb := false
+		var reservationIDRef *string
+		if reservationID != "" {
+			reservationIDRef = &reservationID
+		}
 		if _, markErr := q.MarkGenerationJobFailed(ctx, dbgen.MarkGenerationJobFailedParams{
-			ID:           jobID,
-			TenantID:     tenantID,
-			ErrorCode:    &ec,
-			ErrorMessage: &em,
-			Retryable:    &rb,
+			ID:                jobID,
+			TenantID:          tenantID,
+			ErrorCode:         &ec,
+			ErrorMessage:      &em,
+			Retryable:         &rb,
+			CostReservationID: reservationIDRef,
 		}); markErr != nil {
 			cleanupErr = fmt.Errorf("mark-failed: %v", markErr)
 			return cleanupErr
 		}
 		if packID != "" {
-			if packErr := q.UpdateAssetPackStatus(ctx, dbgen.UpdateAssetPackStatusParams{
-				ID:     packID,
-				Status: "failed",
+			if packErr := q.UpdateAssetPackStatusForJob(ctx, dbgen.UpdateAssetPackStatusForJobParams{
+				ID:              packID,
+				GenerationJobID: &jobID,
+				Status:          "failed",
 			}); packErr != nil {
 				cleanupErr = fmt.Errorf("mark-pack-failed: %v", packErr)
 				return cleanupErr

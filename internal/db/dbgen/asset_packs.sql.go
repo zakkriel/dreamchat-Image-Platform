@@ -247,8 +247,6 @@ type SetGenerationJobAssetPackParams struct {
 	ID          string  `json:"id"`
 }
 
-// SetGenerationJobAssetPack links the job to the pack it created. Run inside
-// the create transaction, after both rows exist.
 func (q *Queries) SetGenerationJobAssetPack(ctx context.Context, arg SetGenerationJobAssetPackParams) error {
 	_, err := q.db.Exec(ctx, setGenerationJobAssetPack, arg.AssetPackID, arg.ID)
 	return err
@@ -260,6 +258,7 @@ SET delivered_roles = $1,
     missing_roles = $2,
     updated_at = now()
 WHERE id = $3
+  AND status IN ('planned', 'in_progress')
 `
 
 type UpdateAssetPackCompletenessParams struct {
@@ -276,11 +275,43 @@ func (q *Queries) UpdateAssetPackCompleteness(ctx context.Context, arg UpdateAss
 	return err
 }
 
+const updateAssetPackCompletenessForJob = `-- name: UpdateAssetPackCompletenessForJob :exec
+UPDATE asset_packs
+SET delivered_roles = $1,
+    missing_roles = $2,
+    updated_at = now()
+WHERE id = $3
+  AND created_by_job_id = $4
+`
+
+type UpdateAssetPackCompletenessForJobParams struct {
+	DeliveredRoles  []string `json:"delivered_roles"`
+	MissingRoles    []string `json:"missing_roles"`
+	ID              string   `json:"id"`
+	GenerationJobID *string  `json:"generation_job_id"`
+}
+
+// SetGenerationJobAssetPack links the job to the pack it created. Run inside
+// the create transaction, after both rows exist.
+// UpdateAssetPackCompletenessForJob is the retry-safe variant. It allows the
+// same generation job to correct a terminal pack status after a bookkeeping
+// failure, but never lets an unrelated/stale job rewrite the pack.
+func (q *Queries) UpdateAssetPackCompletenessForJob(ctx context.Context, arg UpdateAssetPackCompletenessForJobParams) error {
+	_, err := q.db.Exec(ctx, updateAssetPackCompletenessForJob,
+		arg.DeliveredRoles,
+		arg.MissingRoles,
+		arg.ID,
+		arg.GenerationJobID,
+	)
+	return err
+}
+
 const updateAssetPackStatus = `-- name: UpdateAssetPackStatus :exec
 UPDATE asset_packs
 SET status = $1,
     updated_at = now()
 WHERE id = $2
+  AND status IN ('planned', 'in_progress')
 `
 
 type UpdateAssetPackStatusParams struct {
@@ -290,5 +321,27 @@ type UpdateAssetPackStatusParams struct {
 
 func (q *Queries) UpdateAssetPackStatus(ctx context.Context, arg UpdateAssetPackStatusParams) error {
 	_, err := q.db.Exec(ctx, updateAssetPackStatus, arg.Status, arg.ID)
+	return err
+}
+
+const updateAssetPackStatusForJob = `-- name: UpdateAssetPackStatusForJob :exec
+UPDATE asset_packs
+SET status = $1,
+    updated_at = now()
+WHERE id = $2
+  AND created_by_job_id = $3
+  AND status IN ('planned', 'in_progress', 'completed', 'completed_with_warnings', 'failed')
+`
+
+type UpdateAssetPackStatusForJobParams struct {
+	Status          string  `json:"status"`
+	ID              string  `json:"id"`
+	GenerationJobID *string `json:"generation_job_id"`
+}
+
+// UpdateAssetPackStatusForJob is the retry-safe variant. Terminal statuses
+// may be corrected only by the generation job that owns the pack.
+func (q *Queries) UpdateAssetPackStatusForJob(ctx context.Context, arg UpdateAssetPackStatusForJobParams) error {
+	_, err := q.db.Exec(ctx, updateAssetPackStatusForJob, arg.Status, arg.ID, arg.GenerationJobID)
 	return err
 }

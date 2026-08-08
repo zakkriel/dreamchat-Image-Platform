@@ -91,6 +91,91 @@ func (q *Queries) CancelGenerationJob(ctx context.Context, arg CancelGenerationJ
 	return i, err
 }
 
+const claimPreviewFinalization = `-- name: ClaimPreviewFinalization :one
+UPDATE generation_jobs
+SET status = CASE WHEN status = 'queued' THEN 'running' ELSE status END,
+    started_at = COALESCE(started_at, now()),
+    input_payload = input_payload || jsonb_build_object('preview_finalization_claimed', true),
+    updated_at = now()
+WHERE id = $1
+  AND tenant_id = $2
+  AND status IN ('preview_ready', 'queued')
+  AND cardinality(preview_asset_ids) > 0
+  AND cardinality(final_asset_ids) = 0
+  AND COALESCE(input_payload->>'preview_finalization_claimed', 'false') <> 'true'
+  AND ($3::text IS NULL
+       OR cost_reservation_id = $3)
+RETURNING id, tenant_id, world_id, job_type, status,
+          requested_by_token_id, visual_identity_id, asset_pack_id,
+          input_payload, requested_outputs, fallback_policy, cache_result,
+          preview_asset_ids, final_asset_ids,
+          error_code, error_message, retryable,
+          cost_reservation_id, cost_estimate_usd, actual_cost_usd,
+          queue_duration_ms, generation_duration_ms,
+          created_at, updated_at, started_at, completed_at,
+          governance_envelope, classification_id, visibility, content_class, authorized_by, governance_verified_at,
+          intent, transform_only, transform, max_megapixels, lazy,
+          anchor_asset_id, derive_from
+`
+
+type ClaimPreviewFinalizationParams struct {
+	ID                string  `json:"id"`
+	TenantID          string  `json:"tenant_id"`
+	CostReservationID *string `json:"cost_reservation_id"`
+}
+
+// ClaimPreviewFinalization atomically claims the final phase after a
+// non-lazy preview has been committed. It keeps status=preview_ready so readers
+// can distinguish the delivered preview while the final provider call runs.
+// A first delivery wins by setting a durable marker; retry deliveries are
+// admitted by the worker using asynq's retry count after a crash.
+func (q *Queries) ClaimPreviewFinalization(ctx context.Context, arg ClaimPreviewFinalizationParams) (GenerationJob, error) {
+	row := q.db.QueryRow(ctx, claimPreviewFinalization, arg.ID, arg.TenantID, arg.CostReservationID)
+	var i GenerationJob
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.WorldID,
+		&i.JobType,
+		&i.Status,
+		&i.RequestedByTokenID,
+		&i.VisualIdentityID,
+		&i.AssetPackID,
+		&i.InputPayload,
+		&i.RequestedOutputs,
+		&i.FallbackPolicy,
+		&i.CacheResult,
+		&i.PreviewAssetIds,
+		&i.FinalAssetIds,
+		&i.ErrorCode,
+		&i.ErrorMessage,
+		&i.Retryable,
+		&i.CostReservationID,
+		&i.CostEstimateUsd,
+		&i.ActualCostUsd,
+		&i.QueueDurationMs,
+		&i.GenerationDurationMs,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.GovernanceEnvelope,
+		&i.ClassificationID,
+		&i.Visibility,
+		&i.ContentClass,
+		&i.AuthorizedBy,
+		&i.GovernanceVerifiedAt,
+		&i.Intent,
+		&i.TransformOnly,
+		&i.Transform,
+		&i.MaxMegapixels,
+		&i.Lazy,
+		&i.AnchorAssetID,
+		&i.DeriveFrom,
+	)
+	return i, err
+}
+
 const countLiveGenerationJobsByToken = `-- name: CountLiveGenerationJobsByToken :one
 SELECT count(*)
 FROM generation_jobs
@@ -247,14 +332,14 @@ func (q *Queries) GetGenerationJobByIDUnchecked(ctx context.Context, id string) 
 
 const insertCompletedCacheHitJob = `-- name: InsertCompletedCacheHitJob :one
 INSERT INTO generation_jobs (
-    id, tenant_id, world_id, job_type, status,
+    id, tenant_id, world_id, visual_identity_id, job_type, status,
     requested_by_token_id, input_payload, requested_outputs,
     fallback_policy, cache_result, final_asset_ids,
     cost_estimate_usd, actual_cost_usd, completed_at
 ) VALUES (
-    $1, $2, $3, $4, 'completed',
-    $5, $6, $8,
-    $7, 'exact_match', $9,
+    $1, $2, $3, $4, $5, 'completed',
+    $6, $7, $9,
+    $8, 'exact_match', $10,
     0, 0, now()
 )
 RETURNING id, tenant_id, world_id, job_type, status,
@@ -274,6 +359,7 @@ type InsertCompletedCacheHitJobParams struct {
 	ID                 string   `json:"id"`
 	TenantID           string   `json:"tenant_id"`
 	WorldID            *string  `json:"world_id"`
+	VisualIdentityID   *string  `json:"visual_identity_id"`
 	JobType            string   `json:"job_type"`
 	RequestedByTokenID *string  `json:"requested_by_token_id"`
 	InputPayload       []byte   `json:"input_payload"`
@@ -295,6 +381,7 @@ func (q *Queries) InsertCompletedCacheHitJob(ctx context.Context, arg InsertComp
 		arg.ID,
 		arg.TenantID,
 		arg.WorldID,
+		arg.VisualIdentityID,
 		arg.JobType,
 		arg.RequestedByTokenID,
 		arg.InputPayload,
@@ -349,14 +436,14 @@ func (q *Queries) InsertCompletedCacheHitJob(ctx context.Context, arg InsertComp
 
 const insertCompletedPackReuseJob = `-- name: InsertCompletedPackReuseJob :one
 INSERT INTO generation_jobs (
-    id, tenant_id, world_id, job_type, status,
+    id, tenant_id, world_id, visual_identity_id, job_type, status,
     requested_by_token_id, input_payload, requested_outputs,
     fallback_policy, cache_result, final_asset_ids,
     cost_estimate_usd, actual_cost_usd, completed_at
 ) VALUES (
-    $1, $2, $3, $4, 'completed',
-    $5, $6, $8,
-    $7, $9, $10,
+    $1, $2, $3, $4, $5, 'completed',
+    $6, $7, $9,
+    $8, $10, $11,
     0, 0, now()
 )
 RETURNING id, tenant_id, world_id, job_type, status,
@@ -376,6 +463,7 @@ type InsertCompletedPackReuseJobParams struct {
 	ID                 string   `json:"id"`
 	TenantID           string   `json:"tenant_id"`
 	WorldID            *string  `json:"world_id"`
+	VisualIdentityID   *string  `json:"visual_identity_id"`
 	JobType            string   `json:"job_type"`
 	RequestedByTokenID *string  `json:"requested_by_token_id"`
 	InputPayload       []byte   `json:"input_payload"`
@@ -399,6 +487,7 @@ func (q *Queries) InsertCompletedPackReuseJob(ctx context.Context, arg InsertCom
 		arg.ID,
 		arg.TenantID,
 		arg.WorldID,
+		arg.VisualIdentityID,
 		arg.JobType,
 		arg.RequestedByTokenID,
 		arg.InputPayload,
@@ -459,14 +548,14 @@ INSERT INTO generation_jobs (
     governance_envelope, classification_id, visibility, content_class,
     authorized_by, governance_verified_at,
     intent, transform_only, transform, max_megapixels, lazy,
-    anchor_asset_id, derive_from
+    anchor_asset_id, derive_from, visual_identity_id
 ) VALUES (
     $1, $2, $3, $4, 'queued',
     $5, $6, $7, $8,
     $9, $10, $11, $12,
     $13, $14,
     $15, $16, $17, $18, $19,
-    $20, $21
+    $20, $21, $22
 )
 RETURNING id, tenant_id, world_id, job_type, status,
           requested_by_token_id, visual_identity_id, asset_pack_id,
@@ -503,6 +592,7 @@ type InsertGenerationJobParams struct {
 	Lazy                 *bool              `json:"lazy"`
 	AnchorAssetID        *string            `json:"anchor_asset_id"`
 	DeriveFrom           *string            `json:"derive_from"`
+	VisualIdentityID     *string            `json:"visual_identity_id"`
 }
 
 // CONVENTION: queries here list generation_jobs columns EXPLICITLY (not SELECT *).
@@ -531,6 +621,7 @@ func (q *Queries) InsertGenerationJob(ctx context.Context, arg InsertGenerationJ
 		arg.Lazy,
 		arg.AnchorAssetID,
 		arg.DeriveFrom,
+		arg.VisualIdentityID,
 	)
 	var i GenerationJob
 	err := row.Scan(
@@ -617,19 +708,22 @@ SELECT id, tenant_id, world_id, job_type, status,
 FROM generation_jobs
 WHERE id = $1
   AND tenant_id = $2
+  AND ($3::text IS NULL
+       OR cost_reservation_id = $3)
 FOR UPDATE
 `
 
 type LockGenerationJobRowForUpdateParams struct {
-	ID       string `json:"id"`
-	TenantID string `json:"tenant_id"`
+	ID                string  `json:"id"`
+	TenantID          string  `json:"tenant_id"`
+	CostReservationID *string `json:"cost_reservation_id"`
 }
 
 // LockGenerationJobRowForUpdate row-locks a job and returns the full row so the
 // retry path can read the persisted resolved route + payload under the same
 // lock it validates and reopens the job with.
 func (q *Queries) LockGenerationJobRowForUpdate(ctx context.Context, arg LockGenerationJobRowForUpdateParams) (GenerationJob, error) {
-	row := q.db.QueryRow(ctx, lockGenerationJobRowForUpdate, arg.ID, arg.TenantID)
+	row := q.db.QueryRow(ctx, lockGenerationJobRowForUpdate, arg.ID, arg.TenantID, arg.CostReservationID)
 	var i GenerationJob
 	err := row.Scan(
 		&i.ID,
@@ -683,6 +777,9 @@ SET status = 'completed',
     updated_at = now()
 WHERE id = $1
   AND tenant_id = $2
+  AND status IN ('running', 'preview_ready')
+  AND ($4::text IS NULL
+       OR cost_reservation_id = $4)
 RETURNING id, tenant_id, world_id, job_type, status,
           requested_by_token_id, visual_identity_id, asset_pack_id,
           input_payload, requested_outputs, fallback_policy, cache_result,
@@ -697,13 +794,19 @@ RETURNING id, tenant_id, world_id, job_type, status,
 `
 
 type MarkGenerationJobCompletedParams struct {
-	ID            string   `json:"id"`
-	TenantID      string   `json:"tenant_id"`
-	FinalAssetIds []string `json:"final_asset_ids"`
+	ID                string   `json:"id"`
+	TenantID          string   `json:"tenant_id"`
+	FinalAssetIds     []string `json:"final_asset_ids"`
+	CostReservationID *string  `json:"cost_reservation_id"`
 }
 
 func (q *Queries) MarkGenerationJobCompleted(ctx context.Context, arg MarkGenerationJobCompletedParams) (GenerationJob, error) {
-	row := q.db.QueryRow(ctx, markGenerationJobCompleted, arg.ID, arg.TenantID, arg.FinalAssetIds)
+	row := q.db.QueryRow(ctx, markGenerationJobCompleted,
+		arg.ID,
+		arg.TenantID,
+		arg.FinalAssetIds,
+		arg.CostReservationID,
+	)
 	var i GenerationJob
 	err := row.Scan(
 		&i.ID,
@@ -759,6 +862,9 @@ SET status = 'failed',
     updated_at = now()
 WHERE id = $1
   AND tenant_id = $2
+  AND status IN ('queued', 'running', 'preview_ready')
+  AND ($6::text IS NULL
+       OR cost_reservation_id = $6)
 RETURNING id, tenant_id, world_id, job_type, status,
           requested_by_token_id, visual_identity_id, asset_pack_id,
           input_payload, requested_outputs, fallback_policy, cache_result,
@@ -773,11 +879,12 @@ RETURNING id, tenant_id, world_id, job_type, status,
 `
 
 type MarkGenerationJobFailedParams struct {
-	ID           string  `json:"id"`
-	TenantID     string  `json:"tenant_id"`
-	ErrorCode    *string `json:"error_code"`
-	ErrorMessage *string `json:"error_message"`
-	Retryable    *bool   `json:"retryable"`
+	ID                string  `json:"id"`
+	TenantID          string  `json:"tenant_id"`
+	ErrorCode         *string `json:"error_code"`
+	ErrorMessage      *string `json:"error_message"`
+	Retryable         *bool   `json:"retryable"`
+	CostReservationID *string `json:"cost_reservation_id"`
 }
 
 func (q *Queries) MarkGenerationJobFailed(ctx context.Context, arg MarkGenerationJobFailedParams) (GenerationJob, error) {
@@ -787,6 +894,7 @@ func (q *Queries) MarkGenerationJobFailed(ctx context.Context, arg MarkGeneratio
 		arg.ErrorCode,
 		arg.ErrorMessage,
 		arg.Retryable,
+		arg.CostReservationID,
 	)
 	var i GenerationJob
 	err := row.Scan(
@@ -840,6 +948,9 @@ SET status = 'preview_ready',
     updated_at = now()
 WHERE id = $1
   AND tenant_id = $2
+  AND status = 'running'
+  AND ($4::text IS NULL
+       OR cost_reservation_id = $4)
 RETURNING id, tenant_id, world_id, job_type, status,
           requested_by_token_id, visual_identity_id, asset_pack_id,
           input_payload, requested_outputs, fallback_policy, cache_result,
@@ -854,9 +965,10 @@ RETURNING id, tenant_id, world_id, job_type, status,
 `
 
 type MarkGenerationJobPreviewReadyParams struct {
-	ID              string   `json:"id"`
-	TenantID        string   `json:"tenant_id"`
-	PreviewAssetIds []string `json:"preview_asset_ids"`
+	ID                string   `json:"id"`
+	TenantID          string   `json:"tenant_id"`
+	PreviewAssetIds   []string `json:"preview_asset_ids"`
+	CostReservationID *string  `json:"cost_reservation_id"`
 }
 
 // Phase 7B two-phase generation: the preview tier landed. Flip the job to
@@ -866,7 +978,12 @@ type MarkGenerationJobPreviewReadyParams struct {
 // job-assets read before the final asset exists. final_asset_ids stays empty
 // until MarkGenerationJobCompleted runs after final success.
 func (q *Queries) MarkGenerationJobPreviewReady(ctx context.Context, arg MarkGenerationJobPreviewReadyParams) (GenerationJob, error) {
-	row := q.db.QueryRow(ctx, markGenerationJobPreviewReady, arg.ID, arg.TenantID, arg.PreviewAssetIds)
+	row := q.db.QueryRow(ctx, markGenerationJobPreviewReady,
+		arg.ID,
+		arg.TenantID,
+		arg.PreviewAssetIds,
+		arg.CostReservationID,
+	)
 	var i GenerationJob
 	err := row.Scan(
 		&i.ID,
@@ -919,6 +1036,9 @@ SET status = 'running',
     updated_at = now()
 WHERE id = $1
   AND tenant_id = $2
+  AND status = 'queued'
+  AND ($3::text IS NULL
+       OR cost_reservation_id = $3)
 RETURNING id, tenant_id, world_id, job_type, status,
           requested_by_token_id, visual_identity_id, asset_pack_id,
           input_payload, requested_outputs, fallback_policy, cache_result,
@@ -933,12 +1053,13 @@ RETURNING id, tenant_id, world_id, job_type, status,
 `
 
 type MarkGenerationJobRunningParams struct {
-	ID       string `json:"id"`
-	TenantID string `json:"tenant_id"`
+	ID                string  `json:"id"`
+	TenantID          string  `json:"tenant_id"`
+	CostReservationID *string `json:"cost_reservation_id"`
 }
 
 func (q *Queries) MarkGenerationJobRunning(ctx context.Context, arg MarkGenerationJobRunningParams) (GenerationJob, error) {
-	row := q.db.QueryRow(ctx, markGenerationJobRunning, arg.ID, arg.TenantID)
+	row := q.db.QueryRow(ctx, markGenerationJobRunning, arg.ID, arg.TenantID, arg.CostReservationID)
 	var i GenerationJob
 	err := row.Scan(
 		&i.ID,
@@ -987,6 +1108,7 @@ func (q *Queries) MarkGenerationJobRunning(ctx context.Context, arg MarkGenerati
 const retryResetGenerationJob = `-- name: RetryResetGenerationJob :one
 UPDATE generation_jobs
 SET status = 'queued',
+    input_payload = input_payload - 'preview_finalization_claimed',
     error_code = NULL,
     error_message = NULL,
     retryable = NULL,

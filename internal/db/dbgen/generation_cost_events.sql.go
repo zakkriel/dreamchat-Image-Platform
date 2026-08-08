@@ -7,32 +7,38 @@ package dbgen
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const insertGenerationCostEvent = `-- name: InsertGenerationCostEvent :exec
 INSERT INTO generation_cost_events (
-    id, tenant_id, job_id, asset_id, token_id,
+    id, tenant_id, job_id, asset_id, cost_reservation_id, token_id,
     provider_id, model_id, provider_attempt_id,
-    operation, duration_ms, status
+    operation, estimated_cost_usd, actual_cost_usd, duration_ms, status, metadata
 ) VALUES (
-    $1, $2, $3, $4, $5,
-    $6, $7, $8,
-    $9, $10, $11
+    $1, $2, $3, $4, $5, $6,
+    $7, $8, $9,
+    $10, $11, $12, $13, $14, $15
 )
 `
 
 type InsertGenerationCostEventParams struct {
-	ID                string  `json:"id"`
-	TenantID          string  `json:"tenant_id"`
-	JobID             *string `json:"job_id"`
-	AssetID           *string `json:"asset_id"`
-	TokenID           *string `json:"token_id"`
-	ProviderID        *string `json:"provider_id"`
-	ModelID           *string `json:"model_id"`
-	ProviderAttemptID *string `json:"provider_attempt_id"`
-	Operation         string  `json:"operation"`
-	DurationMs        *int32  `json:"duration_ms"`
-	Status            string  `json:"status"`
+	ID                string         `json:"id"`
+	TenantID          string         `json:"tenant_id"`
+	JobID             *string        `json:"job_id"`
+	AssetID           *string        `json:"asset_id"`
+	CostReservationID *string        `json:"cost_reservation_id"`
+	TokenID           *string        `json:"token_id"`
+	ProviderID        *string        `json:"provider_id"`
+	ModelID           *string        `json:"model_id"`
+	ProviderAttemptID *string        `json:"provider_attempt_id"`
+	Operation         string         `json:"operation"`
+	EstimatedCostUsd  pgtype.Numeric `json:"estimated_cost_usd"`
+	ActualCostUsd     pgtype.Numeric `json:"actual_cost_usd"`
+	DurationMs        *int32         `json:"duration_ms"`
+	Status            string         `json:"status"`
+	Metadata          []byte         `json:"metadata"`
 }
 
 func (q *Queries) InsertGenerationCostEvent(ctx context.Context, arg InsertGenerationCostEventParams) error {
@@ -41,13 +47,17 @@ func (q *Queries) InsertGenerationCostEvent(ctx context.Context, arg InsertGener
 		arg.TenantID,
 		arg.JobID,
 		arg.AssetID,
+		arg.CostReservationID,
 		arg.TokenID,
 		arg.ProviderID,
 		arg.ModelID,
 		arg.ProviderAttemptID,
 		arg.Operation,
+		arg.EstimatedCostUsd,
+		arg.ActualCostUsd,
 		arg.DurationMs,
 		arg.Status,
+		arg.Metadata,
 	)
 	return err
 }

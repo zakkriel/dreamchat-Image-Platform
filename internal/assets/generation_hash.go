@@ -20,21 +20,21 @@ package assets
 //
 // Provider/model identity is deliberately NOT part of the key: reuse is
 // asset-state-first (ADR-008) — the same logical content is reusable
-// regardless of which provider produced it. max_megapixels and lazy are also
-// excluded: neither changes the produced pixels this chunk (MP is clamped but
-// unenforced, lazy is stored-not-acted); when either becomes behavioral the
-// hash version below MUST be bumped.
+// regardless of which provider produced it. max_megapixels is included because
+// the worker now enforces it and a lower pixel budget is a different render
+// contract. lazy remains excluded because it controls scheduling, not pixels.
 
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"strconv"
 	"strings"
 )
 
 // generationHashVersion namespaces the hash so the input set can evolve
-// (e.g. folding in max_megapixels once the worker enforces it) without
-// colliding with keys minted by an earlier definition.
-const generationHashVersion = "1"
+// MaxMegapixels became behavioral in Wave 3, so the version is bumped from
+// the pre-enforcement hash definition.
+const generationHashVersion = "2"
 
 // GenerationHashInput is the well-typed set of combined-contract fields that
 // determine a generation render. TenantID comes from the principal; the rest
@@ -46,17 +46,16 @@ type GenerationHashInput struct {
 	AnchorAssetID string
 	DeriveFrom    string
 	Intent        string
-	// TransformJSON is the raw transform block (marshalled request JSON), or
-	// empty when absent. A present-but-inert transform still keys separately:
-	// once transform execution lands, an untransformed cached render must not
-	// satisfy a transformed request.
+	// MaxMegapixels is the effective validated pixel budget persisted by the
+	// handler. It is serialized with lossless round-trip formatting before hashing.
+	MaxMegapixels float64
 	TransformJSON string
 }
 
 // GenerationRenderHash returns the deterministic hex render hash for the
 // input. The same inputs always produce the same hash; any material change
-// (different identity, display name, anchor, derive source, intent, or
-// transform) produces a different hash.
+// (different identity, display name, anchor, derive source, intent, pixel
+// budget, or transform) produces a different hash.
 func GenerationRenderHash(in GenerationHashInput) string {
 	var b strings.Builder
 	writeHashField(&b, "gv", generationHashVersion)
@@ -66,6 +65,19 @@ func GenerationRenderHash(in GenerationHashInput) string {
 	writeHashField(&b, "anchor_asset_id", in.AnchorAssetID)
 	writeHashField(&b, "derive_from", in.DeriveFrom)
 	writeHashField(&b, "intent", in.Intent)
+	maxMegapixels := in.MaxMegapixels
+	if maxMegapixels <= 0 {
+		// Direct callers that predate the field use the same effective default as
+		// the HTTP handler, keeping old helper fixtures semantically equivalent.
+		maxMegapixels = 4.0
+	}
+	// 'g'/-1 renders the shortest decimal string that round-trips back to
+	// exactly this float64 (strconv's shortest-round-trip algorithm) — unlike
+	// a fixed 6-decimal format, two distinct max_megapixels values (even ones
+	// that differ only past the 6th decimal, which a validated float32 value
+	// widened to float64 can) can never format to the same string and
+	// collide onto the same reuse cache key.
+	writeHashField(&b, "max_megapixels", strconv.FormatFloat(maxMegapixels, 'g', -1, 64))
 	writeHashField(&b, "transform", NormalizeArtifactDescription(in.TransformJSON))
 
 	sum := sha256.Sum256([]byte(b.String()))

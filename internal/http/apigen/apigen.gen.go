@@ -1008,7 +1008,7 @@ type RenderOptions struct {
 	// Intent Cost/quality selector. draft = cheapest capability-valid model; commit = premium.
 	Intent Intent `json:"intent"`
 
-	// MaxMegapixels Validated and clamped to a platform ceiling, persisted. Not priced or pixel-enforced this chunk.
+	// MaxMegapixels Validated against the platform ceiling and persisted. The worker enforces the decoded output pixel budget; values are never silently clamped.
 	MaxMegapixels *float32 `json:"max_megapixels,omitempty"`
 	ProviderId    *string  `json:"provider_id"`
 

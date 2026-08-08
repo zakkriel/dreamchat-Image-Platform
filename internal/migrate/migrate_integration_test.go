@@ -390,6 +390,19 @@ func policyExists(t *testing.T, db *sql.DB, table, policy string) bool {
 	return n > 0
 }
 
+// TestMigration0019CostEventReservation proves provider cost events can be
+// attributed to the reservation that priced the call, including after retries
+// reuse the same generation_job_id.
+func TestMigration0019CostEventReservation(t *testing.T) {
+	db, _ := testdb.New(t)
+	if err := migrate.Up(db); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	if !columnExists(t, db, "generation_cost_events", "cost_reservation_id") {
+		t.Fatal("generation_cost_events.cost_reservation_id missing after up")
+	}
+}
+
 // TestMigration0017NewTableRLS proves RLS is enabled+forced with a tenant_isolation
 // policy on each of the three new tables.
 func TestMigration0017NewTableRLS(t *testing.T) {

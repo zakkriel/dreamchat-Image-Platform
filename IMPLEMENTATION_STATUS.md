@@ -468,6 +468,19 @@ before this is production-ready.**
   and worker agree on the provider set. Runbook:
   `docs/runbooks/provider-capability-misconfiguration.md`.
 
+## Cost optimization waves (Wave 3/4)
+
+- **Wave 3 — Measurement + cost-accounting truth** (implemented): generation economics telemetry, planned-call reservation sizing, provider-reported cost reconciliation, reservation-scoped cost events, identity lifetime ledger updates, decoded-byte `max_megapixels` enforcement, and pack fallback parity are wired through the governed paths. Design + verification: `docs/superpowers/specs/2026-08-08-wave3-cost-truth-design.md`.
+- **Wave 4 — Amortization** (specification only): no sprite-sheet pipeline, anchor-derive default, or lazy-finalization implementation is shipped. The design and release gates are documented in `docs/superpowers/specs/2026-08-08-wave4-amortization-design.md`.
+
+### Wave 3 validation
+
+- Full unit suite, `go vet ./...`, and `gofmt -l .` clean; `sqlc generate` produces no diff.
+- PostgreSQL 15 at migration 19, `POSTGRES_DSN` set so DB-backed tests execute rather than skip:
+  `go test -tags=integration ./internal/jobs ./internal/adminjobs ./internal/migrate ./internal/assets ./internal/identities ./internal/http/handlers` — all ok.
+- Migration `0019` applies and rolls back; cost events are attributable to the reservation that priced them across a retry reusing the same `generation_job_id`.
+- Concurrency and budget semantics match the pre-Wave-3 baseline: the concurrent-job cap, tight-budget denial, budget-window reset, and concurrent idempotency tests all pass unchanged.
+
 ## Remaining
 
 - **None for the Phase 7 implementation track.** Phase 7C-3 (RLS / tenant
@@ -504,9 +517,15 @@ edges of the MVP.
   a silent no-op.
 - **Cost reservation margin.** The configurable safety margin
   (`reserved_amount = estimated_amount × (1 + margin)`) is **not needed for
-  MVP** — reservations equal the estimate. Revisit only when provider-reported
-  cost reconciliation exists (there is no reconciliation worker today; committed
-  reservations keep `actual = estimated`).
+  MVP** — reservations equal the estimate. Wave 3 reconciles provider-reported
+  per-call actuals at terminal finalization and folds late events into the
+  exact committed/released reservation. A configurable margin remains future
+  operational work. When no actual is reported, the committed reservation
+  still falls back to its estimate.
+- **Wave 4 evidence.** Amortization remains specification-only. The benchmark,
+  quality/economic gates, provider capability evidence, manifest behavior, and
+  vision-based pane assessment/targeted regeneration requirements are defined in
+  the Wave 4 design spec; no production claim of sprite-sheet savings is made.
 - **Admin audit-events endpoint.** The `audit_events` **table exists** and is
   written **internally** in-transaction by the served admin write endpoints
   (price-book / cost-budget changes, etc.). There is **no** public/manual admin

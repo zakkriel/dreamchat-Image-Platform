@@ -11,33 +11,116 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const commitBudgetHold = `-- name: CommitBudgetHold :exec
+const adjustBudgetSpent = `-- name: AdjustBudgetSpent :exec
 UPDATE cost_budgets
-SET reserved_amount = GREATEST(reserved_amount - $1, 0),
-    spent_amount = spent_amount + $1,
+SET spent_amount = GREATEST(spent_amount + $1, 0),
     updated_at = now()
 WHERE id = $2
 `
 
-type CommitBudgetHoldParams struct {
-	Amount pgtype.Numeric `json:"amount"`
-	ID     string         `json:"id"`
+type AdjustBudgetSpentParams struct {
+	DeltaAmount pgtype.Numeric `json:"delta_amount"`
+	ID          string         `json:"id"`
 }
 
-// CommitBudgetHold moves a hold's amount from reserved → spent on the budget.
-// GREATEST guards against a negative reserved_amount if accounting ever drifts.
-func (q *Queries) CommitBudgetHold(ctx context.Context, arg CommitBudgetHoldParams) error {
-	_, err := q.db.Exec(ctx, commitBudgetHold, arg.Amount, arg.ID)
+// AdjustBudgetSpent applies a late provider-cost delta. A negative delta is
+// valid when an estimate fallback was replaced by a lower reported actual.
+func (q *Queries) AdjustBudgetSpent(ctx context.Context, arg AdjustBudgetSpentParams) error {
+	_, err := q.db.Exec(ctx, adjustBudgetSpent, arg.DeltaAmount, arg.ID)
 	return err
 }
 
-const commitReservationForJob = `-- name: CommitReservationForJob :one
-UPDATE cost_reservations
-SET status = 'committed',
-    actual_amount = estimated_amount,
+const commitBudgetHold = `-- name: CommitBudgetHold :exec
+UPDATE cost_budgets
+SET reserved_amount = GREATEST(reserved_amount - $1, 0),
+    spent_amount = spent_amount + $2,
     updated_at = now()
-WHERE generation_job_id = $1
-  AND status = 'reserved'
+WHERE id = $3
+`
+
+type CommitBudgetHoldParams struct {
+	ReservedAmount pgtype.Numeric `json:"reserved_amount"`
+	ActualAmount   pgtype.Numeric `json:"actual_amount"`
+	ID             string         `json:"id"`
+}
+
+// CommitBudgetHold moves the held estimate out of reserved and records the
+// provider-reconciled actual in spent. The reservation was held for the
+// worst-case plan, so reserved_amount is the held amount while actual_amount
+// may be lower when a provider reports a cheaper outcome.
+func (q *Queries) CommitBudgetHold(ctx context.Context, arg CommitBudgetHoldParams) error {
+	_, err := q.db.Exec(ctx, commitBudgetHold, arg.ReservedAmount, arg.ActualAmount, arg.ID)
+	return err
+}
+
+const commitReservationByID = `-- name: CommitReservationByID :one
+UPDATE cost_reservations cr
+SET status = 'committed',
+    actual_amount = COALESCE((
+        SELECT SUM(gce.actual_cost_usd)::numeric(14, 4)
+        FROM generation_cost_events gce
+        WHERE gce.job_id = cr.generation_job_id
+          AND gce.cost_reservation_id = cr.id
+          AND gce.actual_cost_usd IS NOT NULL
+          AND COALESCE(gce.metadata->>'actual_inferred_from_estimate', 'false') <> 'true'
+    ), cr.estimated_amount),
+    updated_at = now()
+WHERE cr.id = $1
+  AND cr.generation_job_id = $2
+  AND cr.status = 'reserved'
+RETURNING id, estimated_amount, reserved_amount, actual_amount, currency, tenant_id
+`
+
+type CommitReservationByIDParams struct {
+	ReservationID   string `json:"reservation_id"`
+	GenerationJobID string `json:"generation_job_id"`
+}
+
+type CommitReservationByIDRow struct {
+	ID              string         `json:"id"`
+	EstimatedAmount pgtype.Numeric `json:"estimated_amount"`
+	ReservedAmount  pgtype.Numeric `json:"reserved_amount"`
+	ActualAmount    pgtype.Numeric `json:"actual_amount"`
+	Currency        string         `json:"currency"`
+	TenantID        string         `json:"tenant_id"`
+}
+
+// CommitReservationByID is the worker-safe lifecycle variant. A worker keeps
+// the reservation id it read before provider work, so a stale task can never
+// finalize a newer reservation attached to the same reusable job id.
+func (q *Queries) CommitReservationByID(ctx context.Context, arg CommitReservationByIDParams) (CommitReservationByIDRow, error) {
+	row := q.db.QueryRow(ctx, commitReservationByID, arg.ReservationID, arg.GenerationJobID)
+	var i CommitReservationByIDRow
+	err := row.Scan(
+		&i.ID,
+		&i.EstimatedAmount,
+		&i.ReservedAmount,
+		&i.ActualAmount,
+		&i.Currency,
+		&i.TenantID,
+	)
+	return i, err
+}
+
+const commitReservationForJob = `-- name: CommitReservationForJob :one
+UPDATE cost_reservations cr
+SET status = 'committed',
+    actual_amount = COALESCE((
+        SELECT SUM(gce.actual_cost_usd)::numeric(14, 4)
+        FROM generation_cost_events gce
+        WHERE gce.job_id = cr.generation_job_id
+          AND gce.cost_reservation_id = cr.id
+          AND gce.actual_cost_usd IS NOT NULL
+          AND COALESCE(gce.metadata->>'actual_inferred_from_estimate', 'false') <> 'true'
+    ), cr.estimated_amount),
+    updated_at = now()
+WHERE cr.generation_job_id = $1
+  AND cr.status = 'reserved'
+  AND cr.id = (
+      SELECT j.cost_reservation_id
+      FROM generation_jobs j
+      WHERE j.id = $1
+  )
 RETURNING id, estimated_amount, reserved_amount, actual_amount, currency, tenant_id
 `
 
@@ -51,10 +134,11 @@ type CommitReservationForJobRow struct {
 }
 
 // CommitReservationForJob flips a reservation reserved → committed exactly
-// once. No row returned means the reservation was not in `reserved` (already
-// committed / released / failed) → caller treats it as a no-op and moves no
-// budget. actual_amount = estimated_amount (Phase 4B: no provider-reported
-// reconciliation).
+// once. When provider adapters reported actual spend, sum those committed-job
+// events; when they did not, fall back to the held estimate. Failed fallback
+// attempts are included when they carry a provider-reported actual because a
+// provider can bill a failed request too. No row means the reservation was not
+// in `reserved` and the lifecycle caller performs an idempotent no-op.
 func (q *Queries) CommitReservationForJob(ctx context.Context, generationJobID string) (CommitReservationForJobRow, error) {
 	row := q.db.QueryRow(ctx, commitReservationForJob, generationJobID)
 	var i CommitReservationForJobRow
@@ -65,6 +149,47 @@ func (q *Queries) CommitReservationForJob(ctx context.Context, generationJobID s
 		&i.ActualAmount,
 		&i.Currency,
 		&i.TenantID,
+	)
+	return i, err
+}
+
+const getTerminalReservationForReconciliation = `-- name: GetTerminalReservationForReconciliation :one
+SELECT id, generation_job_id, tenant_id, estimated_amount, actual_amount, currency, status
+FROM cost_reservations
+WHERE id = $1
+  AND generation_job_id = $2
+  AND status IN ('committed', 'released')
+FOR UPDATE
+`
+
+type GetTerminalReservationForReconciliationParams struct {
+	ReservationID   string `json:"reservation_id"`
+	GenerationJobID string `json:"generation_job_id"`
+}
+
+type GetTerminalReservationForReconciliationRow struct {
+	ID              string         `json:"id"`
+	GenerationJobID string         `json:"generation_job_id"`
+	TenantID        string         `json:"tenant_id"`
+	EstimatedAmount pgtype.Numeric `json:"estimated_amount"`
+	ActualAmount    pgtype.Numeric `json:"actual_amount"`
+	Currency        string         `json:"currency"`
+	Status          string         `json:"status"`
+}
+
+// GetTerminalReservationForReconciliation locks a terminal reservation while
+// a late provider event is folded into its already-finalized accounting.
+func (q *Queries) GetTerminalReservationForReconciliation(ctx context.Context, arg GetTerminalReservationForReconciliationParams) (GetTerminalReservationForReconciliationRow, error) {
+	row := q.db.QueryRow(ctx, getTerminalReservationForReconciliation, arg.ReservationID, arg.GenerationJobID)
+	var i GetTerminalReservationForReconciliationRow
+	err := row.Scan(
+		&i.ID,
+		&i.GenerationJobID,
+		&i.TenantID,
+		&i.EstimatedAmount,
+		&i.ActualAmount,
+		&i.Currency,
+		&i.Status,
 	)
 	return i, err
 }
@@ -100,22 +225,24 @@ func (q *Queries) InsertBudgetHold(ctx context.Context, arg InsertBudgetHoldPara
 
 const insertFinalizerCostEvent = `-- name: InsertFinalizerCostEvent :exec
 INSERT INTO generation_cost_events (
-    id, tenant_id, job_id, token_id, operation,
-    estimated_cost_usd, actual_cost_usd, status
+    id, tenant_id, job_id, cost_reservation_id, token_id, operation,
+    estimated_cost_usd, actual_cost_usd, status, metadata
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8
+    $1, $2, $3, $4, $5, $6, $7, $8, $9,
+    jsonb_build_object('billable_operation', 'finalizer', 'actual_inferred_from_estimate', true)
 )
 `
 
 type InsertFinalizerCostEventParams struct {
-	ID               string         `json:"id"`
-	TenantID         string         `json:"tenant_id"`
-	JobID            *string        `json:"job_id"`
-	TokenID          *string        `json:"token_id"`
-	Operation        string         `json:"operation"`
-	EstimatedCostUsd pgtype.Numeric `json:"estimated_cost_usd"`
-	ActualCostUsd    pgtype.Numeric `json:"actual_cost_usd"`
-	Status           string         `json:"status"`
+	ID                string         `json:"id"`
+	TenantID          string         `json:"tenant_id"`
+	JobID             *string        `json:"job_id"`
+	CostReservationID *string        `json:"cost_reservation_id"`
+	TokenID           *string        `json:"token_id"`
+	Operation         string         `json:"operation"`
+	EstimatedCostUsd  pgtype.Numeric `json:"estimated_cost_usd"`
+	ActualCostUsd     pgtype.Numeric `json:"actual_cost_usd"`
+	Status            string         `json:"status"`
 }
 
 // InsertFinalizerCostEvent writes a cost event carrying estimated/actual when
@@ -125,6 +252,7 @@ func (q *Queries) InsertFinalizerCostEvent(ctx context.Context, arg InsertFinali
 		arg.ID,
 		arg.TenantID,
 		arg.JobID,
+		arg.CostReservationID,
 		arg.TokenID,
 		arg.Operation,
 		arg.EstimatedCostUsd,
@@ -132,6 +260,41 @@ func (q *Queries) InsertFinalizerCostEvent(ctx context.Context, arg InsertFinali
 		arg.Status,
 	)
 	return err
+}
+
+const listFinalizedBudgetHolds = `-- name: ListFinalizedBudgetHolds :many
+SELECT id, cost_budget_id, reserved_amount
+FROM cost_reservation_budget_holds
+WHERE cost_reservation_id = $1
+  AND status IN ('committed', 'released')
+`
+
+type ListFinalizedBudgetHoldsRow struct {
+	ID             string         `json:"id"`
+	CostBudgetID   string         `json:"cost_budget_id"`
+	ReservedAmount pgtype.Numeric `json:"reserved_amount"`
+}
+
+// ListFinalizedBudgetHolds returns all budget rows already terminalized for a
+// reservation. Late provider billing adjusts spent on each applicable scope.
+func (q *Queries) ListFinalizedBudgetHolds(ctx context.Context, reservationID string) ([]ListFinalizedBudgetHoldsRow, error) {
+	rows, err := q.db.Query(ctx, listFinalizedBudgetHolds, reservationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListFinalizedBudgetHoldsRow
+	for rows.Next() {
+		var i ListFinalizedBudgetHoldsRow
+		if err := rows.Scan(&i.ID, &i.CostBudgetID, &i.ReservedAmount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listReservedBudgetHolds = `-- name: ListReservedBudgetHolds :many
@@ -219,6 +382,37 @@ func (q *Queries) MarkReservationBudgetExceeded(ctx context.Context, arg MarkRes
 	return err
 }
 
+const reconcileReservationActual = `-- name: ReconcileReservationActual :one
+UPDATE cost_reservations
+SET actual_amount = $1,
+    updated_at = now()
+WHERE id = $2
+  AND generation_job_id = $3
+  AND status IN ('committed', 'released')
+RETURNING (actual_amount - COALESCE($4, 0::numeric))::numeric(14, 4) AS delta_amount
+`
+
+type ReconcileReservationActualParams struct {
+	ActualAmount    pgtype.Numeric `json:"actual_amount"`
+	ReservationID   string         `json:"reservation_id"`
+	GenerationJobID string         `json:"generation_job_id"`
+	PreviousActual  pgtype.Numeric `json:"previous_actual"`
+}
+
+// ReconcileReservationActual records the provider-reported total and returns
+// the signed delta from the amount already charged at terminalization.
+func (q *Queries) ReconcileReservationActual(ctx context.Context, arg ReconcileReservationActualParams) (pgtype.Numeric, error) {
+	row := q.db.QueryRow(ctx, reconcileReservationActual,
+		arg.ActualAmount,
+		arg.ReservationID,
+		arg.GenerationJobID,
+		arg.PreviousActual,
+	)
+	var delta_amount pgtype.Numeric
+	err := row.Scan(&delta_amount)
+	return delta_amount, err
+}
+
 const releaseBudgetHold = `-- name: ReleaseBudgetHold :exec
 UPDATE cost_budgets
 SET reserved_amount = GREATEST(reserved_amount - $1, 0),
@@ -238,12 +432,74 @@ func (q *Queries) ReleaseBudgetHold(ctx context.Context, arg ReleaseBudgetHoldPa
 	return err
 }
 
-const releaseReservationForJob = `-- name: ReleaseReservationForJob :one
-UPDATE cost_reservations
+const releaseReservationByID = `-- name: ReleaseReservationByID :one
+UPDATE cost_reservations cr
 SET status = 'released',
+    actual_amount = (
+        SELECT SUM(gce.actual_cost_usd)::numeric(14, 4)
+        FROM generation_cost_events gce
+        WHERE gce.job_id = cr.generation_job_id
+          AND gce.cost_reservation_id = cr.id
+          AND gce.actual_cost_usd IS NOT NULL
+          AND COALESCE(gce.metadata->>'actual_inferred_from_estimate', 'false') <> 'true'
+    ),
     updated_at = now()
-WHERE generation_job_id = $1
-  AND status = 'reserved'
+WHERE cr.id = $1
+  AND cr.generation_job_id = $2
+  AND cr.status = 'reserved'
+RETURNING id, estimated_amount, reserved_amount, actual_amount, currency, tenant_id
+`
+
+type ReleaseReservationByIDParams struct {
+	ReservationID   string `json:"reservation_id"`
+	GenerationJobID string `json:"generation_job_id"`
+}
+
+type ReleaseReservationByIDRow struct {
+	ID              string         `json:"id"`
+	EstimatedAmount pgtype.Numeric `json:"estimated_amount"`
+	ReservedAmount  pgtype.Numeric `json:"reserved_amount"`
+	ActualAmount    pgtype.Numeric `json:"actual_amount"`
+	Currency        string         `json:"currency"`
+	TenantID        string         `json:"tenant_id"`
+}
+
+// ReleaseReservationByID is the worker-safe release variant. It targets the
+// reservation captured by the task rather than whatever reservation a retry
+// may have attached to the job id later.
+func (q *Queries) ReleaseReservationByID(ctx context.Context, arg ReleaseReservationByIDParams) (ReleaseReservationByIDRow, error) {
+	row := q.db.QueryRow(ctx, releaseReservationByID, arg.ReservationID, arg.GenerationJobID)
+	var i ReleaseReservationByIDRow
+	err := row.Scan(
+		&i.ID,
+		&i.EstimatedAmount,
+		&i.ReservedAmount,
+		&i.ActualAmount,
+		&i.Currency,
+		&i.TenantID,
+	)
+	return i, err
+}
+
+const releaseReservationForJob = `-- name: ReleaseReservationForJob :one
+UPDATE cost_reservations cr
+SET status = 'released',
+    actual_amount = (
+        SELECT SUM(gce.actual_cost_usd)::numeric(14, 4)
+        FROM generation_cost_events gce
+        WHERE gce.job_id = cr.generation_job_id
+          AND gce.cost_reservation_id = cr.id
+          AND gce.actual_cost_usd IS NOT NULL
+          AND COALESCE(gce.metadata->>'actual_inferred_from_estimate', 'false') <> 'true'
+    ),
+    updated_at = now()
+WHERE cr.generation_job_id = $1
+  AND cr.status = 'reserved'
+  AND cr.id = (
+      SELECT j.cost_reservation_id
+      FROM generation_jobs j
+      WHERE j.id = $1
+  )
 RETURNING id, estimated_amount, reserved_amount, actual_amount, currency, tenant_id
 `
 
@@ -257,8 +513,13 @@ type ReleaseReservationForJobRow struct {
 }
 
 // ReleaseReservationForJob flips a reservation reserved → released exactly
-// once. actual_amount stays NULL (job failed, nothing charged). No row
-// returned → no-op.
+// once. actual_amount stays NULL unless a provider reported a partial charge
+// before the job failed (e.g. preview succeeded, final failed) — cost-
+// control.md §3 step 10: "commit the partial actual and release the unused
+// remainder". Unlike CommitReservationForJob, this does NOT fall back to
+// estimated_amount when no actual was reported — a plain (no partial charge)
+// release must leave actual_amount null, not silently charge the estimate
+// for a job that never got a provider bill. No row returned → no-op.
 func (q *Queries) ReleaseReservationForJob(ctx context.Context, generationJobID string) (ReleaseReservationForJobRow, error) {
 	row := q.db.QueryRow(ctx, releaseReservationForJob, generationJobID)
 	var i ReleaseReservationForJobRow
@@ -291,39 +552,204 @@ func (q *Queries) SetGenerationJobActualCost(ctx context.Context, arg SetGenerat
 	return err
 }
 
+const setGenerationJobActualCostForReservation = `-- name: SetGenerationJobActualCostForReservation :exec
+UPDATE generation_jobs
+SET actual_cost_usd = $1,
+    updated_at = now()
+WHERE id = $2
+  AND cost_reservation_id = $3
+`
+
+type SetGenerationJobActualCostForReservationParams struct {
+	ActualCostUsd     pgtype.Numeric `json:"actual_cost_usd"`
+	ID                string         `json:"id"`
+	CostReservationID *string        `json:"cost_reservation_id"`
+}
+
+// SetGenerationJobActualCostForReservation prevents an old reservation's late
+// event from overwriting the actual for a newer retry attached to the same job.
+func (q *Queries) SetGenerationJobActualCostForReservation(ctx context.Context, arg SetGenerationJobActualCostForReservationParams) error {
+	_, err := q.db.Exec(ctx, setGenerationJobActualCostForReservation, arg.ActualCostUsd, arg.ID, arg.CostReservationID)
+	return err
+}
+
+const sumReportedReservationActual = `-- name: SumReportedReservationActual :one
+SELECT SUM(gce.actual_cost_usd)::numeric(14, 4) AS reported_actual
+FROM generation_cost_events gce
+WHERE gce.cost_reservation_id = $1
+  AND gce.job_id = $2
+  AND gce.actual_cost_usd IS NOT NULL
+  AND COALESCE(gce.metadata->>'actual_inferred_from_estimate', 'false') <> 'true'
+`
+
+type SumReportedReservationActualParams struct {
+	ReservationID   *string `json:"reservation_id"`
+	GenerationJobID *string `json:"generation_job_id"`
+}
+
+// SumReportedReservationActual excludes the synthetic estimate fallback event.
+// Only provider-reported actuals participate in late reconciliation.
+func (q *Queries) SumReportedReservationActual(ctx context.Context, arg SumReportedReservationActualParams) (pgtype.Numeric, error) {
+	row := q.db.QueryRow(ctx, sumReportedReservationActual, arg.ReservationID, arg.GenerationJobID)
+	var reported_actual pgtype.Numeric
+	err := row.Scan(&reported_actual)
+	return reported_actual, err
+}
+
 const updateLatestJobCostEvent = `-- name: UpdateLatestJobCostEvent :execrows
-UPDATE generation_cost_events
+UPDATE generation_cost_events latest
 SET estimated_cost_usd = $1,
-    actual_cost_usd = $2,
-    status = $3
-WHERE id = (
+    -- Worker-written events carry per-call actuals. Only stamp the aggregate
+    -- fallback when this reservation has no provider-reported actual at all;
+    -- otherwise writing the reservation total onto the latest event would make
+    -- a later SUM(actual_cost_usd) double-count preview/failed-route calls.
+    actual_cost_usd = CASE
+        WHEN EXISTS (
+            SELECT 1
+            FROM generation_cost_events observed
+            WHERE observed.job_id = $2
+              AND observed.cost_reservation_id = $3
+              AND observed.actual_cost_usd IS NOT NULL
+              AND COALESCE(observed.metadata->>'actual_inferred_from_estimate', 'false') <> 'true'
+        ) THEN latest.actual_cost_usd
+        ELSE $4
+    END,
+    metadata = CASE
+        WHEN EXISTS (
+            SELECT 1
+            FROM generation_cost_events observed
+            WHERE observed.job_id = $2
+              AND observed.cost_reservation_id = $3
+              AND observed.actual_cost_usd IS NOT NULL
+              AND COALESCE(observed.metadata->>'actual_inferred_from_estimate', 'false') <> 'true'
+        ) THEN latest.metadata
+        ELSE latest.metadata || jsonb_build_object('actual_inferred_from_estimate', true)
+    END,
+    status = $5
+WHERE latest.id = (
     SELECT gce.id FROM generation_cost_events gce
-    WHERE gce.job_id = $4
+    WHERE gce.job_id = $2
+      AND gce.cost_reservation_id = $3
     ORDER BY gce.created_at DESC
     LIMIT 1
 )
 `
 
 type UpdateLatestJobCostEventParams struct {
-	EstimatedCostUsd pgtype.Numeric `json:"estimated_cost_usd"`
-	ActualCostUsd    pgtype.Numeric `json:"actual_cost_usd"`
-	Status           string         `json:"status"`
-	JobID            *string        `json:"job_id"`
+	EstimatedCostUsd  pgtype.Numeric `json:"estimated_cost_usd"`
+	JobID             *string        `json:"job_id"`
+	CostReservationID *string        `json:"cost_reservation_id"`
+	ActualCostUsd     pgtype.Numeric `json:"actual_cost_usd"`
+	Status            string         `json:"status"`
 }
 
 // UpdateLatestJobCostEvent stamps the estimated/actual cost and final status
-// onto the most recent cost event for a job (the one the worker wrote for the
-// terminal attempt). Returns the number of rows touched so the finalizer can
-// insert one if the worker never wrote it.
+// onto the most recent cost event for this reservation. Returns the number of
+// rows touched so the finalizer can insert one if the worker never wrote it.
 func (q *Queries) UpdateLatestJobCostEvent(ctx context.Context, arg UpdateLatestJobCostEventParams) (int64, error) {
 	result, err := q.db.Exec(ctx, updateLatestJobCostEvent,
 		arg.EstimatedCostUsd,
+		arg.JobID,
+		arg.CostReservationID,
 		arg.ActualCostUsd,
 		arg.Status,
-		arg.JobID,
 	)
 	if err != nil {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const upsertIdentityCostLedgerActualForJob = `-- name: UpsertIdentityCostLedgerActualForJob :exec
+INSERT INTO identity_cost_ledger (
+    id, tenant_id, visual_identity_id,
+    cost_estimated_total, cost_actual_total, currency
+)
+SELECT $1,
+       j.tenant_id,
+       COALESCE(NULLIF(j.visual_identity_id, ''),
+                NULLIF(j.input_payload->>'identity_id', ''),
+                NULLIF(j.input_payload->>'visual_identity_id', '')),
+       0,
+       $2,
+       $3
+FROM generation_jobs j
+WHERE j.id = $4
+  AND COALESCE(NULLIF(j.visual_identity_id, ''),
+               NULLIF(j.input_payload->>'identity_id', ''),
+               NULLIF(j.input_payload->>'visual_identity_id', '')) IS NOT NULL
+ON CONFLICT (visual_identity_id) DO UPDATE
+SET cost_actual_total = identity_cost_ledger.cost_actual_total + EXCLUDED.cost_actual_total,
+    currency = EXCLUDED.currency,
+    updated_at = now()
+`
+
+type UpsertIdentityCostLedgerActualForJobParams struct {
+	LedgerID        string         `json:"ledger_id"`
+	DeltaAmount     pgtype.Numeric `json:"delta_amount"`
+	Currency        string         `json:"currency"`
+	GenerationJobID string         `json:"generation_job_id"`
+}
+
+// UpsertIdentityCostLedgerActualForJob folds only a late actual delta into the
+// identity ledger. Estimated totals were accounted for by the original
+// terminalization when applicable; a late charge after a plain release creates
+// an actual-only row if necessary.
+func (q *Queries) UpsertIdentityCostLedgerActualForJob(ctx context.Context, arg UpsertIdentityCostLedgerActualForJobParams) error {
+	_, err := q.db.Exec(ctx, upsertIdentityCostLedgerActualForJob,
+		arg.LedgerID,
+		arg.DeltaAmount,
+		arg.Currency,
+		arg.GenerationJobID,
+	)
+	return err
+}
+
+const upsertIdentityCostLedgerForJob = `-- name: UpsertIdentityCostLedgerForJob :exec
+INSERT INTO identity_cost_ledger (
+    id, tenant_id, visual_identity_id,
+    cost_estimated_total, cost_actual_total, currency
+)
+SELECT $1,
+       j.tenant_id,
+       COALESCE(NULLIF(j.visual_identity_id, ''),
+                NULLIF(j.input_payload->>'identity_id', ''),
+                NULLIF(j.input_payload->>'visual_identity_id', '')),
+       $2,
+       $3,
+       $4
+FROM generation_jobs j
+WHERE j.id = $5
+  AND COALESCE(NULLIF(j.visual_identity_id, ''),
+               NULLIF(j.input_payload->>'identity_id', ''),
+               NULLIF(j.input_payload->>'visual_identity_id', '')) IS NOT NULL
+ON CONFLICT (visual_identity_id) DO UPDATE
+SET cost_estimated_total = identity_cost_ledger.cost_estimated_total + EXCLUDED.cost_estimated_total,
+    cost_actual_total = identity_cost_ledger.cost_actual_total + EXCLUDED.cost_actual_total,
+    currency = EXCLUDED.currency,
+    updated_at = now()
+`
+
+type UpsertIdentityCostLedgerForJobParams struct {
+	LedgerID        string         `json:"ledger_id"`
+	EstimatedAmount pgtype.Numeric `json:"estimated_amount"`
+	ActualAmount    pgtype.Numeric `json:"actual_amount"`
+	Currency        string         `json:"currency"`
+	GenerationJobID string         `json:"generation_job_id"`
+}
+
+// UpsertIdentityCostLedgerForJob adds one committed reservation's estimated and
+// actual amounts to the identity lifetime ledger. Prefer the first-class
+// generation_jobs.visual_identity_id, with payload fallbacks for older rows that
+// predate that column being populated by the jobs service. Jobs without an
+// identity (for example ad-hoc artifacts) intentionally produce no row.
+func (q *Queries) UpsertIdentityCostLedgerForJob(ctx context.Context, arg UpsertIdentityCostLedgerForJobParams) error {
+	_, err := q.db.Exec(ctx, upsertIdentityCostLedgerForJob,
+		arg.LedgerID,
+		arg.EstimatedAmount,
+		arg.ActualAmount,
+		arg.Currency,
+		arg.GenerationJobID,
+	)
+	return err
 }

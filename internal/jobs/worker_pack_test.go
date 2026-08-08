@@ -16,15 +16,21 @@ import (
 // otherwise it returns one deterministic image. Used to drive partial pack
 // failures.
 type selectiveProvider struct {
-	mu     sync.Mutex
-	calls  []string
-	failOn []string
+	mu       sync.Mutex
+	calls    []string
+	failOn   []string
+	rejectOn []string
 }
 
 func (p *selectiveProvider) Generate(_ context.Context, req providers.ProviderGenerateRequest) (providers.ProviderGenerateResult, error) {
 	p.mu.Lock()
 	p.calls = append(p.calls, req.Prompt)
 	p.mu.Unlock()
+	for _, marker := range p.rejectOn {
+		if strings.Contains(req.Prompt, marker) {
+			return providers.ProviderGenerateResult{}, providers.ErrContentPolicyRejected
+		}
+	}
 	for _, marker := range p.failOn {
 		if strings.Contains(req.Prompt, marker) {
 			return providers.ProviderGenerateResult{}, errors.New("provider unavailable for " + marker)
@@ -143,7 +149,7 @@ func TestProcessPackFanOutHappyPath(t *testing.T) {
 	if len(fin.committed) != 1 || len(fin.released) != 0 {
 		t.Fatalf("expected one commit / zero releases, got %v / %v", fin.committed, fin.released)
 	}
-	if len(repo.costEvents) != 1 || repo.costEvents[0].Status != "completed" {
+	if !hasCostEvent(repo.costEvents, `"billable_operation":"pack"`, "completed") {
 		t.Fatalf("expected one completed pack cost event, got %+v", repo.costEvents)
 	}
 }
@@ -205,6 +211,15 @@ func TestProcessPackStampsVariantClassification(t *testing.T) {
 	if len(angry.CompatibilityTags) != 0 {
 		t.Fatalf("angry: expected no compatibility tags, got %v", angry.CompatibilityTags)
 	}
+}
+
+func hasCostEvent(events []CostEventInsertParams, metadata, status string) bool {
+	for _, event := range events {
+		if event.Status == status && strings.Contains(string(event.Metadata), metadata) {
+			return true
+		}
+	}
+	return false
 }
 
 func containsString(s []string, want string) bool {
@@ -297,8 +312,69 @@ func TestProcessPackTotalFailureFailsPackAndReleases(t *testing.T) {
 	if len(fin.released) != 1 || len(fin.committed) != 0 {
 		t.Fatalf("expected one release / zero commits, got %v / %v", fin.released, fin.committed)
 	}
-	if len(repo.costEvents) != 1 || repo.costEvents[0].Status != "failed" {
+	if !hasCostEvent(repo.costEvents, `"billable_operation":"pack"`, "failed") {
 		t.Fatalf("expected one failed pack cost event, got %+v", repo.costEvents)
+	}
+}
+
+func TestProcessPackIgnoresTaskAfterReservationChanged(t *testing.T) {
+	repo := newFakeJobsRepo()
+	seedPackJob(repo, "pack_stale_task_job", "pack_stale_task", "pack", []string{"role_a"})
+	newReservation := "resv_pack_retry"
+	job := repo.jobs["pack_stale_task_job"]
+	job.CostReservationID = &newReservation
+	repo.jobs[job.ID] = job
+	w := &Worker{Jobs: repo, Assets: &fakeAssetsRepo{}, Storage: &fakeStorage{}, Finalizer: &fakeFinalizer{}}
+	if err := w.ProcessPackForReservation(context.Background(), job.ID, "resv_pack_old"); err != nil {
+		t.Fatalf("stale pack task should be ignored, got %v", err)
+	}
+	if repo.markRunningCalls != 0 || len(repo.attempts) != 0 {
+		t.Fatalf("stale pack task had side effects: running=%d attempts=%+v", repo.markRunningCalls, repo.attempts)
+	}
+}
+
+func TestProcessPackPolicyRejectStopsFanOut(t *testing.T) {
+	repo := newFakeJobsRepo()
+	assetsRepo := &fakeAssetsRepo{}
+	repo.assets = assetsRepo
+	provider := &selectiveProvider{rejectOn: []string{"neutral"}}
+	fin := &fakeFinalizer{}
+	seedPackJob(repo, "job_pack_policy", "pack_policy", JobTypeCharacterPack, []string{"neutral", "happy"})
+
+	w := newPackWorker(repo, assetsRepo, provider, fin)
+	if err := w.ProcessPack(context.Background(), "job_pack_policy"); err != nil {
+		t.Fatalf("policy rejection should terminalize cleanly: %v", err)
+	}
+	if provider.callCount() != 1 {
+		t.Fatalf("policy rejection must stop pack fan-out, got %d provider calls", provider.callCount())
+	}
+	if repo.lastPackStatus("pack_policy") != packStatusFailed {
+		t.Fatalf("policy rejection pack status = %q, want failed", repo.lastPackStatus("pack_policy"))
+	}
+	if len(fin.released) != 1 || len(fin.committed) != 0 {
+		t.Fatalf("policy rejection must release exactly once, got releases=%v commits=%v", fin.released, fin.committed)
+	}
+}
+
+func TestProcessPackCancelledJobSkipsFanOut(t *testing.T) {
+	repo := newFakeJobsRepo()
+	assetsRepo := &fakeAssetsRepo{}
+	provider := &selectiveProvider{}
+	fin := &fakeFinalizer{}
+	seedPackJob(repo, "job_pack_cancelled", "pack_cancelled", JobTypeCharacterPack, []string{"a", "b"})
+	job := repo.jobs["job_pack_cancelled"]
+	job.Status = statusCancelled
+	repo.jobs["job_pack_cancelled"] = job
+
+	w := newPackWorker(repo, assetsRepo, provider, fin)
+	if err := w.ProcessPack(context.Background(), "job_pack_cancelled"); err != nil {
+		t.Fatalf("ProcessPack: %v", err)
+	}
+	if provider.callCount() != 0 || len(repo.packAssets) != 0 {
+		t.Fatalf("cancelled pack must not fan out, calls=%d assets=%d", provider.callCount(), len(repo.packAssets))
+	}
+	if len(fin.released) != 1 || len(fin.committed) != 0 {
+		t.Fatalf("cancelled pack must release once, committed=%v released=%v", fin.committed, fin.released)
 	}
 }
 
@@ -500,6 +576,43 @@ func TestProcessPackMissingPackLinkFailsTerminally(t *testing.T) {
 	}
 }
 
+// TestProcessPackDuplicateInvalidPlanCannotMutateLiveJob proves ownership is
+// claimed before pack-plan validation. A duplicate first delivery of a running
+// job must not fail the live job or release its reservation just because the
+// stale payload is malformed.
+func TestProcessPackDuplicateInvalidPlanCannotMutateLiveJob(t *testing.T) {
+	repo := newFakeJobsRepo()
+	provider := &selectiveProvider{}
+	fin := &fakeFinalizer{}
+	seedPackJob(repo, "job_pack_duplicate_preflight", "pack_duplicate_preflight", JobTypeCharacterPack, []string{"a"})
+	job := repo.jobs["job_pack_duplicate_preflight"]
+	job.Status = "running"
+	job.AssetPackID = nil // malformed stale payload, but the live worker owns it
+	repo.jobs["job_pack_duplicate_preflight"] = job
+
+	w := newPackWorker(repo, &fakeAssetsRepo{}, provider, fin)
+	if err := w.ProcessPack(context.Background(), "job_pack_duplicate_preflight", 0); err != nil {
+		t.Fatalf("duplicate ProcessPack: %v", err)
+	}
+
+	job = repo.jobs["job_pack_duplicate_preflight"]
+	if job.Status != "running" {
+		t.Fatalf("duplicate delivery must not mutate running job, got %q", job.Status)
+	}
+	if repo.markRunningCalls != 0 {
+		t.Fatalf("duplicate delivery must not claim again, got %d MarkRunning calls", repo.markRunningCalls)
+	}
+	if provider.callCount() != 0 {
+		t.Fatalf("duplicate delivery must not call provider, got %d calls", provider.callCount())
+	}
+	if got := repo.lastPackStatus("pack_duplicate_preflight"); got != "" {
+		t.Fatalf("duplicate delivery must not mutate pack status, got %q", got)
+	}
+	if len(fin.released) != 0 {
+		t.Fatalf("duplicate delivery must not release the live reservation, got %v", fin.released)
+	}
+}
+
 // TestProcessPackItemInsertFailureRollsBackAtomically pins the Blocker 2
 // fix: the visual_assets insert and the asset_pack_items insert commit
 // together or not at all. Run 1 has variant "b"'s combined insert fail
@@ -565,6 +678,15 @@ func TestProcessPackItemInsertFailureRollsBackAtomically(t *testing.T) {
 	}
 	if len(fin.committed) != 1 {
 		t.Fatalf("expected exactly one commit across both runs, got %v", fin.committed)
+	}
+	packEvents := 0
+	for _, event := range repo.costEvents {
+		if strings.Contains(string(event.Metadata), `"billable_operation":"pack"`) {
+			packEvents++
+		}
+	}
+	if packEvents != 1 {
+		t.Fatalf("expected one idempotent pack aggregate event across retries, got %d", packEvents)
 	}
 }
 

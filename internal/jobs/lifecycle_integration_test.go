@@ -12,6 +12,7 @@ import (
 
 	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/cost"
+	"github.com/zakkriel/drchat-image-platform/internal/ids"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
 	"github.com/zakkriel/drchat-image-platform/internal/providers"
 	"github.com/zakkriel/drchat-image-platform/internal/providers/mock"
@@ -120,6 +121,58 @@ func TestLifecycleWorkerSuccessCommitsReservation(t *testing.T) {
 	}
 }
 
+func TestLateReportedDiscardedCostReconcilesTerminalReservation(t *testing.T) {
+	pool := openTestPool(t)
+	defer pool.Close()
+	cleanup(t, pool)
+	defer cleanup(t, pool)
+	seedFixtures(t, pool)
+	seedBudget(t, pool, "bud_life_late", "tenant", itTenant, "active", "1.0000")
+
+	jobID, reservationID := submitJob(t, pool)
+	w := &jobs.Worker{
+		Jobs:      jobs.NewRepository(pool),
+		Assets:    assets.NewRepository(pool),
+		Storage:   memStorage{},
+		Providers: registryFor(mock.New()),
+		Finalizer: cost.NewLifecycle(pool, nil),
+	}
+	if err := w.Process(context.Background(), jobID, 0); err != nil {
+		t.Fatalf("worker process: %v", err)
+	}
+	// The retry-safe worst-case hold is already committed before this late event.
+	if got := scalar(t, pool, `SELECT spent_amount::text FROM cost_budgets WHERE id = 'bud_life_late'`); got != "0.0100" {
+		t.Fatalf("precondition spent amount: got %s, want 0.0100", got)
+	}
+
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO generation_cost_events
+		(id, tenant_id, job_id, cost_reservation_id, provider_id, model_id, operation, actual_cost_usd, status, metadata)
+		VALUES ($1, $2, $3, $4, 'mock', 'pm_mock_v1', 'text_to_image', $5, 'completed', $6::jsonb)
+	`, ids.NewCostEventID(), itTenant, jobID, reservationID, "0.0050", `{"billable_operation":"discarded_final","output_discarded":true}`); err != nil {
+		t.Fatalf("insert late cost event: %v", err)
+	}
+	if err := cost.NewLifecycle(pool, nil).ReconcileForReservation(context.Background(), jobID, reservationID); err != nil {
+		t.Fatalf("reconcile late cost: %v", err)
+	}
+	if got := scalar(t, pool, `SELECT spent_amount::text FROM cost_budgets WHERE id = 'bud_life_late'`); got != "0.0050" {
+		t.Fatalf("reconciled budget spend: got %s, want 0.0050", got)
+	}
+	if got := scalar(t, pool, `SELECT actual_amount::text FROM cost_reservations WHERE id = $1`, reservationID); got != "0.0050" {
+		t.Fatalf("reconciled reservation actual: got %s, want 0.0050", got)
+	}
+	if got := scalar(t, pool, `SELECT actual_cost_usd::text FROM generation_jobs WHERE id = $1`, jobID); got != "0.0050" {
+		t.Fatalf("reconciled job actual: got %s, want 0.0050", got)
+	}
+	// Reconciliation is delta-based and therefore idempotent.
+	if err := cost.NewLifecycle(pool, nil).ReconcileForReservation(context.Background(), jobID, reservationID); err != nil {
+		t.Fatalf("repeat reconcile late cost: %v", err)
+	}
+	if got := scalar(t, pool, `SELECT spent_amount::text FROM cost_budgets WHERE id = 'bud_life_late'`); got != "0.0050" {
+		t.Fatalf("repeat reconciliation changed budget spend: got %s", got)
+	}
+}
+
 func TestWorkerStampsMockProviderModelOnAsset(t *testing.T) {
 	pool := openTestPool(t)
 	defer pool.Close()
@@ -189,6 +242,100 @@ func TestLifecycleWorkerFailureReleasesReservation(t *testing.T) {
 	}
 	if got := scalar(t, pool, `SELECT status FROM generation_cost_events WHERE job_id = $1 ORDER BY created_at DESC LIMIT 1`, jobID); got != "failed" {
 		t.Fatalf("cost event status: expected failed, got %s", got)
+	}
+}
+
+// TestLifecyclePartialChargeOnReleaseCommitsActualAndReleasesRemainder covers
+// cost-control.md §3 step 10: "If the provider partially charged (e.g.
+// preview succeeded, final failed), commit the partial actual and release
+// the unused remainder." A generation_cost_events row with a real
+// actual_cost_usd (as the worker would write for a billed preview call)
+// exists before the job's terminal failure releases the reservation; that
+// partial charge must move from reserved to spent (not vanish, and not
+// silently release the whole hold back as if nothing was ever billed).
+func TestLifecyclePartialChargeOnReleaseCommitsActualAndReleasesRemainder(t *testing.T) {
+	pool := openTestPool(t)
+	defer pool.Close()
+	cleanup(t, pool)
+	defer cleanup(t, pool)
+	seedFixtures(t, pool)
+	seedBudget(t, pool, "bud_life_partial", "tenant", itTenant, "active", "1.0000")
+
+	jobID, reservationID := submitJob(t, pool)
+
+	// Simulate a preview call that succeeded and was billed before the final
+	// call failed: a real generation_cost_events row with actual_cost_usd
+	// set, exactly as the worker writes on a successful provider attempt.
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO generation_cost_events (id, tenant_id, job_id, cost_reservation_id, operation, actual_cost_usd, status)
+		 VALUES ('gce_partial_1', $1, $2, $3, 'text_to_image', '0.0040', 'completed')`,
+		itTenant, jobID, reservationID,
+	); err != nil {
+		t.Fatalf("seed partial cost event: %v", err)
+	}
+
+	fin := cost.NewLifecycle(pool, nil)
+	if err := fin.Release(context.Background(), jobID); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+
+	rStatus, rActual := reservationStatusActual(t, pool, reservationID)
+	if rStatus != "released" {
+		t.Fatalf("reservation: expected released, got %s", rStatus)
+	}
+	if rActual != "0.0040" {
+		t.Fatalf("reservation actual_amount: expected the partial charge 0.0040, got %q", rActual)
+	}
+	// The full 0.0100 estimate leaves reserved (nothing stays held); the
+	// 0.0040 actually billed moves to spent; the unbilled 0.0060 remainder
+	// simply vanishes from both — released back to available budget, exactly
+	// as the doc's "release the unused remainder" describes.
+	if reserved, spent := budgetAmounts(t, pool, "bud_life_partial"); reserved != "0.0000" || spent != "0.0040" {
+		t.Fatalf("post-release budget: expected reserved 0 / spent 0.0040, got %s / %s", reserved, spent)
+	}
+	if got := scalar(t, pool, `SELECT actual_cost_usd::text FROM generation_jobs WHERE id = $1`, jobID); got != "0.0040" {
+		t.Fatalf("job actual_cost_usd: expected 0.0040, got %s", got)
+	}
+	if got := scalar(t, pool, `SELECT status FROM cost_reservation_budget_holds WHERE cost_reservation_id = $1`, reservationID); got != "released" {
+		t.Fatalf("budget hold status: expected released, got %s", got)
+	}
+	// The finalizer's own failed-job cost event now carries the partial
+	// actual too, not NULL — a cost-spike/reconciliation query summing
+	// actual_cost_usd for the job must see the real spend.
+	if got := scalar(t, pool, `SELECT actual_cost_usd::text FROM generation_cost_events WHERE job_id = $1 ORDER BY created_at DESC LIMIT 1`, jobID); got != "0.0040" {
+		t.Fatalf("latest cost event actual_cost_usd: expected 0.0040, got %s", got)
+	}
+}
+
+// A plain release with no provider-reported charge at all must behave
+// exactly as before this fix: full release, no spend, actual stays NULL.
+// (TestLifecycleWorkerFailureReleasesReservation above already covers this
+// through the full worker path; this covers it directly through the
+// Lifecycle seam the partial-charge test above also exercises.)
+func TestLifecycleReleaseWithNoChargeStaysFullyUnbilled(t *testing.T) {
+	pool := openTestPool(t)
+	defer pool.Close()
+	cleanup(t, pool)
+	defer cleanup(t, pool)
+	seedFixtures(t, pool)
+	seedBudget(t, pool, "bud_life_nocharge", "tenant", itTenant, "active", "1.0000")
+
+	jobID, reservationID := submitJob(t, pool)
+
+	fin := cost.NewLifecycle(pool, nil)
+	if err := fin.Release(context.Background(), jobID); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+
+	rStatus, rActual := reservationStatusActual(t, pool, reservationID)
+	if rStatus != "released" || rActual != "" {
+		t.Fatalf("reservation: expected released/NULL actual, got %s/%q", rStatus, rActual)
+	}
+	if reserved, spent := budgetAmounts(t, pool, "bud_life_nocharge"); reserved != "0.0000" || spent != "0.0000" {
+		t.Fatalf("post-release budget: expected reserved 0 / spent 0, got %s / %s", reserved, spent)
+	}
+	if got := scalar(t, pool, `SELECT COALESCE(actual_cost_usd::text, '') FROM generation_jobs WHERE id = $1`, jobID); got != "" {
+		t.Fatalf("job actual_cost_usd: expected NULL, got %s", got)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -31,19 +32,35 @@ type Job struct {
 	JobType            string
 	Status             string
 	RequestedByTokenID *string
-	AssetPackID        *string
-	InputPayload       map[string]any
-	FallbackPolicy     *string
-	CacheResult        *string
-	PreviewAssetIds    []string
-	FinalAssetIds      []string
-	ErrorCode          *string
-	ErrorMessage       *string
-	Retryable          *bool
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
-	StartedAt          *time.Time
-	CompletedAt        *time.Time
+	// VisualIdentityID is the first-class generation_jobs.visual_identity_id
+	// column (distinct from InputPayload["identity_id"]/["visual_identity_id"],
+	// which is the payload-carried value older/ad-hoc jobs rely on).
+	VisualIdentityID *string
+	AssetPackID      *string
+	InputPayload     map[string]any
+	FallbackPolicy   *string
+	CacheResult      *string
+	PreviewAssetIds  []string
+	FinalAssetIds    []string
+	ErrorCode        *string
+	ErrorMessage     *string
+	Retryable        *bool
+	// CostReservationID identifies the exact reservation held for this job.
+	// Workers retain it across provider work so a stale task cannot finalize a
+	// later admin-retry reservation attached to the same reusable job id.
+	CostReservationID *string
+	// CostEstimateUSD is the pre-flight estimate stamped at reservation time
+	// (generation_jobs.cost_estimate_usd). Nil when never estimated (e.g. an
+	// unpriced test route).
+	CostEstimateUSD *string
+	// ActualCostUSD is the reconciled actual cost stamped by
+	// cost.Lifecycle.Commit on job success (generation_jobs.actual_cost_usd).
+	// Nil until the job commits.
+	ActualCostUSD *string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	StartedAt     *time.Time
+	CompletedAt   *time.Time
 }
 
 // InsertParams captures everything Phase 3 writes when accepting a job.
@@ -63,6 +80,8 @@ type ProviderAttemptInsertParams struct {
 	ID              string
 	GenerationJobID string
 	ProviderID      string
+	ModelID         *string
+	ProviderRouteID *string
 	AttemptNumber   int32
 }
 
@@ -71,6 +90,8 @@ type ProviderAttempt struct {
 	ID              string
 	GenerationJobID string
 	ProviderID      string
+	ModelID         *string
+	ProviderRouteID *string
 	AttemptNumber   int32
 	Status          string
 }
@@ -100,12 +121,70 @@ type CostEventInsertParams struct {
 	TenantID          string
 	JobID             *string
 	AssetID           *string
+	CostReservationID *string
 	TokenID           *string
 	ProviderID        *string
+	ModelID           *string
 	ProviderAttemptID *string
 	Operation         string
+	EstimatedCostUSD  *string
+	ActualCostUSD     *string
 	DurationMs        *int32
 	Status            string
+	Metadata          []byte
+}
+
+// PersistSuccessParams is the provider-attempt and cost-event bookkeeping that
+// belongs in the same transaction as a guarded output/status write. The
+// optional production seam closes the crash window between terminal output
+// persistence and the separate success bookkeeping calls.
+type PersistSuccessParams struct {
+	AttemptID string
+	LatencyMs int32
+	CostEvent CostEventInsertParams
+}
+
+// GuardedSuccessPersister is an optional production extension. Lightweight
+// repository fakes keep the original guarded methods; the worker uses this
+// interface when available so output, terminal status, attempt success, and
+// the success cost event commit atomically.
+type GuardedSuccessPersister interface {
+	InsertFinalAssetAndCompleteJobWithSuccess(ctx context.Context, jobID, tenantID string, params assets.InsertParams, forced bool, slot assets.ArtifactSlot, success PersistSuccessParams) (assets.VisualAsset, PersistOutcome, error)
+	InsertPreviewAssetAndMarkPreviewReadyWithSuccess(ctx context.Context, jobID, tenantID string, params assets.InsertParams, success PersistSuccessParams) (assets.VisualAsset, PersistOutcome, error)
+}
+
+// ReservationBoundStateUpdater is the production CAS extension used by queue
+// tasks. It keeps the reservation/run token in every mutable job transition so
+// a delayed task cannot claim or terminalize a later admin retry. Lightweight
+// repositories may continue to implement the legacy methods only.
+type ReservationBoundStateUpdater interface {
+	MarkRunningForReservation(ctx context.Context, id, tenantID, reservationID string) (Job, error)
+	ClaimPreviewFinalizationForReservation(ctx context.Context, id, tenantID, reservationID string) (Job, error)
+	MarkPreviewReadyForReservation(ctx context.Context, id, tenantID string, previewAssetIDs []string, reservationID string) (Job, error)
+	MarkCompletedForReservation(ctx context.Context, id, tenantID string, finalAssetIDs []string, reservationID string) (Job, error)
+	MarkFailedForReservation(ctx context.Context, id, tenantID, errorCode, errorMessage string, retryable bool, reservationID string) (Job, error)
+}
+
+// ReservationBoundSuccessPersister is the reservation-aware counterpart to
+// GuardedSuccessPersister. The job row lock and output/status write use the
+// same captured reservation token.
+type ReservationBoundSuccessPersister interface {
+	InsertFinalAssetAndCompleteJobWithSuccessForReservation(ctx context.Context, jobID, tenantID, reservationID string, params assets.InsertParams, forced bool, slot assets.ArtifactSlot, success PersistSuccessParams) (assets.VisualAsset, PersistOutcome, error)
+	InsertPreviewAssetAndMarkPreviewReadyWithSuccessForReservation(ctx context.Context, jobID, tenantID, reservationID string, params assets.InsertParams, success PersistSuccessParams) (assets.VisualAsset, PersistOutcome, error)
+}
+
+// PackSuccessPersister atomically couples a generated pack item with its
+// provider-attempt success row and per-cell cost event.
+type PackSuccessPersister interface {
+	InsertPackItemWithAssetAndSuccess(ctx context.Context, asset assets.InsertParams, item AssetPackItemInsertParams, success PersistSuccessParams) error
+	InsertPackItemWithAssetSupersedingAndSuccess(ctx context.Context, asset assets.InsertParams, item AssetPackItemInsertParams, slot assets.VariantSlot, success PersistSuccessParams) error
+}
+
+// ProviderAttemptCostUpdater is an optional extension implemented by the
+// Postgres repository. It keeps provider billing metadata out of the broad
+// Repository test seam while allowing production workers to reconcile it.
+type ProviderAttemptCostUpdater interface {
+	UpdateProviderAttemptCost(ctx context.Context, id, providerRequestID string, actualCostUSD *string, currency string) error
 }
 
 type Repository interface {
@@ -168,10 +247,19 @@ type Repository interface {
 	ListAssetPackItemsForTenant(ctx context.Context, packID, tenantID string) ([]AssetPackItem, error)
 }
 
+// errPackJobNotActive is returned by the atomic pack-item transaction when
+// cancellation or another terminal worker won the generation-job row lock.
+// The worker stops fan-out rather than treating that state as an ordinary item
+// failure and later overwriting pack completeness/status.
+var errPackJobNotActive = errors.New("jobs: pack job is no longer active")
+
 type pgRepository struct {
 	q    *dbgen.Queries
 	pool *pgxpool.Pool
 }
+
+var _ GuardedSuccessPersister = (*pgRepository)(nil)
+var _ PackSuccessPersister = (*pgRepository)(nil)
 
 func NewRepository(pool *pgxpool.Pool) Repository {
 	return &pgRepository{q: dbgen.New(pool), pool: pool}
@@ -266,6 +354,53 @@ func (r *pgRepository) MarkRunning(ctx context.Context, id, tenantID string) (Jo
 	return rowToJob(row), nil
 }
 
+func (r *pgRepository) MarkRunningForReservation(ctx context.Context, id, tenantID, reservationID string) (Job, error) {
+	row, err := r.q.MarkGenerationJobRunning(ctx, dbgen.MarkGenerationJobRunningParams{
+		ID:                id,
+		TenantID:          tenantID,
+		CostReservationID: &reservationID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Job{}, ErrNotFound
+		}
+		return Job{}, err
+	}
+	return rowToJob(row), nil
+}
+
+// ClaimPreviewFinalization atomically marks the non-lazy preview final phase
+// as claimed. A missing row means another first delivery owns the final call or
+// the job became terminal.
+func (r *pgRepository) ClaimPreviewFinalization(ctx context.Context, id, tenantID string) (Job, error) {
+	row, err := r.q.ClaimPreviewFinalization(ctx, dbgen.ClaimPreviewFinalizationParams{
+		ID:       id,
+		TenantID: tenantID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Job{}, ErrNotFound
+		}
+		return Job{}, err
+	}
+	return rowToJob(row), nil
+}
+
+func (r *pgRepository) ClaimPreviewFinalizationForReservation(ctx context.Context, id, tenantID, reservationID string) (Job, error) {
+	row, err := r.q.ClaimPreviewFinalization(ctx, dbgen.ClaimPreviewFinalizationParams{
+		ID:                id,
+		TenantID:          tenantID,
+		CostReservationID: &reservationID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Job{}, ErrNotFound
+		}
+		return Job{}, err
+	}
+	return rowToJob(row), nil
+}
+
 func (r *pgRepository) MarkPreviewReady(ctx context.Context, id, tenantID string, previewAssetIDs []string) (Job, error) {
 	if previewAssetIDs == nil {
 		previewAssetIDs = []string{}
@@ -284,11 +419,46 @@ func (r *pgRepository) MarkPreviewReady(ctx context.Context, id, tenantID string
 	return rowToJob(row), nil
 }
 
+func (r *pgRepository) MarkPreviewReadyForReservation(ctx context.Context, id, tenantID string, previewAssetIDs []string, reservationID string) (Job, error) {
+	if previewAssetIDs == nil {
+		previewAssetIDs = []string{}
+	}
+	row, err := r.q.MarkGenerationJobPreviewReady(ctx, dbgen.MarkGenerationJobPreviewReadyParams{
+		ID:                id,
+		TenantID:          tenantID,
+		PreviewAssetIds:   previewAssetIDs,
+		CostReservationID: &reservationID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Job{}, ErrNotFound
+		}
+		return Job{}, err
+	}
+	return rowToJob(row), nil
+}
+
 func (r *pgRepository) MarkCompleted(ctx context.Context, id, tenantID string, finalAssetIDs []string) (Job, error) {
 	row, err := r.q.MarkGenerationJobCompleted(ctx, dbgen.MarkGenerationJobCompletedParams{
 		ID:            id,
 		TenantID:      tenantID,
 		FinalAssetIds: finalAssetIDs,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Job{}, ErrNotFound
+		}
+		return Job{}, err
+	}
+	return rowToJob(row), nil
+}
+
+func (r *pgRepository) MarkCompletedForReservation(ctx context.Context, id, tenantID string, finalAssetIDs []string, reservationID string) (Job, error) {
+	row, err := r.q.MarkGenerationJobCompleted(ctx, dbgen.MarkGenerationJobCompletedParams{
+		ID:                id,
+		TenantID:          tenantID,
+		FinalAssetIds:     finalAssetIDs,
+		CostReservationID: &reservationID,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -319,11 +489,34 @@ func (r *pgRepository) MarkFailed(ctx context.Context, id, tenantID, errorCode, 
 	return rowToJob(row), nil
 }
 
+func (r *pgRepository) MarkFailedForReservation(ctx context.Context, id, tenantID, errorCode, errorMessage string, retryable bool, reservationID string) (Job, error) {
+	ec := errorCode
+	em := errorMessage
+	rb := retryable
+	row, err := r.q.MarkGenerationJobFailed(ctx, dbgen.MarkGenerationJobFailedParams{
+		ID:                id,
+		TenantID:          tenantID,
+		ErrorCode:         &ec,
+		ErrorMessage:      &em,
+		Retryable:         &rb,
+		CostReservationID: &reservationID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Job{}, ErrNotFound
+		}
+		return Job{}, err
+	}
+	return rowToJob(row), nil
+}
+
 func (r *pgRepository) InsertProviderAttempt(ctx context.Context, params ProviderAttemptInsertParams) (ProviderAttempt, error) {
 	row, err := r.q.InsertProviderAttempt(ctx, dbgen.InsertProviderAttemptParams{
 		ID:              params.ID,
 		GenerationJobID: params.GenerationJobID,
 		ProviderID:      params.ProviderID,
+		ModelID:         params.ModelID,
+		ProviderRouteID: params.ProviderRouteID,
 		AttemptNumber:   params.AttemptNumber,
 	})
 	if err != nil {
@@ -333,16 +526,44 @@ func (r *pgRepository) InsertProviderAttempt(ctx context.Context, params Provide
 		ID:              row.ID,
 		GenerationJobID: row.GenerationJobID,
 		ProviderID:      row.ProviderID,
+		ModelID:         row.ModelID,
+		ProviderRouteID: row.ProviderRouteID,
 		AttemptNumber:   row.AttemptNumber,
 		Status:          row.Status,
 	}, nil
 }
 
 func (r *pgRepository) MarkProviderAttemptSucceeded(ctx context.Context, id string, latencyMs int32) error {
+	return markProviderAttemptSucceededWithQueries(ctx, r.q, id, latencyMs)
+}
+
+func markProviderAttemptSucceededWithQueries(ctx context.Context, q *dbgen.Queries, id string, latencyMs int32) error {
 	lm := latencyMs
-	return r.q.MarkProviderAttemptSucceeded(ctx, dbgen.MarkProviderAttemptSucceededParams{
+	return q.MarkProviderAttemptSucceeded(ctx, dbgen.MarkProviderAttemptSucceededParams{
 		ID:        id,
 		LatencyMs: &lm,
+	})
+}
+
+// UpdateProviderAttemptCost persists provider-side billing metadata when an
+// adapter reports it. This is an optional repository extension so lightweight
+// worker fakes do not need to implement provider reconciliation to test the
+// generation path.
+func (r *pgRepository) UpdateProviderAttemptCost(ctx context.Context, id, providerRequestID string, actualCostUSD *string, currency string) error {
+	actual := pgtype.Numeric{}
+	if actualCostUSD != nil {
+		if err := actual.Scan(*actualCostUSD); err != nil {
+			return err
+		}
+	}
+	if currency == "" {
+		currency = "USD"
+	}
+	return r.q.UpdateProviderAttemptCost(ctx, dbgen.UpdateProviderAttemptCostParams{
+		ID:                id,
+		ProviderRequestID: strPtrOrNil(providerRequestID),
+		ActualCost:        actual,
+		Currency:          currency,
 	})
 }
 
@@ -369,6 +590,14 @@ func (r *pgRepository) UpdateAssetPackStatus(ctx context.Context, packID, status
 	})
 }
 
+func (r *pgRepository) UpdateAssetPackStatusForJob(ctx context.Context, packID, jobID, status string) error {
+	return r.q.UpdateAssetPackStatusForJob(ctx, dbgen.UpdateAssetPackStatusForJobParams{
+		ID:              packID,
+		GenerationJobID: &jobID,
+		Status:          status,
+	})
+}
+
 func (r *pgRepository) UpdateAssetPackCompleteness(ctx context.Context, packID string, delivered, missing []string) error {
 	if delivered == nil {
 		delivered = []string{}
@@ -383,7 +612,50 @@ func (r *pgRepository) UpdateAssetPackCompleteness(ctx context.Context, packID s
 	})
 }
 
+func (r *pgRepository) UpdateAssetPackCompletenessForJob(ctx context.Context, packID, jobID string, delivered, missing []string) error {
+	if delivered == nil {
+		delivered = []string{}
+	}
+	if missing == nil {
+		missing = []string{}
+	}
+	return r.q.UpdateAssetPackCompletenessForJob(ctx, dbgen.UpdateAssetPackCompletenessForJobParams{
+		ID:              packID,
+		GenerationJobID: &jobID,
+		DeliveredRoles:  delivered,
+		MissingRoles:    missing,
+	})
+}
+
+func lockActivePackJob(ctx context.Context, q *dbgen.Queries, asset assets.InsertParams) error {
+	if asset.GenerationJobID == nil || *asset.GenerationJobID == "" {
+		return nil
+	}
+	status, err := q.LockGenerationJobForUpdate(ctx, dbgen.LockGenerationJobForUpdateParams{
+		ID:       *asset.GenerationJobID,
+		TenantID: asset.TenantID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return errPackJobNotActive
+		}
+		return err
+	}
+	if status != "running" {
+		return errPackJobNotActive
+	}
+	return nil
+}
+
 func (r *pgRepository) InsertPackItemWithAsset(ctx context.Context, asset assets.InsertParams, item AssetPackItemInsertParams) error {
+	return r.insertPackItemWithAsset(ctx, asset, item, nil)
+}
+
+func (r *pgRepository) InsertPackItemWithAssetAndSuccess(ctx context.Context, asset assets.InsertParams, item AssetPackItemInsertParams, success PersistSuccessParams) error {
+	return r.insertPackItemWithAsset(ctx, asset, item, &success)
+}
+
+func (r *pgRepository) insertPackItemWithAsset(ctx context.Context, asset assets.InsertParams, item AssetPackItemInsertParams, success *PersistSuccessParams) error {
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
@@ -395,6 +667,9 @@ func (r *pgRepository) InsertPackItemWithAsset(ctx context.Context, asset assets
 		}
 	}()
 	q := dbgen.New(tx)
+	if err := lockActivePackJob(ctx, q, asset); err != nil {
+		return err
+	}
 	if _, err := assets.InsertWithQueries(ctx, q, asset); err != nil {
 		return err
 	}
@@ -407,6 +682,11 @@ func (r *pgRepository) InsertPackItemWithAsset(ctx context.Context, asset assets
 	}); err != nil {
 		return err
 	}
+	if success != nil {
+		if err := persistSuccessWithQueries(ctx, q, *success, asset.ID); err != nil {
+			return err
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
@@ -415,6 +695,14 @@ func (r *pgRepository) InsertPackItemWithAsset(ctx context.Context, asset assets
 }
 
 func (r *pgRepository) InsertPackItemWithAssetSuperseding(ctx context.Context, asset assets.InsertParams, item AssetPackItemInsertParams, slot assets.VariantSlot) error {
+	return r.insertPackItemWithAssetSuperseding(ctx, asset, item, slot, nil)
+}
+
+func (r *pgRepository) InsertPackItemWithAssetSupersedingAndSuccess(ctx context.Context, asset assets.InsertParams, item AssetPackItemInsertParams, slot assets.VariantSlot, success PersistSuccessParams) error {
+	return r.insertPackItemWithAssetSuperseding(ctx, asset, item, slot, &success)
+}
+
+func (r *pgRepository) insertPackItemWithAssetSuperseding(ctx context.Context, asset assets.InsertParams, item AssetPackItemInsertParams, slot assets.VariantSlot, success *PersistSuccessParams) error {
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
@@ -426,6 +714,9 @@ func (r *pgRepository) InsertPackItemWithAssetSuperseding(ctx context.Context, a
 		}
 	}()
 	q := dbgen.New(tx)
+	if err := lockActivePackJob(ctx, q, asset); err != nil {
+		return err
+	}
 	// Supersede + insert the new ready asset (versioned, prior ready rows
 	// archived) under the slot lock, then append the pack item — all in one
 	// transaction so a delivered regenerated variant is observable atomically.
@@ -440,6 +731,11 @@ func (r *pgRepository) InsertPackItemWithAssetSuperseding(ctx context.Context, a
 		SortOrder:     item.SortOrder,
 	}); err != nil {
 		return err
+	}
+	if success != nil {
+		if err := persistSuccessWithQueries(ctx, q, *success, asset.ID); err != nil {
+			return err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
@@ -501,18 +797,50 @@ func rowsToAssetPackItems(rows []dbgen.AssetPackItem) []AssetPackItem {
 }
 
 func (r *pgRepository) InsertCostEvent(ctx context.Context, params CostEventInsertParams) error {
-	return r.q.InsertGenerationCostEvent(ctx, dbgen.InsertGenerationCostEventParams{
+	return insertCostEventWithQueries(ctx, r.q, params)
+}
+
+func insertCostEventWithQueries(ctx context.Context, q *dbgen.Queries, params CostEventInsertParams) error {
+	estimated := pgtype.Numeric{}
+	if params.EstimatedCostUSD != nil {
+		if err := estimated.Scan(*params.EstimatedCostUSD); err != nil {
+			return err
+		}
+	}
+	actual := pgtype.Numeric{}
+	if params.ActualCostUSD != nil {
+		if err := actual.Scan(*params.ActualCostUSD); err != nil {
+			return err
+		}
+	}
+	metadata := params.Metadata
+	if len(metadata) == 0 {
+		metadata = []byte(`{}`)
+	}
+	return q.InsertGenerationCostEvent(ctx, dbgen.InsertGenerationCostEventParams{
 		ID:                params.ID,
 		TenantID:          params.TenantID,
 		JobID:             params.JobID,
 		AssetID:           params.AssetID,
+		CostReservationID: params.CostReservationID,
 		TokenID:           params.TokenID,
 		ProviderID:        params.ProviderID,
+		ModelID:           params.ModelID,
 		ProviderAttemptID: params.ProviderAttemptID,
 		Operation:         params.Operation,
+		EstimatedCostUsd:  estimated,
+		ActualCostUsd:     actual,
 		DurationMs:        params.DurationMs,
 		Status:            params.Status,
+		Metadata:          metadata,
 	})
+}
+
+func strPtrOrNil(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 func marshalPayload(payload map[string]any) ([]byte, error) {
@@ -538,6 +866,7 @@ func rowToJob(row dbgen.GenerationJob) Job {
 		JobType:            row.JobType,
 		Status:             row.Status,
 		RequestedByTokenID: row.RequestedByTokenID,
+		VisualIdentityID:   row.VisualIdentityID,
 		AssetPackID:        row.AssetPackID,
 		FallbackPolicy:     row.FallbackPolicy,
 		CacheResult:        row.CacheResult,
@@ -546,6 +875,9 @@ func rowToJob(row dbgen.GenerationJob) Job {
 		ErrorCode:          row.ErrorCode,
 		ErrorMessage:       row.ErrorMessage,
 		Retryable:          row.Retryable,
+		CostReservationID:  row.CostReservationID,
+		CostEstimateUSD:    numericPtr(row.CostEstimateUsd),
+		ActualCostUSD:      numericPtr(row.ActualCostUsd),
 		CreatedAt:          unwrapTimestamp(row.CreatedAt),
 		UpdatedAt:          unwrapTimestamp(row.UpdatedAt),
 	}
@@ -561,6 +893,22 @@ func rowToJob(row dbgen.GenerationJob) Job {
 		job.CompletedAt = &t
 	}
 	return job
+}
+
+// numericPtr renders a nullable pgtype.Numeric column as its decimal text
+// form for the API response, matching cost.numericText's convention. Nil for
+// SQL NULL (a job that hasn't been estimated/committed yet) rather than "0" —
+// callers must not read a nil cost as free.
+func numericPtr(n pgtype.Numeric) *string {
+	if !n.Valid {
+		return nil
+	}
+	value, err := n.Value()
+	if err != nil || value == nil {
+		return nil
+	}
+	s := fmt.Sprint(value)
+	return &s
 }
 
 func unwrapTimestamp(t pgtype.Timestamptz) time.Time {

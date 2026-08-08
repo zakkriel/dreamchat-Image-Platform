@@ -18,6 +18,7 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
 	"github.com/zakkriel/drchat-image-platform/internal/providers/routing"
 	"github.com/zakkriel/drchat-image-platform/internal/styles"
+	"github.com/zakkriel/drchat-image-platform/internal/telemetry"
 )
 
 // ArtifactReuseLookup is the narrow Phase 6A2 exact-reuse dependency: the
@@ -118,6 +119,8 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	previewFirst := req.DeliveryMode != nil && *req.DeliveryMode == apigen.PreviewFirst
+
 	if _, err := h.Styles.GetByIDForTenant(r.Context(), req.StyleProfileId, principal.TenantID); err != nil {
 		if errors.Is(err, styles.ErrNotFound) {
 			httperr.Write(w, r, http.StatusUnprocessableEntity, httperr.CodeInvalidStyleProfile, "style profile not found for tenant")
@@ -163,7 +166,6 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 	// preview-first delivery. It imposes a hard true_preview routing requirement
 	// (resolved below) and is carried on the payload so the worker runs the
 	// two-phase lifecycle. Default/final_only is the unchanged Phase 7A path.
-	previewFirst := req.DeliveryMode != nil && *req.DeliveryMode == apigen.PreviewFirst
 
 	// Per-request provider preference (provider_id): a HARD routing pin validated
 	// by the resolver (must be a configured provider AND able to serve this
@@ -248,9 +250,11 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		})
 		switch {
 		case err == nil:
+			telemetry.DefaultMetrics().RecordCacheHit()
 			h.respondCacheHit(w, r, principal, req.WorldId, fallback, payload, existing.ID, idemKey, endpoint, requestHash)
 			return
 		case errors.Is(err, assets.ErrNotFound):
+			telemetry.DefaultMetrics().RecordCacheMiss()
 			// miss: fall through to the normal create/reserve/enqueue path.
 		default:
 			httperr.Write(w, r, http.StatusInternalServerError, httperr.CodeInternalError, "could not check artifact reuse")
