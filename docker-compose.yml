@@ -116,6 +116,16 @@ services:
       ALLOW_SYNTHETIC_PROVIDERS: ${ALLOW_SYNTHETIC_PROVIDERS:-true}
       API_TOKEN_PEPPER: dev-pepper-change-me
       OPENAPI_DOCS_ENABLED: "true"
+      # Governance (ADR-P002). Enforcement stays log_only by default, but the
+      # authorized-issuer allowlist must still be populated: an issuer absent from
+      # it is recorded as media.eligibility_blocked/unknown_issuer while the
+      # request is ALLOWED through, so an empty allowlist looks healthy (202s) and
+      # then fails every request the day GOVERNANCE_ENFORCEMENT flips to enforce.
+      # svc_world_backend is the sibling dreamchat-world-backend service identity.
+      # API only — the worker never verifies envelopes (the gate runs in the
+      # handler), so setting it there would imply a check that does not happen.
+      GOVERNANCE_ENFORCEMENT: ${GOVERNANCE_ENFORCEMENT:-log_only}
+      GOVERNANCE_AUTHORIZED_ISSUERS: ${GOVERNANCE_AUTHORIZED_ISSUERS:-svc_world_backend}
     ports:
       # Host 8081, not 8080: the sibling dreamchat-world-backend `core/api`
       # owns host 8080 in the shared dev environment, and both stacks must be
