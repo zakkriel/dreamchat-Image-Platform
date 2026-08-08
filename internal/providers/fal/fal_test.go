@@ -318,3 +318,68 @@ func TestGenerateSubmitErrorStatus(t *testing.T) {
 		t.Fatalf("expected ErrProvider, got %v", err)
 	}
 }
+
+// TestGenerateErrorStatusIncludesResponseBody pins the diagnosability contract:
+// a non-2xx fal response carries the ACTIONABLE cause in its body, so the
+// returned error must include it rather than collapsing to a bare status code.
+// The body here is fal's real file_download_error shape, returned when a
+// reference image URL is not reachable from fal's servers.
+func TestGenerateErrorStatusIncludesResponseBody(t *testing.T) {
+	const detail = `{"detail":[{"loc":["body","image_urls"],"msg":"Failed to download the file. Please check if the URL is accessible and try again.","type":"file_download_error"}]}`
+	doer := &stubDoer{handlers: []func(*http.Request) (*http.Response, error){
+		func(*http.Request) (*http.Response, error) {
+			return jsonResp(200, `{"request_id":"r1","status_url":"https://fal.test/s","response_url":"https://fal.test/r"}`), nil
+		},
+		func(*http.Request) (*http.Response, error) { return jsonResp(200, `{"status":"COMPLETED"}`), nil },
+		func(*http.Request) (*http.Response, error) { return jsonResp(422, detail), nil },
+	}}
+	_, err := testProvider(doer).Generate(context.Background(), providers.ProviderGenerateRequest{
+		Prompt:        "x",
+		ReferenceURLs: []string{"http://localhost:9000/a.png"},
+	})
+	if !errors.Is(err, ErrProvider) {
+		t.Fatalf("expected ErrProvider, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "file_download_error") {
+		t.Fatalf("error must surface the fal response body, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "422") {
+		t.Fatalf("error must keep the status code, got %q", err.Error())
+	}
+}
+
+// A pathological error body must not be pasted wholesale into the error / job
+// error_message column.
+func TestErrorDetailTruncatesAndFlattens(t *testing.T) {
+	got := errorDetail(strings.NewReader("line one\nline two " + strings.Repeat("x", 4096)))
+	if strings.Contains(got, "\n") {
+		t.Fatalf("detail must be single-line, got %q", got)
+	}
+	if len(got) > maxErrorDetailBytes+2 {
+		t.Fatalf("detail must be capped at %d bytes, got %d", maxErrorDetailBytes, len(got))
+	}
+	if errorDetail(strings.NewReader("")) != "" {
+		t.Fatal("empty body must yield no suffix")
+	}
+}
+
+// TestErrorDetailRedactsSignedQuery proves a presigned reference URL echoed
+// back by fal never reaches the error string: the query carries
+// X-Amz-Credential / X-Amz-Signature and the error is persisted to the job's
+// error_message and written to worker logs. The object path is kept, since it
+// is what identifies the failing reference.
+func TestErrorDetailRedactsSignedQuery(t *testing.T) {
+	body := `{"type":"file_download_error","input":["https://cdn.test/bucket/assets/a1/high.png?X-Amz-Credential=minioadmin%2F20260808&X-Amz-Signature=deadbeefcafe"]}`
+	got := errorDetail(strings.NewReader(body))
+	for _, leaked := range []string{"X-Amz-Signature", "deadbeefcafe", "X-Amz-Credential"} {
+		if strings.Contains(got, leaked) {
+			t.Fatalf("error detail leaked %q: %s", leaked, got)
+		}
+	}
+	if !strings.Contains(got, "assets/a1/high.png") {
+		t.Fatalf("error detail must keep the object path, got %s", got)
+	}
+	if !strings.Contains(got, "file_download_error") {
+		t.Fatalf("error detail must keep the cause, got %s", got)
+	}
+}

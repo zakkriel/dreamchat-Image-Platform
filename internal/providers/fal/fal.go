@@ -49,7 +49,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/zakkriel/drchat-image-platform/internal/providers"
@@ -336,7 +338,7 @@ func (p *Provider) submit(ctx context.Context, req providers.ProviderGenerateReq
 	defer drainClose(resp.Body)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return submitResponse{}, fmt.Errorf("%w: submit returned status %d", ErrProvider, resp.StatusCode)
+		return submitResponse{}, fmt.Errorf("%w: submit returned status %d%s", ErrProvider, resp.StatusCode, errorDetail(resp.Body))
 	}
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
@@ -396,7 +398,7 @@ func (p *Provider) pollOnce(ctx context.Context, statusURL string) (statusRespon
 	defer drainClose(resp.Body)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return statusResponse{}, fmt.Errorf("%w: poll returned status %d", ErrProvider, resp.StatusCode)
+		return statusResponse{}, fmt.Errorf("%w: poll returned status %d%s", ErrProvider, resp.StatusCode, errorDetail(resp.Body))
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
@@ -425,7 +427,7 @@ func (p *Provider) fetchResult(ctx context.Context, submitted submitResponse) (r
 	defer drainClose(resp.Body)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return resultResponse{}, fmt.Errorf("%w: result returned status %d", ErrProvider, resp.StatusCode)
+		return resultResponse{}, fmt.Errorf("%w: result returned status %d%s", ErrProvider, resp.StatusCode, errorDetail(resp.Body))
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
@@ -451,7 +453,7 @@ func (p *Provider) download(ctx context.Context, imageURL string) ([]byte, strin
 	defer drainClose(resp.Body)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, "", fmt.Errorf("%w: download returned status %d", ErrProvider, resp.StatusCode)
+		return nil, "", fmt.Errorf("%w: download returned status %d%s", ErrProvider, resp.StatusCode, errorDetail(resp.Body))
 	}
 	imgBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxImageBytes))
 	if err != nil {
@@ -487,6 +489,42 @@ const (
 	maxResponseBytes = 1 << 20  // 1 MiB cap on JSON responses
 	maxImageBytes    = 64 << 20 // 64 MiB cap on a downloaded image
 )
+
+// maxErrorDetailBytes bounds how much of a non-2xx body is folded into the
+// error message. fal's errors are small JSON documents; the cap keeps a
+// pathological body out of the logs and the job's error_message column.
+const maxErrorDetailBytes = 512
+
+// signedQuery matches a URL query string inside an error body. fal echoes the
+// offending input back — for a reference-image failure that is our PRESIGNED
+// URL, whose query carries X-Amz-Credential and X-Amz-Signature. That suffix
+// then lands in worker logs and in the job's persisted error_message, so it is
+// stripped before the body is folded into an error.
+var signedQuery = regexp.MustCompile(`\?[^"\s]+`)
+
+// errorDetail renders a non-2xx response body as a short, single-line suffix
+// for the returned error. Without it every fal failure collapses to a bare
+// status code — fal reports the ACTIONABLE cause in the body (e.g.
+// file_download_error when a reference image URL is not reachable from fal's
+// servers), and losing it turns a two-second diagnosis into a manual probe.
+// Query strings are redacted (see signedQuery); the object path survives, which
+// is what identifies the failing reference. Best-effort: an unreadable or empty
+// body yields no suffix.
+func errorDetail(body io.Reader) string {
+	if body == nil {
+		return ""
+	}
+	raw, err := io.ReadAll(io.LimitReader(body, maxErrorDetailBytes))
+	if err != nil || len(raw) == 0 {
+		return ""
+	}
+	detail := strings.Join(strings.Fields(string(raw)), " ")
+	detail = signedQuery.ReplaceAllString(detail, "?<redacted>")
+	if detail == "" {
+		return ""
+	}
+	return ": " + detail
+}
 
 // drainClose drains and closes a response body so the underlying connection can
 // be reused, ignoring errors (best-effort cleanup).
