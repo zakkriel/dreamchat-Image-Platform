@@ -49,9 +49,16 @@ type Config struct {
 	RedisAddr         string
 	RedisPassword     string
 
-	S3Bucket          string
-	S3Region          string
-	S3Endpoint        string
+	S3Bucket   string
+	S3Region   string
+	S3Endpoint string
+	// S3PublicEndpoint is the client-reachable origin used ONLY for signing
+	// presigned read URLs. Empty (the default) presigns against S3Endpoint.
+	// Set it when the service and its clients reach the object store at
+	// different addresses: locally the containers write to http://minio:9000
+	// while a browser can only reach http://localhost:9000. SigV4 signs the
+	// Host header, so the URL must be signed for the host the client calls.
+	S3PublicEndpoint  string
 	S3AccessKeyID     string
 	S3SecretAccessKey string
 	S3UsePathStyle    bool
@@ -110,6 +117,7 @@ func Load() (*Config, error) {
 		S3Bucket:          getEnv("S3_BUCKET", ""),
 		S3Region:          getEnv("S3_REGION", ""),
 		S3Endpoint:        getEnv("S3_ENDPOINT", ""),
+		S3PublicEndpoint:  getEnv("S3_PUBLIC_ENDPOINT", ""),
 		S3AccessKeyID:     getEnv("S3_ACCESS_KEY_ID", ""),
 		S3SecretAccessKey: getEnv("S3_SECRET_ACCESS_KEY", ""),
 		S3UsePathStyle:    getEnvBool("S3_USE_PATH_STYLE", false),

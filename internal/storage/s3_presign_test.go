@@ -2,6 +2,8 @@ package storage
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -101,5 +103,72 @@ func TestPresignZeroTTLFallsBackToDefault(t *testing.T) {
 	u, _ := url.Parse(got)
 	if exp := u.Query().Get("X-Amz-Expires"); exp != "900" {
 		t.Fatalf("zero ttl must fall back to the 15m default (900s), got %q", exp)
+	}
+}
+
+// TestPresignUsesPublicEndpointWhileWritesUseInternal is the split-endpoint
+// contract: a presigned read URL is signed for the CLIENT-reachable origin
+// (S3_PUBLIC_ENDPOINT) while writes still go to the internal one. SigV4 signs
+// the Host header, so this cannot be done by rewriting the URL afterwards —
+// the presign client must be built against the public endpoint.
+func TestPresignUsesPublicEndpointWhileWritesUseInternal(t *testing.T) {
+	var gotWriteHost, gotWritePath string
+	internal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotWriteHost, gotWritePath = r.Host, r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer internal.Close()
+
+	store, err := NewS3Storage(context.Background(), S3Config{
+		Bucket:          "image-platform",
+		Region:          "us-east-1",
+		Endpoint:        internal.URL,
+		PublicEndpoint:  "http://localhost:9000",
+		AccessKeyID:     "testkey",
+		SecretAccessKey: "testsecret",
+		UsePathStyle:    true,
+	})
+	if err != nil {
+		t.Fatalf("NewS3Storage: %v", err)
+	}
+
+	key := ObjectKey("asset_split", VariantHigh, "png")
+	if _, err := store.Put(context.Background(), key, []byte("png"), "image/png"); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if want := strings.TrimPrefix(internal.URL, "http://"); gotWriteHost != want {
+		t.Fatalf("writes must target the internal endpoint %q, got %q", want, gotWriteHost)
+	}
+	if !strings.Contains(gotWritePath, key) {
+		t.Fatalf("write path must reference the key %q, got %q", key, gotWritePath)
+	}
+
+	got, err := store.Presign(context.Background(), key, time.Minute)
+	if err != nil {
+		t.Fatalf("Presign: %v", err)
+	}
+	u, err := url.Parse(got)
+	if err != nil {
+		t.Fatalf("parse presigned url %q: %v", got, err)
+	}
+	if u.Host != "localhost:9000" {
+		t.Fatalf("presigned URL must be signed for the public endpoint, got host %q (%s)", u.Host, got)
+	}
+	if u.Query().Get("X-Amz-Signature") == "" {
+		t.Fatalf("presigned URL must carry a signature, got %s", got)
+	}
+}
+
+// An empty PublicEndpoint keeps the previous behavior: presign against the same
+// endpoint as writes.
+func TestPresignFallsBackToEndpointWhenPublicUnset(t *testing.T) {
+	store := newTestStorage(t, "http://minio:9000", true)
+	got, err := store.Presign(context.Background(), ObjectKey("asset_fb", VariantLow, "png"), time.Minute)
+	if err != nil {
+		t.Fatalf("Presign: %v", err)
+	}
+	u, _ := url.Parse(got)
+	if u.Host != "minio:9000" {
+		t.Fatalf("unset public endpoint must presign against S3_ENDPOINT, got %q", u.Host)
 	}
 }
