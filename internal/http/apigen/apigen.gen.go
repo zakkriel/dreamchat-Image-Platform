@@ -203,6 +203,28 @@ const (
 	VisualIdentityStatusArchived VisualIdentityStatus = "archived"
 )
 
+// Defines values for WebhookEventEnvelopeEvent.
+const (
+	GenerationJobCompleted    WebhookEventEnvelopeEvent = "generation_job.completed"
+	GenerationJobFailed       WebhookEventEnvelopeEvent = "generation_job.failed"
+	GenerationJobPreviewReady WebhookEventEnvelopeEvent = "generation_job.preview_ready"
+)
+
+// Defines values for WebhookFailedEventDataErrorCode.
+const (
+	InvalidReferenceAsset   WebhookFailedEventDataErrorCode = "invalid_reference_asset"
+	InvalidResolvedRoute    WebhookFailedEventDataErrorCode = "invalid_resolved_route"
+	MaxMegapixelsExceeded   WebhookFailedEventDataErrorCode = "max_megapixels_exceeded"
+	MissingReferenceAssets  WebhookFailedEventDataErrorCode = "missing_reference_assets"
+	PackAllItemsFailed      WebhookFailedEventDataErrorCode = "pack_all_items_failed"
+	PackInvalidJob          WebhookFailedEventDataErrorCode = "pack_invalid_job"
+	PersistenceError        WebhookFailedEventDataErrorCode = "persistence_error"
+	ProviderContentRejected WebhookFailedEventDataErrorCode = "provider_content_rejected"
+	ProviderFailure         WebhookFailedEventDataErrorCode = "provider_failure"
+	ProviderUnavailable     WebhookFailedEventDataErrorCode = "provider_unavailable"
+	StorageFailure          WebhookFailedEventDataErrorCode = "storage_failure"
+)
+
 // AdminProviderModel defines model for AdminProviderModel.
 type AdminProviderModel struct {
 	// Capabilities Capability tiers this model satisfies (used by the router).
@@ -1163,6 +1185,28 @@ type VisualIdentity struct {
 // VisualIdentityStatus defines model for VisualIdentity.Status.
 type VisualIdentityStatus string
 
+// WebhookCompletedEvent defines model for WebhookCompletedEvent.
+type WebhookCompletedEvent struct {
+	Data struct {
+		// FinalAssetIds Delivered asset IDs in delivery order — one for a single
+		// image, one per delivered role for a pack.
+		FinalAssetIds []string `json:"final_asset_ids"`
+	} `json:"data"`
+	Event interface{} `json:"event"`
+
+	// JobId The job to read back via `GET /v1/jobs/{job_id}`.
+	JobId string `json:"job_id"`
+
+	// OccurredAt RFC3339 UTC, **second precision**. Stable across retries of the same
+	// delivery, so (job_id, event, occurred_at) is a usable dedupe key.
+	OccurredAt time.Time `json:"occurred_at"`
+
+	// TenantId The tenant that owns the job. Always the tenant the receiving endpoint
+	// was configured under; a receiver serving several tenants should still
+	// check it.
+	TenantId string `json:"tenant_id"`
+}
+
 // WebhookEndpoint defines model for WebhookEndpoint.
 type WebhookEndpoint struct {
 	Id       string `json:"id"`
@@ -1186,6 +1230,77 @@ type WebhookEndpointWithSecret struct {
 	Url      string `json:"url"`
 }
 
+// WebhookEventEnvelope defines model for WebhookEventEnvelope.
+type WebhookEventEnvelope struct {
+	// Data Per-event payload; see the concrete event schemas.
+	Data  map[string]interface{}    `json:"data"`
+	Event WebhookEventEnvelopeEvent `json:"event"`
+
+	// JobId The job to read back via `GET /v1/jobs/{job_id}`.
+	JobId string `json:"job_id"`
+
+	// OccurredAt RFC3339 UTC, **second precision**. Stable across retries of the same
+	// delivery, so (job_id, event, occurred_at) is a usable dedupe key.
+	OccurredAt time.Time `json:"occurred_at"`
+
+	// TenantId The tenant that owns the job. Always the tenant the receiving endpoint
+	// was configured under; a receiver serving several tenants should still
+	// check it.
+	TenantId string `json:"tenant_id"`
+}
+
+// WebhookEventEnvelopeEvent defines model for WebhookEventEnvelope.Event.
+type WebhookEventEnvelopeEvent string
+
+// WebhookFailedEvent defines model for WebhookFailedEvent.
+type WebhookFailedEvent struct {
+	Data struct {
+		// ErrorCode Coarse terminal failure code. Treat unknown values as a
+		// generic failure — this list may grow.
+		ErrorCode WebhookFailedEventDataErrorCode `json:"error_code"`
+	} `json:"data"`
+	Event interface{} `json:"event"`
+
+	// JobId The job to read back via `GET /v1/jobs/{job_id}`.
+	JobId string `json:"job_id"`
+
+	// OccurredAt RFC3339 UTC, **second precision**. Stable across retries of the same
+	// delivery, so (job_id, event, occurred_at) is a usable dedupe key.
+	OccurredAt time.Time `json:"occurred_at"`
+
+	// TenantId The tenant that owns the job. Always the tenant the receiving endpoint
+	// was configured under; a receiver serving several tenants should still
+	// check it.
+	TenantId string `json:"tenant_id"`
+}
+
+// WebhookFailedEventDataErrorCode Coarse terminal failure code. Treat unknown values as a
+// generic failure — this list may grow.
+type WebhookFailedEventDataErrorCode string
+
+// WebhookPreviewReadyEvent defines model for WebhookPreviewReadyEvent.
+type WebhookPreviewReadyEvent struct {
+	Data struct {
+		// PreviewAssetIds The committed preview asset(s). Read them via
+		// `GET /v1/jobs/{job_id}/assets`, which returns previews only
+		// while no final asset exists.
+		PreviewAssetIds []string `json:"preview_asset_ids"`
+	} `json:"data"`
+	Event interface{} `json:"event"`
+
+	// JobId The job to read back via `GET /v1/jobs/{job_id}`.
+	JobId string `json:"job_id"`
+
+	// OccurredAt RFC3339 UTC, **second precision**. Stable across retries of the same
+	// delivery, so (job_id, event, occurred_at) is a usable dedupe key.
+	OccurredAt time.Time `json:"occurred_at"`
+
+	// TenantId The tenant that owns the job. Always the tenant the receiving endpoint
+	// was configured under; a receiver serving several tenants should still
+	// check it.
+	TenantId string `json:"tenant_id"`
+}
+
 // ArtifactId defines model for ArtifactId.
 type ArtifactId = string
 
@@ -1206,6 +1321,12 @@ type PlaceId = string
 
 // StyleId defines model for StyleId.
 type StyleId = string
+
+// WebhookEventHeader defines model for WebhookEventHeader.
+type WebhookEventHeader = string
+
+// WebhookSignatureHeader defines model for WebhookSignatureHeader.
+type WebhookSignatureHeader = string
 
 // WorldIdQuery defines model for WorldIdQuery.
 type WorldIdQuery = string

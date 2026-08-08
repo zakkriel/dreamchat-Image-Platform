@@ -13,6 +13,7 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/ids"
 	"github.com/zakkriel/drchat-image-platform/internal/providers"
 	"github.com/zakkriel/drchat-image-platform/internal/telemetry"
+	"github.com/zakkriel/drchat-image-platform/internal/webhooks"
 )
 
 // Pack job types and statuses (Phase 5A). Pack orchestration is
@@ -131,6 +132,9 @@ func (w *Worker) processPack(ctx context.Context, jobID, expectedReservationID s
 		if _, err := w.markJobFailed(ctx, job, errorCodePackInvalidJob, planErr.Error(), false, expectedReservationID); err != nil {
 			return err
 		}
+		w.emit(ctx, job.TenantID, webhooks.EventFailed, job.ID, map[string]any{
+			"error_code": errorCodePackInvalidJob,
+		})
 		if err := w.releaseReservation(ctx, job); err != nil {
 			return err
 		}
@@ -305,6 +309,9 @@ func (w *Worker) processPack(ctx context.Context, jobID, expectedReservationID s
 			w.log().Error("worker: mark pack job failed", "job_id", job.ID, "error", err)
 			return err
 		}
+		w.emit(ctx, job.TenantID, webhooks.EventFailed, job.ID, map[string]any{
+			"error_code": errorCodePackAllFailed,
+		})
 		if err := w.releaseReservation(ctx, job); err != nil {
 			w.log().Error("worker: release pack cost reservation", "job_id", job.ID, "error", err)
 			return err
@@ -324,6 +331,16 @@ func (w *Worker) processPack(ctx context.Context, jobID, expectedReservationID s
 		w.log().Error("worker: mark pack job completed", "job_id", job.ID, "error", err)
 		return err
 	}
+	// A pack job is a first-class generation job: it reaches `completed` with
+	// its delivered assets in final_asset_ids exactly like a single image, so it
+	// emits the same event. `succeeded` is the ordered set of delivered assets
+	// (reused + retry-skipped + freshly generated); a partial pack still
+	// completes, and the receiver reads pack completeness back from the job.
+	// Emitted before commitReservation for the same reason as the single-image
+	// path: a commit error returns and the retry short-circuits on `completed`.
+	w.emit(ctx, job.TenantID, webhooks.EventCompleted, job.ID, map[string]any{
+		"final_asset_ids": succeeded,
+	})
 	if err := w.commitReservation(ctx, job); err != nil {
 		w.log().Error("worker: commit pack cost reservation", "job_id", job.ID, "error", err)
 		return err
@@ -542,6 +559,9 @@ func (w *Worker) failPackTerminal(ctx context.Context, job Job, packID, code, ms
 	if _, err := w.markJobFailed(ctx, job, code, msg, false, expectedReservationIDs...); err != nil {
 		return err
 	}
+	w.emit(ctx, job.TenantID, webhooks.EventFailed, job.ID, map[string]any{
+		"error_code": code,
+	})
 	if err := w.updatePackStatus(ctx, packID, job.ID, packStatusFailed); err != nil {
 		return err
 	}
