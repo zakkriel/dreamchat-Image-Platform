@@ -63,19 +63,88 @@ At boot the API logs its verdict — check it before debugging anything else:
  "synthetic_identity_allowed":true,"invalid_routes":3}
 ```
 
-> Using `FAL_KEY` for real images: fal is reference-conditioned
-> (`RequiresReferenceImage`), so an identity with **no anchor assets** fails the
-> job with `missing_reference_assets`. A first portrait therefore needs either a
-> synthetic provider or an anchor attached via
-> `POST /v1/characters/{id}/visual-identity/anchors` — and an anchor must itself
-> be an existing `ready` asset. Plan the first-portrait bootstrap accordingly.
+### 1.1.1 First-portrait bootstrap — two sequences, pick by environment
+
+The identity floor interacts with a second rule: **`fal` is reference-conditioned**
+(`Capabilities().RequiresReferenceImage == true`). It conditions on the identity's
+**anchor assets**, and an anchor must itself already be a `ready` asset. So the
+very first portrait for a brand-new identity is a chicken-and-egg problem *only on
+the fal path*. `mock` and `bfl` do not require references (`bfl` asserts
+`RequiresReferenceImage == false`).
+
+**Sequence A — synthetic (dev / CI / this handshake). No anchor needed at all.**
+
+```
+ALLOW_SYNTHETIC_PROVIDERS=true          # mock may back identity-axis routes
+
+1. POST /v1/styles                                   -> style_profile_id
+2. POST /v1/characters/{id}/visual-identity          -> visual_identity_id
+3. POST /v1/generations {subject.identity_id}        -> 202  (no anchors involved)
+4. GET  /v1/jobs/{job_id} -> completed
+```
+
+There is **nothing to bootstrap**: mock satisfies the `identity_capable` floor
+through the capability hierarchy (`pack_capable ⊇ identity_capable`) and needs no
+reference image, so step 3 succeeds against a zero-anchor identity. Output is a
+deterministic placeholder PNG. Verified end to end.
+
+**Sequence B — real images via fal. An anchor is required, and it must not be a placeholder.**
+
+```
+FAL_KEY=<key>                           # and leave ALLOW_SYNTHETIC_PROVIDERS unset
+
+1. POST /v1/styles                                   -> style_profile_id
+2. POST /v1/characters/{id}/visual-identity          -> visual_identity_id
+3. POST /v1/artifacts/{artifact_id}/generate         -> 202   # scene_capable -> BFL
+   GET  /v1/jobs/{job_id}/assets                     -> asset_id (status=ready)
+4. POST /v1/characters/{id}/visual-identity/anchors
+        {"world_id": "...", "anchor_asset_ids": ["<asset_id from 3>"]}
+5. POST /v1/generations {subject.identity_id}        -> 202   # identity_capable -> fal
+```
+
+Why step 3 uses a *different* endpoint: there is **no asset-upload endpoint**, so
+the first `ready` asset must be generated — and `POST /v1/generations` forces the
+`identity_capable` floor, so it can never route to BFL. The artifact endpoint
+requires only `scene_capable`, which BFL satisfies. That is the one way to obtain a
+real first anchor through the API.
+
+**Do not use a synthetic asset as a fal anchor.** A mock-generated asset *would*
+pass anchor validation — it is `ready`, has a `high_res_url`, and
+`POST /v1/generations` leaves `visual_identity_id` NULL so it counts as unassigned
+— but conditioning fal on a placeholder grid produces garbage. Synthetic-anchor-
+then-fal is **not** the recovery; it is a way to get a technically-valid pipeline
+with worthless output.
+
+Skipping the anchor on the fal path fails **closed**, before any provider call, so
+nothing is billed: the job goes terminally `failed` with
+`error_code: missing_reference_assets` (or `invalid_reference_asset` if an attached
+anchor is unusable). Covered by `TestSingleImageWithoutReferencesFailsClosed` and
+`TestSingleImageFailTerminalEmitsWebhookEvent`.
+
+Anchor validation rejects an asset that is not `ready`, has no `high_res_url`,
+belongs to a **different world**, or is already bound to a different identity
+(`422 invalid_anchor_asset`). The anchor set is replaced wholesale on each call.
+
+**When both are configured** (`FAL_KEY` set *and* `ALLOW_SYNTHETIC_PROVIDERS=true`,
+as in the current handshake stack) both providers are eligible and the resolver
+picks by route `priority` ascending: the mock route is `100`, fal's is `200`, so
+**mock wins and you get placeholders**. Turning synthetic off is what promotes fal
+— and immediately makes Sequence B's anchor mandatory. Confirm which one you got
+from the boot log:
+
+```json
+{"msg":"provider capability readiness","real_identity_capable_provider":true,
+ "real_identity_providers":["fal"],"synthetic_identity_capable_provider":true,
+ "synthetic_identity_providers":["mock"],"synthetic_identity_allowed":true,
+ "invalid_routes":1}
+```
 
 ### 1.2 Token and scopes
 
 Two env vars on your side, never persisted:
 
 ```
-DREAMCHAT_IMAGE_BASE_URL=http://localhost:8088
+DREAMCHAT_IMAGE_BASE_URL=http://localhost:8081
 DREAMCHAT_IMAGE_API_TOKEN=dci_dev_<prefix>_<secret>
 ```
 
@@ -91,6 +160,11 @@ quickstart needs:
 | `images:read` | `GET /v1/jobs/{job_id}/assets`, `GET /v1/assets/{id}` |
 
 Scope checks are AND across the listed set and fail `403 forbidden`.
+
+These four are exactly what the sequence below needs and nothing more. Note the
+consequence: **`GET /v1/styles` returns `403 forbidden`** with this set, because
+listing needs `styles:read`. Create your style profile once and persist its `id`;
+add `styles:read` only if you actually need to enumerate styles at runtime.
 
 ## 2. The governance envelope
 
@@ -367,9 +441,25 @@ Cross-tenant access is indistinguishable from absence: `404 not_found`.
 
 ## 6. Local stack ports
 
-`docker-compose.yml` publishes Postgres on host **5433** (not 5432) so this stack
-runs alongside `dreamchat-world-backend`, which owns 5432. Redis (6379), MinIO
-(9000/9001) and the API (8080) are on default host ports.
+`make start` (`scripts/dev.sh`) is the local stack: it brings up Postgres, Redis
+and MinIO as containers and runs the **API and worker as host processes**. It
+deliberately stops the compose `image-platform-api`/`image-platform-worker`
+containers first — two copies would double-consume the asynq queue and fight for
+the API port. If you ever run `docker compose up` for the full stack, do not leave
+`make start` running alongside it.
+
+Published host ports:
+
+| Service | Host port | Why |
+|---|---|---|
+| API | **8081** | `dreamchat-world-backend` owns 8080 in this environment |
+| Postgres | **5433** | the world backend's Postgres owns 5432 |
+| Redis | 6379 | default |
+| MinIO | 9000 / 9001 | default; presigned URLs are signed for `S3_PUBLIC_ENDPOINT` |
+
+Because SigV4 signs the `Host` header, a presigned URL cannot be rewritten after
+signing — `S3_PUBLIC_ENDPOINT` must be the origin **you** will call
+(`http://localhost:9000` locally), not the Docker-internal `minio:9000`.
 
 ## 7. Open item — tenant granularity
 
