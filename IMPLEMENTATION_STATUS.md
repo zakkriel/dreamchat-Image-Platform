@@ -4,8 +4,10 @@ Canonical phase list for the implementation track. This is the source of
 truth for "what's done / what's next" — the roadmaps in `prds/06` and
 `prds/07` use different numbering and should not be used for sequencing.
 
-Rule of thumb: **~3 product buckets left, but ~5 implementation phases
-before this is production-ready.**
+Rule of thumb: the Phase 0–7 implementation track and cost-optimization Waves
+1–3 are **complete**. What remains before production-ready is not new phases:
+it is Wave 4 (specification-only, behind release gates), the catalogued non-MVP
+residue below, and integration with the world backend / frontend.
 
 ## Done
 
@@ -468,6 +470,50 @@ before this is production-ready.**
   and worker agree on the provider set. Runbook:
   `docs/runbooks/provider-capability-misconfiguration.md`.
 
+- **Webhook emission completeness + published event contract** (Done): the
+  outbound push path from 7C-4 is now **safe for a cross-repo consumer to depend
+  on**, and its payload is a machine-readable contract instead of a Go struct.
+  (1) **Pack jobs emit.** `worker_pack.go` previously had **zero** emit
+  callsites: every pack success and every pack failure — including
+  `pack_all_items_failed` and `pack_invalid_job` — ran silently. Since a
+  character/place pack is exactly the flow a consumer waits on, the push channel
+  was unusable for its main use case. Pack fan-out now emits
+  `generation_job.completed` with the delivered assets in `final_asset_ids`
+  (a partial pack still completes; completeness is read back from the job) and
+  `generation_job.failed` on every terminal pack failure, including the
+  `failPackTerminal` branches. (2) **Unrunnable single-image failures emit.**
+  `failTerminal` marked a job terminally failed and released its reservation
+  **without emitting**, so `invalid_resolved_route`,
+  `max_megapixels_exceeded`, `missing_reference_assets`, and
+  `invalid_reference_asset` were silent terminal states — a gap that was not in
+  the documented MVP-limits list. It now emits `generation_job.failed`.
+  (3) **One emit-ordering rule, fixing a silent-loss bug.** Every event is
+  emitted immediately after its status transition is durable and **before** cost
+  finalization. The pre-existing single-image `completed` emit sat *after*
+  `commitReservation`; because a commit error returns and the asynq retry
+  short-circuits on the terminal status (re-running only finalization), a commit
+  failure **dropped the completed event permanently**. Emission stays
+  at-most-once per transition (the terminal short-circuit is what guarantees it)
+  and strictly best-effort — an emitter error never fails a job.
+  (4) **Contract published.** OpenAPI `0.13.0 → 0.14.0` (strictly additive, api +
+  docs mirrored) adds an OAS 3.1 `webhooks` section for the three events, the
+  `WebhookEventEnvelope` + per-event schemas, the `X-DreamChat-Event` /
+  `X-DreamChat-Signature` header parameters, and a `WebhookFailedEvent`
+  `error_code` enum of the **11 codes actually reachable through an emitted
+  event** (`enqueue_failed` and `cancelled` are deliberately absent — those paths
+  never emit). `info.description` records the two cross-repo invariants: pull
+  (`GET /v1/jobs/{job_id}`) is authoritative and push is only a latency hint, and
+  IDs are durable while download URLs are minted per read and expire.
+  (5) **Tests.** Webhook emission had **no** test coverage in `internal/jobs`,
+  which is why (1)–(3) survived. `worker_webhook_emit_test.go` covers pack
+  completed / all-items-failed / invalid-job / `failPackTerminal`, single-image
+  `failTerminal`, emission surviving a cost-commit failure, no re-emission on a
+  terminal retry, and an emitter error never failing the job. All eight fail
+  against the pre-change worker and pass after. **No migration** (table count
+  stays **20** baseline / **24** with Chunk 1; head stays **19**).
+  Cancellation still has no event type, and admin cancel / preflight denial /
+  enqueue failure still deliberately do not emit.
+
 ## Cost optimization waves (Wave 3/4)
 
 - **Wave 3 — Measurement + cost-accounting truth** (implemented): generation economics telemetry, planned-call reservation sizing, provider-reported cost reconciliation, reservation-scoped cost events, identity lifetime ledger updates, decoded-byte `max_megapixels` enforcement, and pack fallback parity are wired through the governed paths. Design + verification: `docs/superpowers/specs/2026-08-08-wave3-cost-truth-design.md`.
@@ -549,8 +595,23 @@ edges of the MVP.
 - **Webhook MVP limitations.** Outbound webhooks are deliberately minimal:
   **at-least-once** delivery (not exactly-once); **no** dead-letter queue; **no**
   replay UI; **no** signature-rotation endpoint; **no** multiple endpoints per
-  tenant; **no** event-subscription management. Receivers **should dedupe**
-  events (by `job_id` + event type / `occurred_at`).
+  tenant; **no** event-subscription management (a receiver gets all three event
+  types or none). Receivers **should dedupe** events (by `job_id` + event type /
+  `occurred_at`). This is exactly why **polling stays the authoritative readiness
+  path** and push is only a latency hint — see the `webhooks` section and
+  `info.description` in `docs/api/openapi.yaml`.
+- **Webhook signature has no replay protection.** The HMAC-SHA256 signature
+  covers the **raw body only** — no timestamp, nonce, method, or path — so a
+  captured delivery stays replayable indefinitely. `occurred_at` is inside the
+  signed body at second precision, so a receiver *can* enforce freshness, but the
+  platform neither sends a timestamp header nor requires it. Documented in the
+  published contract; adding a signed timestamp is future hardening.
+- **No SSRF guard on the webhook endpoint URL.** `PUT /v1/admin/webhook-endpoint`
+  validates only that the URL parses with an `http`/`https` scheme and a non-empty
+  host: plain `http://`, private ranges, and `http://127.0.0.1` are all accepted.
+  It is an `admin:jobs`-scoped, one-per-tenant config, so this is a trusted-caller
+  surface today, but it should get an allow-list / private-range guard before
+  untrusted tenants can self-configure endpoints.
 - **Webhook delivery residue.** If a `webhook_deliveries` row is inserted but the
   asynq enqueue fails, there is **no sweeper** to re-drive it yet. Documented as
   **future hardening**, not a Phase 7 blocker.

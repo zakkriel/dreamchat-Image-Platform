@@ -106,10 +106,19 @@ type IdentityReader interface {
 // depends on this narrow interface rather than the concrete *webhooks.Emitter
 // so it stays unit-testable (nil in tests; *webhooks.Emitter in production).
 //
-// MVP limitation: events are emitted ONLY at the worker's durable lifecycle
-// transitions below (preview committed, completed+committed, terminal failure).
-// They are NOT emitted for admin cancel, a preflight denial at job creation, or
-// an enqueue failure — those paths never reach these emit points.
+// Coverage: every durable terminal/observable transition the worker makes, on
+// BOTH the single-image and pack fan-out paths — preview committed
+// (preview_ready), completed, and every terminal failure including the
+// unrunnable-job codes routed through failTerminal / failPackTerminal.
+//
+// Ordering rule: an event is emitted immediately after the status transition is
+// durable and BEFORE cost finalization. Finalization errors return so asynq
+// retries, and that retry short-circuits on the terminal status — so an emit
+// placed after the commit/release would be dropped permanently.
+//
+// Still NOT emitted (deliberate): admin cancel (no cancelled event type exists),
+// a preflight/governance denial at job creation, and an enqueue failure — those
+// paths never reach a worker emit point.
 type WebhookEmitter interface {
 	Emit(ctx context.Context, in webhooks.EmitInput) error
 }
@@ -253,9 +262,6 @@ func discardedFromGen(out genResult) discardedProviderAttempt {
 	}
 }
 
-// failTerminal marks a job permanently failed (not retryable) and releases its
-// cost reservation. Used for unrunnable jobs — a missing provider adapter or a
-// payload missing its resolved route — where an asynq retry could never help.
 func (w *Worker) markJobCompleted(ctx context.Context, job Job, finalAssetIDs []string, expectedReservationIDs ...string) (Job, error) {
 	expectedReservationID := ""
 	if len(expectedReservationIDs) > 0 {
@@ -282,10 +288,23 @@ func (w *Worker) markJobFailed(ctx context.Context, job Job, code, msg string, r
 	return w.Jobs.MarkFailed(ctx, job.ID, job.TenantID, code, msg, retryable)
 }
 
+// failTerminal marks a job permanently failed (not retryable) and releases its
+// cost reservation. Used for unrunnable jobs — a missing provider adapter, a
+// payload missing its resolved route, an over-ceiling max_megapixels, or an
+// unusable reference asset — where an asynq retry could never help.
 func (w *Worker) failTerminal(ctx context.Context, job Job, code, msg string, expectedReservationIDs ...string) error {
 	if _, err := w.markJobFailed(ctx, job, code, msg, false, expectedReservationIDs...); err != nil {
 		return err
 	}
+	// Emit failed as soon as the terminal state is durable. These unrunnable-job
+	// codes never reach failJobOnFinalAttempt, so without this a job could go
+	// terminally failed with no notification at all. Emitting before the release
+	// is deliberate: a releaseReservation error returns here, and the asynq retry
+	// short-circuits on `failed` (only re-running finalization), so emitting
+	// afterwards would drop the event permanently. Best-effort, never fails.
+	w.emit(ctx, job.TenantID, webhooks.EventFailed, job.ID, map[string]any{
+		"error_code": code,
+	})
 	if err := w.releaseReservation(ctx, job); err != nil {
 		return err
 	}
@@ -648,6 +667,15 @@ func (w *Worker) process(ctx context.Context, jobID, expectedReservationID strin
 		}
 	}
 
+	// Phase 7C-4: the job status is durably `completed` (the guarded persist
+	// above committed it) — emit BEFORE cost finalization. A commitReservation
+	// error returns, and the asynq retry short-circuits on `completed` and only
+	// re-runs finalization, so emitting after the commit would drop the event
+	// permanently. Best-effort; never fails the job.
+	w.emit(ctx, job.TenantID, webhooks.EventCompleted, job.ID, map[string]any{
+		"final_asset_ids": []string{asset.ID},
+	})
+
 	// Commit the cost reservation: reserved → committed, move the held
 	// estimate from reserved to spent, stamp actual_cost on the job + event.
 	// Idempotent — safe if a later retry re-enters after a partial failure.
@@ -657,12 +685,6 @@ func (w *Worker) process(ctx context.Context, jobID, expectedReservationID strin
 	}
 
 	telemetry.DefaultMetrics().RecordUsableImage()
-
-	// Phase 7C-4: the job is completed and cost committed — emit completed AFTER
-	// the durable commit. Best-effort; never fails the job.
-	w.emit(ctx, job.TenantID, webhooks.EventCompleted, job.ID, map[string]any{
-		"final_asset_ids": []string{asset.ID},
-	})
 
 	return nil
 }
@@ -1659,6 +1681,16 @@ func (w *Worker) failJobOnFinalAttempt(ctx context.Context, job Job, callErr err
 		w.log().Error("worker: mark job failed", "job_id", job.ID, "error", err)
 		markedFailed = false
 	}
+	// Phase 7C-4: emit failed once MarkFailed durably recorded the terminal
+	// state, before the cost release. Every emit sits immediately after its
+	// durable transition — the one ordering rule the worker follows (see
+	// failTerminal and processPack). Skipped when the mark itself failed.
+	// Best-effort; never changes the control flow below.
+	if markedFailed {
+		w.emit(ctx, job.TenantID, webhooks.EventFailed, job.ID, map[string]any{
+			"error_code": errorCodeFor(callErr),
+		})
+	}
 	// Terminal failure: release the cost reservation only after the terminal
 	// status CAS succeeded. If MarkFailed failed, the job may still be running or
 	// completed (or an admin retry may already have reopened it); releasing by
@@ -1667,15 +1699,6 @@ func (w *Worker) failJobOnFinalAttempt(ctx context.Context, job Job, callErr err
 		if err := w.releaseReservation(ctx, job); err != nil {
 			w.log().Error("worker: release cost reservation", "job_id", job.ID, "error", err)
 		}
-	}
-	// Phase 7C-4: emit failed AFTER MarkFailed durably recorded the terminal
-	// state (skipped when the mark itself failed). This centralizes ALL terminal
-	// failures (chain exhaustion + post-generate failures) since every terminal
-	// fail routes through here. Best-effort; never changes the control flow above.
-	if markedFailed {
-		w.emit(ctx, job.TenantID, webhooks.EventFailed, job.ID, map[string]any{
-			"error_code": errorCodeFor(callErr),
-		})
 	}
 }
 

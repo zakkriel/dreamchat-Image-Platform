@@ -46,6 +46,15 @@ make dev
 curl -i http://localhost:8080/health
 ```
 
+### Published host ports
+
+`docker-compose.yml` publishes **Postgres on host `5433`** (container port stays
+`5432`). The sibling `dreamchat-world-backend` stack owns host `5432` in the
+shared dev environment, and both must be able to run concurrently. `make migrate`
+and `.env.example` default to `localhost:5433` to match. Redis (`6379`), MinIO
+(`9000`/`9001`), and the API (`8080`) are still published on their default host
+ports — remap them the same way if a sibling stack ever claims one.
+
 Expected:
 
 - `HTTP/1.1 200 OK`
@@ -67,8 +76,12 @@ golangci-lint run
 
 CI runs `go vet`, `go build`, `go test`, `openapi-spec-validator`, `sqlc vet`,
 and applies migrations to a throwaway Postgres via `go run ./cmd/migrate up`
-(goose), asserting the 20 baseline tables + `goose_db_version` exist and the
-schema is at version 11.
+(goose), asserting the expected tables + `goose_db_version` exist and the schema
+is at the migration head. Both numbers are asserted explicitly in
+`.github/workflows/ci.yml` — currently **24 base tables** (21 baseline objects
+plus the three Chunk 1 tables) at **migration head 19** — and CI also proves the
+round-trip `up → down-to 11 → up` and that stepping below the baseline is
+refused.
 
 ## Provider adapters
 

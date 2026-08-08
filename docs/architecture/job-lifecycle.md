@@ -97,9 +97,9 @@ The response should include:
 - errors if failed
 - cost estimate and actual cost if available
 
-## Future Webhooks
+## Webhooks (shipped, Phase 7C-4)
 
-Later, the platform may emit webhooks:
+The platform emits three job-lifecycle events to a tenant-configured endpoint:
 
 ```txt
 generation_job.preview_ready
@@ -107,7 +107,18 @@ generation_job.completed
 generation_job.failed
 ```
 
-Not required for MVP.
+Emitted on **both** the single-image and pack fan-out paths, immediately after
+the durable status transition and before cost finalization. Configure the single
+active endpoint per tenant with `PUT /v1/admin/webhook-endpoint`; the delivered
+envelope, signing headers, and `error_code` vocabulary are specified in the
+`webhooks` section of `docs/api/openapi.yaml`.
+
+**Polling above stays authoritative.** Delivery is at-least-once with no
+dead-letter queue, the body carries IDs only (never URLs — those are presigned
+per read and expire), and three paths deliberately never emit: admin cancel
+(there is no `cancelled` event), a preflight/governance denial at job creation,
+and an enqueue failure. A lost event must degrade latency only, never
+correctness — see the implementation note in `docs/adr/006-async-generation-jobs.md`.
 
 ---
 

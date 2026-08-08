@@ -14,6 +14,27 @@ The synchronous vs. async choice affects: HTTP timeout configuration, client UX,
 
 Generation endpoints accept a request, create a `generation_job` row, enqueue worker work, and return `202 Accepted` with a `job_id`. Clients poll `GET /v1/jobs/{job_id}` for status. The job carries preview_asset_ids and final_asset_ids separately, supporting preview-first delivery (ADR-010). Webhooks are a future addition, not MVP.
 
+### Implementation note (post Phase 7C-4) — webhooks shipped; polling is still the contract of record
+
+"Webhooks are a future addition, not MVP" describes the decision as taken, and
+the async job model above is unchanged. Webhooks have since **shipped** (Phase
+7C-4): one signed endpoint per tenant (`PUT`/`GET /v1/admin/webhook-endpoint`)
+and the three job-lifecycle events, now published as a machine-readable contract
+in the `webhooks` section of `docs/api/openapi.yaml`.
+
+This does **not** reverse the decision. Push is deliberately a **latency hint
+layered on top of polling**, never a replacement:
+
+- Delivery is at-least-once with no dead-letter queue; receivers must dedupe.
+- Some transitions deliberately never emit (admin cancel, preflight/governance
+  denial at creation, enqueue failure).
+- The event body carries IDs only, so a receiver must read
+  `GET /v1/jobs/{job_id}` and `GET /v1/jobs/{job_id}/assets` regardless.
+
+`GET /v1/jobs/{job_id}` therefore remains **authoritative**: a lost or late event
+degrades latency only, never correctness. Cross-repo consumers are held to this —
+pull for truth, treat push as an optimization.
+
 ## Alternatives considered
 
 - **Synchronous HTTP with long timeout.** Simplest client code. But ties up an API thread for 20–60 seconds per call, makes provider hiccups (timeouts, capacity errors) cascade into client timeouts, prevents partial-success delivery, and bursts of concurrent generation will exhaust the HTTP server's connection pool.
@@ -27,7 +48,9 @@ Generation endpoints accept a request, create a `generation_job` row, enqueue wo
 - **+** Retries become tractable (the worker retries; the API caller doesn't have to).
 - **+** Partial-success (preview ready, final pending) has a natural representation.
 - **+** Scales horizontally — workers and API can be sized independently.
-- **−** Two-step client UX (post then poll). Web app needs polling logic until webhooks/SSE land.
+- **−** Two-step client UX (post then poll). Push (webhooks, Phase 7C-4) reduces
+  perceived latency but does not remove the poll: it is a hint, not a substitute,
+  so a consumer that ignores it is still correct. SSE/WS remain unbuilt.
 - **−** Job state must be persisted; idempotency keys (`docs/api/idempotency.md`) become important.
 - **−** Failure visibility is asymmetric: client knows the job failed only when it polls.
 
@@ -36,7 +59,10 @@ Generation endpoints accept a request, create a `generation_job` row, enqueue wo
 - `generation_jobs` table is the source of truth for in-flight work.
 - Worker process (`cmd/worker`) consumes a queue (Redis MVP, ADR-013) and writes back to the job + assets.
 - `GET /v1/jobs/{job_id}` is the polling endpoint, returning `GenerationJobStatus` from `docs/api/openapi.yaml`.
-- Webhooks (`generation_job.preview_ready`, `generation_job.completed`, `generation_job.failed`) are a planned addition.
+- Webhooks (`generation_job.preview_ready`, `generation_job.completed`,
+  `generation_job.failed`) **shipped in Phase 7C-4** and are emitted on both the
+  single-image and pack paths. Contract: the `webhooks` section of
+  `docs/api/openapi.yaml`. Polling remains the authoritative path.
 
 ## Revisit when
 

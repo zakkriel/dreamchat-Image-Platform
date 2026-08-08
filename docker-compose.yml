@@ -6,7 +6,11 @@ services:
       POSTGRES_PASSWORD: image_platform
       POSTGRES_DB: image_platform
     ports:
-      - "5432:5432"
+      # Host 5433, not 5432: the sibling dreamchat-world-backend stack owns host
+      # 5432 in the shared dev environment, and both stacks must be able to run
+      # at the same time. The in-container port stays 5432, so every
+      # service-to-service DSN below still targets `postgres:5432`.
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:

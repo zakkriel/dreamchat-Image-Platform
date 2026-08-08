@@ -148,15 +148,25 @@ covers the same invariant at the SQL level. Both run in CI on every push.
 
 ## Follow-ups (required; not deferred indefinitely)
 
-1. **GOVERNANCE HOLE — legacy resource-scoped endpoints are ungoverned.**
-   `/v1/artifacts/{id}/generate`, `/v1/packs/{id}/generate`, and
-   `/v1/style-preview` bypass the gate entirely. A later chunk MUST route them
-   through the governance gate or retire them. Until then, governance coverage
-   is incomplete for all generation paths except `POST /v1/generations`.
+1. ~~**GOVERNANCE HOLE — legacy resource-scoped endpoints are ungoverned.**~~
+   **RESOLVED (Wave 2, "Follow-up 1").** `/v1/artifacts/{id}/generate`, both
+   generate-pack endpoints, and `/v1/styles/{id}/preview` now run the **same**
+   shared `GovernanceGate` as `POST /v1/generations` (wired in
+   `internal/http/router.go` via `governanceGateFromDeps`): the envelope is
+   optional on those endpoints (OpenAPI 0.13.0, strictly additive, so existing
+   callers are unaffected), `log_only` audits and proceeds, and `enforce` blocks a
+   missing/invalid envelope with `403 governance_blocked`. Governance coverage is
+   therefore complete across all generation paths. Retiring the legacy endpoints
+   is now product timing, not a safety hole. **Still open:** real signature
+   cryptography is blocked on core's signing contract (`TODO(core-signing)`), so
+   `enforce` + a stub verifier is refused at startup in live.
 
-2. **Worker pixel-level MP enforcement.** `max_megapixels` is persisted but the
-   worker does not enforce it at image-generation time. A later chunk must add
-   worker-side clamping and connect it to the reservation basis.
+2. ~~**Worker pixel-level MP enforcement.**~~ **RESOLVED (Wave 3).** The worker
+   enforces `max_megapixels` — `maxMegapixelsForWorker` rejects an invalid/over-
+   ceiling value before any provider call, and the provider's returned image is
+   checked on its **decoded bytes**, not a provider-declared dimension. A
+   violation fails the job terminally with `max_megapixels_exceeded` (released
+   reservation), on both the single-image and pack paths. Silent clamping is gone.
 
 3. **`derive_from` and non-only `transform` still generate untransformed.**
    Requests carrying these fields produce a standard single-image generation

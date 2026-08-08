@@ -1,6 +1,8 @@
 SHELL := /bin/bash
 
-POSTGRES_DSN ?= postgres://image_platform:image_platform@localhost:5432/image_platform?sslmode=disable
+# Host port 5433 matches docker-compose.yml: the sibling dreamchat-world-backend
+# stack owns host 5432, so this stack publishes Postgres on 5433.
+POSTGRES_DSN ?= postgres://image_platform:image_platform@localhost:5433/image_platform?sslmode=disable
 APP_PORT     ?= 8080
 
 .PHONY: help up down dev migrate migrate-down migrate-status seed seed-admin test build generate fmt vet lint wait-ready
