@@ -15,6 +15,10 @@ the cost-optimization waves (`docs/superpowers/plans/2026-08-07-cost-optimizatio
 - `DECISIONS.md` — locked stack, env vars, provider interface, deferrals.
 - `docs/api/openapi.yaml` — canonical API contract (version in the file's
   `info.version`; `api/openapi.yaml` is a byte-identical mirror enforced by CI).
+- `docs/api/integration-quickstart.md` — **start here to integrate**: the verified
+  end-to-end call sequence (token → style → identity → generation → poll → assets),
+  the governance envelope, required polling backoff, and the config prerequisite
+  that otherwise makes every generation return `422`.
 - `IMPLEMENTATION_STATUS.md` — what's done / what's next.
 - `docs/architecture/` — overview + component boundaries.
 - `migrations/` — goose migrations (`go run ./cmd/migrate up`).
