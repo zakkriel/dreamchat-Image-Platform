@@ -551,12 +551,6 @@ func (w *Worker) failPackTerminal(ctx context.Context, job Job, packID, code, ms
 	return nil
 }
 
-func (w *Worker) markPackAttemptFailed(ctx context.Context, attemptID string, callErr error, latencyMs int32) {
-	if err := w.Jobs.MarkProviderAttemptFailed(ctx, attemptID, errorCodeFor(callErr), callErr.Error(), latencyMs); err != nil {
-		w.log().Warn("worker: mark pack attempt failed", "attempt_id", attemptID, "error", err)
-	}
-}
-
 // packPlan is the per-run view of the pack job's input payload, written by
 // the generate-pack handlers at request time so the worker needs only job_id.
 type packPlan struct {

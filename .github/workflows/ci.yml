@@ -161,8 +161,9 @@ jobs:
             "SELECT max(version_id) FROM goose_db_version WHERE is_applied")
           echo "goose version: $v"
           # Chunk 1 added 0012-0017; Wave 2 added the 0018 fal identity route
-          # seed. Head is now 18.
-          test "$v" = "18"
+          # seed; Wave 3 added the 0019 cost-event reservation link.
+          # Head is now 19.
+          test "$v" = "19"
 
       - name: assert migrations round-trip above baseline (up -> down-to 11 -> up)
         env:

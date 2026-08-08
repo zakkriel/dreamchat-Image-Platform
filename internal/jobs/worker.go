@@ -1608,16 +1608,6 @@ func providerImageDimensions(img providers.ProviderImage) (int, int, error) {
 	return bounds.Dx(), bounds.Dy(), nil
 }
 
-// recordAttemptFailure records a single provider attempt's failure: it marks the
-// provider_attempts row failed (with the mapped error code + message + latency)
-// and inserts a status=failed cost event for the attempt. It is the per-attempt
-// half of the old recordFailure, shared by the fallback walk (one call per failed
-// route) and the post-generate failure paths. It performs NO terminal job
-// handling — that is failJobOnFinalAttempt's responsibility.
-func (w *Worker) recordAttemptFailure(ctx context.Context, job Job, attemptID, providerID, modelID string, callErr error, latencyMs int64) {
-	w.recordAttemptFailureWithCost(ctx, job, attemptID, providerID, modelID, callErr, latencyMs, nil)
-}
-
 func (w *Worker) recordAttemptFailureWithCost(ctx context.Context, job Job, attemptID, providerID, modelID string, callErr error, latencyMs int64, actualCostUSD *string) {
 	w.log().Error("worker: attempt failed",
 		"job_id", job.ID,
@@ -1687,17 +1677,6 @@ func (w *Worker) failJobOnFinalAttempt(ctx context.Context, job Job, callErr err
 			"error_code": errorCodeFor(callErr),
 		})
 	}
-}
-
-// recordFailure records a post-generate failure keyed on a specific attempt id
-// (the WINNER's attempt): the uploadImages / InsertFinalAsset / InsertPreviewAsset
-// paths that fail AFTER a provider already succeeded. It marks that attempt
-// failed + inserts a failed cost event (recordAttemptFailure) and, on the final
-// asynq attempt, fails the job + releases the reservation
-// (failJobOnFinalAttempt). Provider-call failure paths go through
-// generateWithFallback so every billable route attempt is recorded.
-func (w *Worker) recordFailure(ctx context.Context, job Job, attemptID, providerID, modelID string, callErr error, latencyMs int64, finalAttempt bool) {
-	w.recordFailureWithCost(ctx, job, attemptID, providerID, modelID, callErr, latencyMs, finalAttempt, nil)
 }
 
 func (w *Worker) recordFailureWithCost(ctx context.Context, job Job, attemptID, providerID, modelID string, callErr error, latencyMs int64, finalAttempt bool, actualCostUSD *string, expectedReservationIDs ...string) {

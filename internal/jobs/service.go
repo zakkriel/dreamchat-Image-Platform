@@ -394,32 +394,14 @@ func (s *Service) CreateAndEnqueue(ctx context.Context, params CreateAndEnqueueP
 	// repeatable-read create transaction before the payload and reservation land;
 	// an empty/nil chain or a primary with no price entry leaves the payload
 	// without fallback routes.
-	fallbacks := []map[string]any(nil)
-	if len(params.RouteChain) > 0 {
-		fallbacks = s.samePriceFallbacks(ctx, params)
-		if len(fallbacks) > 0 {
-			params.InputPayload = withFallbackRoutesPayload(params.InputPayload, fallbacks)
-		} else if params.InputPayload != nil {
-			delete(params.InputPayload, "fallback_routes")
-		}
-	} else if params.InputPayload != nil {
-		// RouteChain is the authoritative, handler-resolved source. Never let a
-		// caller-supplied payload route hidden fallbacks without reserving for
-		// them.
+	// RouteChain is the authoritative, handler-resolved source. Never let a
+	// caller-supplied payload route hidden fallbacks without reserving for them.
+	// The chain itself is classified inside the create transaction below, in the
+	// same snapshot that prices the reservation, so there is nothing to compute
+	// out here.
+	var fallbacks []map[string]any
+	if len(params.RouteChain) == 0 && params.InputPayload != nil {
 		delete(params.InputPayload, "fallback_routes")
-	}
-	// Wave 3: reserve the billable plan, not only the happy-path image count.
-	// A preview-first job can make preview + final calls, and a pack reserves
-	// one operation per missing cell. The worker never re-reserves while walking
-	// the chain, so this quantity must land before the reservation row does.
-	params.Units = worstCaseBillableUnits(params)
-	// Persist the final priced operation_type + units alongside the resolved route
-	// so an admin retry re-reserves against exactly what this create path priced.
-	params.InputPayload = withCostContextPayload(params.InputPayload, params.OperationType, params.Units)
-
-	payload, err := marshalPayload(params.InputPayload)
-	if err != nil {
-		return CreateResult{}, err
 	}
 
 	jobID := ids.NewGenerationJobID()
@@ -463,7 +445,7 @@ func (s *Service) CreateAndEnqueue(ctx context.Context, params CreateAndEnqueueP
 	}
 	params.Units = worstCaseBillableUnits(params)
 	params.InputPayload = withCostContextPayload(params.InputPayload, params.OperationType, params.Units)
-	payload, err = marshalPayload(params.InputPayload)
+	payload, err := marshalPayload(params.InputPayload)
 	if err != nil {
 		return CreateResult{}, err
 	}
@@ -692,17 +674,16 @@ func worstCaseBillableUnits(params CreateAndEnqueueParams) int32 {
 	return int32(maxInt32)
 }
 
-// samePriceFallbacks filters the handler-supplied alternate routes
+// samePriceFallbacksWithQueries filters the handler-supplied alternate routes
 // (params.RouteChain) down to the same-price class as the primary route (Phase
 // 7C-4): the subset whose active unit price (price_per_unit, unit_type,
 // currency) exactly equals the primary's. Only these may be walked by the worker
 // without re-reserving cost — the single existing reservation was priced on the
 // primary, and a same-price fallback keeps it exactly valid.
 //
-// The public helper performs a read against the pool for route inspection;
-// CreateAndEnqueue repeats the same comparison through its repeatable-read
-// transaction immediately before Reserve. The transactional pass avoids a
-// price-change TOCTOU between fallback filtering and reservation. It looks up
+// It runs inside CreateAndEnqueue's transaction, immediately before Reserve, so
+// the routes persisted on the job and the price the reservation is made against
+// come from the same read. It looks up
 // the primary's price once; a primary with no active price entry
 // returns nil (the primary will fail no_price_entry at reservation anyway, so
 // fallbacks are moot). For each candidate it skips the entry equal to the
@@ -710,10 +691,6 @@ func worstCaseBillableUnits(params CreateAndEnqueueParams) int32 {
 // lookup fails or differs, preserving the handler's order for the survivors. The
 // survivors are returned as []map[string]any (keys: provider_id, model_id,
 // provider_route_id, preview_capability) ready to stamp onto the payload.
-func (s *Service) samePriceFallbacks(ctx context.Context, params CreateAndEnqueueParams) []map[string]any {
-	return s.samePriceFallbacksWithQueries(ctx, dbgen.New(s.pool), params)
-}
-
 func (s *Service) samePriceFallbacksWithQueries(ctx context.Context, q *dbgen.Queries, params CreateAndEnqueueParams) []map[string]any {
 	primary, err := q.LookupActiveUnitPrice(ctx, dbgen.LookupActiveUnitPriceParams{
 		ProviderID:    params.ProviderID,
@@ -1303,7 +1280,7 @@ func withResolvedRoutePayload(payload map[string]any, providerID, modelID, route
 // first-class fallback columns, so the payload is the carrier the worker reads to
 // walk the alternates on a primary-provider failure. Each entry is a
 // map[string]any with keys provider_id, model_id, provider_route_id,
-// preview_capability — the shape samePriceFallbacks produces. An empty list is
+// preview_capability — the shape samePriceFallbacksWithQueries produces. An empty list is
 // not stamped (the caller skips this when there are no survivors).
 func withFallbackRoutesPayload(payload map[string]any, fallbacks []map[string]any) map[string]any {
 	if payload == nil {

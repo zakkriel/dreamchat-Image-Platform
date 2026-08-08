@@ -179,7 +179,8 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("create records file: %w", err)
 	}
-	defer recordsFile.Close()
+	// Closed explicitly below: a benchmark whose records failed to flush must
+	// report that, not exit 0 with a truncated evidence file.
 	encoder := json.NewEncoder(recordsFile)
 
 	sum := summary{
@@ -211,6 +212,10 @@ func run() error {
 		}
 		accumulate(&sum, totalCost, rec, len(keys))
 		fmt.Printf("sample %d/%d: %s\n", i, *samples, describe(rec, len(keys)))
+	}
+
+	if err := recordsFile.Close(); err != nil {
+		return fmt.Errorf("flush records file: %w", err)
 	}
 
 	finish(&sum, totalCost, *singleCost)
@@ -495,8 +500,12 @@ func writePNG(path string, img image.Image) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	return png.Encode(f, img)
+	if err := png.Encode(f, img); err != nil {
+		_ = f.Close()
+		return err
+	}
+	// A pane that failed to flush is not a written pane.
+	return f.Close()
 }
 
 func splitList(raw string) []string {
