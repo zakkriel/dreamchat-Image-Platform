@@ -5,9 +5,13 @@ truth for "what's done / what's next" — the roadmaps in `prds/06` and
 `prds/07` use different numbering and should not be used for sequencing.
 
 Rule of thumb: the Phase 0–7 implementation track and cost-optimization Waves
-1–3 are **complete**. What remains before production-ready is not new phases:
-it is Wave 4 (specification-only, behind release gates), the catalogued non-MVP
-residue below, and integration with the world backend / frontend.
+1–3 are **complete**, and the three-repo integration is **functionally complete**
+— the world backend is a live consumer through the pull contract (see
+"Integration state" below). What remains before production-ready is not new
+phases: it is Wave 4 (specification-only, behind release gates), the catalogued
+non-MVP residue below, and the four cross-team items in
+"Before production (integration track)" — chief among them the real signing
+contract needed to leave `log_only`.
 
 ## Done
 
@@ -571,14 +575,139 @@ residue below, and integration with the world backend / frontend.
 - Migration `0019` applies and rolls back; cost events are attributable to the reservation that priced them across a retry reusing the same `generation_job_id`.
 - Concurrency and budget semantics match the pre-Wave-3 baseline: the concurrent-job cap, tight-budget denial, budget-window reset, and concurrent idempotency tests all pass unchanged.
 
+## Integration state — world backend is a live consumer
+
+The three-repo integration (`dreamchat-world-backend`, `dreamchat-frontend`, this
+platform) is **functionally complete**: the world backend ran a live handshake
+against this platform and the frontend renders portraits end to end through it.
+
+**Contract of record: pull, not push.** The world backend creates a generation and
+then reads `GET /v1/jobs/{job_id}` followed by `GET /v1/jobs/{job_id}/assets`.
+Outbound webhooks are **not** on the integration path — they remain a future
+latency hint. This was a deliberate joint decision: the world backend has no async
+channel, and a contract where a dropped event degrades latency but never
+correctness is the property all three repos wanted. `GET /v1/jobs/{job_id}` is
+therefore authoritative, and a consumer that ignores webhooks entirely is correct.
+
+**Shape of the integrated flow** (the world backend's PoC scope is one background
+per scene and one portrait per entity — **single image, not the 7-role pack**; a
+role taxonomy is not defined product-side, and variation is handled by their
+regeneration history rather than seven upfront variants):
+
+```
+POST /v1/styles → POST /v1/characters/{id}/visual-identity → POST /v1/generations
+  → poll GET /v1/jobs/{id} → GET /v1/jobs/{id}/assets
+```
+
+**Provisioned for the live window** (dev environment):
+
+- Tenant `tenant_world_backend`; token `tok_wb_handshake_2hzyj9`, `active`, with
+  **exactly four scopes** — `styles:write`, `images:write`, `jobs:read`,
+  `images:read`. Delivered to the consumer as `DREAMCHAT_IMAGE_API_TOKEN` +
+  `DREAMCHAT_IMAGE_BASE_URL` env vars, never persisted on their side.
+- `tenant` currently means **the deployment**: the world backend has no
+  customer/account model, so one token → one tenant, and a token maps to no
+  particular world. `world_id` remains an ordinary scoping column beneath it.
+- `GOVERNANCE_ENFORCEMENT=log_only` with
+  `GOVERNANCE_AUTHORIZED_ISSUERS=svc_world_backend`, set in **both** launch paths
+  (`scripts/dev.sh`, which is what `make start` runs and what serves the host API,
+  and the `docker-compose.yml` api service). API only — the worker never verifies
+  envelopes.
+- `ALLOW_SYNTHETIC_PROVIDERS=true`, so `mock` backs the `identity_capable` floor
+  and the handshake needs no identity anchors.
+
+**What the live window proved.** Health, the four-scope token, the seven-field
+governance envelope under `log_only` (auditing `media.eligibility_verified`, not
+`unknown_issuer`), a `202` create, terminal `completed`, and a presigned URL
+returning a real PNG. It also surfaced two defects and two client-side traps that
+are now fixed and documented rather than folklore:
+
+- **Defect — exact reuse returned `500`.** Every cache hit on `POST /v1/generations`
+  violated `generation_jobs_fallback_policy_check`; the endpoint failed on its
+  *second* identical request. Fixed, with params-parity plus real-DB regression
+  tests (see the entry above).
+- **Defect — an empty authorized-issuer allowlist looked healthy.** `log_only` let
+  requests through while recording `unknown_issuer`, which would have turned into a
+  blanket `403` the moment enforcement flipped. Fixed in both launch paths.
+- **Client trap — `Idempotency-Key` hashes the whole body**, and `issued_at` moves
+  every time an envelope is built, so "resending the same request" yields
+  `409 idempotency_conflict`. The consumer pins one `issued_at` per logical request
+  and stores it with the key.
+- **Client trap — reads share the write rate limit and a denied request still
+  increments the counter**, so fixed-interval polling is self-harming. The consumer
+  uses bounded full-jitter backoff, honours `Retry-After` on
+  `rate_limit_exceeded`, and treats `concurrent_jobs_exceeded` separately (it clears
+  at a terminal job state, not on a clock).
+
+Two invariants are now binding on all three repos and are stated in
+`info.description` of the OpenAPI contract so they travel with it: **IDs are durable
+and download URLs are not** (presigned per read, expiring at `url_expires_at`), and
+**reuse is the default** — repeating a request is a zero-cost cache hit returning the
+same `asset_id`, so a portrait is never re-requested to "refresh" it.
+
+Consumer-facing walkthrough: `docs/api/integration-quickstart.md` (verified against
+a running stack, not written from the code).
+
 ## Remaining
 
 - **None for the Phase 7 implementation track.** Phase 7C-3 (RLS / tenant
   isolation) is **Done**, Phase 7C-4 (provider fallback chains + outbound
   webhooks) is **Done**, and there is **no remaining Phase 7 implementation
-  work**. Phase 7C-4 closes Phase 7C and the planned phase sequence. The items
-  below are documentation/closure reconciliation, **not** a new phase and not new
-  product scope.
+  work**. Phase 7C-4 closes Phase 7C and the planned phase sequence. Nothing
+  below is a new phase or new product scope: the sections after the next one are
+  documentation/closure reconciliation, and "Before production (integration
+  track)" immediately below is the cross-team readiness list — mostly contracts
+  and configuration owned outside this repo, not implementation work queued here.
+
+### Before production (integration track)
+
+The functional integration is done; none of the items below block the dev-stack
+handshake, and all four are cross-team, not local code debt.
+
+1. **Real signing contract — required to leave `log_only`.** The envelope
+   `signature` is accepted as **any non-empty string** today, because
+   `StubSignatureVerifier` passes unconditionally; the consumer sends the sentinel
+   `stub-unsigned-v1`. Canonicalization + crypto is a cross-system contract owned by
+   core (`TODO(core-signing)` in `internal/governance/signature.go`) and this repo
+   must **not** invent the wire format. Until it ships, `enforce` asserts an
+   integrity guarantee that is not actually checked — which is why `enforce` + a stub
+   verifier is **refused at startup in `live`** (`governance.EnforceWithStubError`)
+   and only WARNs in dev/test. Signature binding to
+   tenant/subject/operation/request-hash/expiry ships with that contract.
+2. **Enforcement-flip checklist.** Flipping `GOVERNANCE_ENFORCEMENT=enforce` turns
+   every currently-audited block into a `403 governance_blocked`, so before flipping:
+   real signing must be in place (item 1 — otherwise `live` refuses to boot);
+   `GOVERNANCE_AUTHORIZED_ISSUERS` must list every calling service **in every
+   environment and every launch path** (this repo has two: `scripts/dev.sh` and the
+   `docker-compose.yml` api service — an empty allowlist is silent under `log_only`);
+   every caller must send a non-zero `issued_at` inside `GOVERNANCE_MAX_AGE`
+   (default 24h, ±2min future skew); and `audit_events` should show **zero**
+   `media.eligibility_blocked` rows for the traffic you are about to enforce on.
+   That last one is the actual go/no-go signal — dry-run enforcement by reading the
+   audit table, not by flipping and watching for errors.
+3. **Tenant granularity — an open design question, not a schema gap.** `tenant`
+   currently means the deployment. Adding tenants needs **no schema change** (ids are
+   opaque `TEXT`; measured on a migrated DB at head 19: 20 tables under
+   `ENABLE` + `FORCE ROW LEVEL SECURITY` with a deny-by-default `tenant_isolation`
+   policy, 14 carrying `tenant_id` directly, the rest policed by parent-join
+   `EXISTS`). A per-customer split is a **data re-key plus re-proving cross-tenant
+   isolation under the `image_platform_api` role**, and because `world_id` already
+   rides on every asset, identity and pack row, **nothing is regenerated**. The
+   question to settle first: does a customer map to one tenant with many worlds
+   (a straight re-key) or one tenant per world (which multiplies token management)?
+   RLS keys on `tenant_id` alone either way.
+4. **Webhooks — the future latency hint, now safe to adopt.** Not on the integration
+   path today, deliberately. The three gaps that made the push contract unsafe are
+   **closed**: pack jobs emit (they previously emitted nothing at all), the
+   unrunnable-job failure paths emit `generation_job.failed` (they previously went
+   terminal silently), and the event envelope is published as an OAS 3.1 `webhooks`
+   section with generated Go types. A silent-loss bug where a cost-commit failure
+   dropped the `completed` event was fixed at the same time. Remaining before anyone
+   depends on it: no signed timestamp (so no replay protection), no SSRF/private-range
+   guard on the endpoint URL, no dead-letter queue or enqueue-failure sweeper,
+   at-least-once delivery only, one endpoint per tenant, and no `cancelled` event
+   type. Adopt it as an optimization on top of polling — never as the readiness
+   mechanism.
 
 ## Scope move — RLS and webhooks were deliberately pulled into Phase 7C
 
