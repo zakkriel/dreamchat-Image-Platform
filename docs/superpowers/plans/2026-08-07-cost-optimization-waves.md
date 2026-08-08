@@ -80,10 +80,20 @@ suite against Postgres 15 (migrations v17). OpenAPI mirrors untouched.
 
 ## Wave 4 — Amortization (SPEC ONLY — NOT IMPLEMENTED)
 
-1. **Sprite-sheet benchmark FIRST** (no platform code): fal Kontext 2×2 / 2×5
-   sheets from an anchor; measure per-pane identity consistency, pane
-   separation, usable-pane rate, true $/usable image vs N singles. Gate: only
-   lift the `grid.enabled` 501 if the benchmark clears the quality bar.
+> Specification + release gates:
+> `docs/superpowers/specs/2026-08-08-wave4-amortization-design.md`.
+> The only Wave 4 code that exists is the gate-1 benchmark harness
+> (`cmd/sprite-sheet-benchmark`), which is standalone measurement
+> tooling — no API, worker, or schema path depends on it.
+
+1. **Sprite-sheet benchmark FIRST** (no platform code): run
+   `go run ./cmd/sprite-sheet-benchmark` against fal Kontext 2×2 / 2×5 sheets
+   from an anchor. It records per-pane validity, latency, and provider-reported
+   cost, and prints usable-pane rate and true $/usable image; identity
+   consistency and pane separation are left blank for a human reviewer. Gate
+   thresholds (≥30 samples, ≥90% usable panes, ≤70% of the single-image cost)
+   are in the Wave 4 design spec. Only lift the `grid.enabled` 501 once every
+   gate is recorded as passed.
 2. Sprite-sheet pipeline on the Chunk-1 schema (`sprite_sheet_contract` /
    `sprite_sheet_slice`): one governed generation, deterministic slicing,
    malformed-sheet fallback to separately governed expression calls, read-path
