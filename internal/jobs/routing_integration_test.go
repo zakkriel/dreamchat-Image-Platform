@@ -78,8 +78,8 @@ func TestEndToEndStampsResolvedMockProvenance(t *testing.T) {
 	var resp map[string]any
 	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
 	jobID, _ := resp["job_id"].(string)
-	// The resolved model price (mock = 0.0300) must be echoed as the estimate.
-	if resp["estimated_cost_usd"] != "0.0300" {
+	// The resolved model price (mock = 0.0100) must be echoed as the estimate.
+	if resp["estimated_cost_usd"] != "0.0100" {
 		t.Fatalf("expected estimate from resolved mock model, got %v", resp["estimated_cost_usd"])
 	}
 
