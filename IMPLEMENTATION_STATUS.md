@@ -514,6 +514,50 @@ residue below, and integration with the world backend / frontend.
   Cancellation still has no event type, and admin cancel / preflight denial /
   enqueue failure still deliberately do not emit.
 
+- **`/v1/generations` exact-reuse 500 fix + integration quickstart** (Done):
+  found by running the documented integration sequence against a real stack
+  instead of reading it.
+  (1) **Every cache hit on `POST /v1/generations` returned `500`.**
+  `GenerationsHandler.respondCacheHit` built `CreateCacheHitParams` **without
+  `FallbackPolicy`**, so the column arrived as `""` and the INSERT violated
+  `generation_jobs_fallback_policy_check` (which accepts only
+  `none|compatible_only|preview_allowed|any_existing`). The primary integration
+  endpoint therefore failed on its *second* identical request — exactly the
+  retrieval-first reuse the cost model and the "never re-request a portrait"
+  contract depend on. The artifact path had always set it; only the combined
+  contract omitted it. `WorldID` was omitted too, so a reused job silently lost
+  the world lineage a generated job carries. Both now match the miss path
+  (`compatible_only`, `identity.WorldID`), verified live: the reused request
+  returns `202`, completes with `actual_cost_usd=0`, and resolves to the **same**
+  `asset_id`.
+  (2) **Why the tests missed it.** The existing cache-hit coverage used a stub
+  creator, which accepts any params, and every cache-hit integration test set
+  `FallbackPolicy` explicitly. Added `generations_cachehit_lineage_test.go`
+  (cache-hit params must match the miss path on policy + world + job type, and the
+  emitted policy must be a value the CHECK accepts) and two real-DB tests
+  (`TestGenerationsCacheHitJobInserts` inserting the handler's exact params,
+  `TestCacheHitEmptyFallbackPolicyRejected` proving the constraint is real so the
+  first assertion is load-bearing).
+  (3) **Unclassified create failures now log their cause.** `writeJobServiceError`'s
+  `default` branch wrote `500 internal_error` and discarded the error, so this bug
+  was diagnosable only by reading Postgres' own log. It now logs the cause with the
+  request id; the response body stays generic.
+  (4) **`docs/api/integration-quickstart.md`** — the verified end-to-end sequence
+  for the world backend, with real request/response bodies from that run: the
+  governance envelope (all 7 fields; `signature` is accepted as any non-empty
+  string because `StubSignatureVerifier` passes unconditionally — use
+  `stub-unsigned-v1`), the `log_only` semantics that matter (a `202` does **not**
+  mean the envelope was accepted — an unknown issuer or a missing `issued_at` still
+  audits `media.eligibility_blocked` and becomes `403` under `enforce`), required
+  bounded/jittered polling backoff, the `identity_capable` config prerequisite
+  (stock config returns `422 route_capability_mismatch` on **every** generation
+  until `ALLOW_SYNTHETIC_PROVIDERS=true` or `FAL_KEY` is set), the idempotency trap
+  (the key hashes the whole body, so a redrawn `issued_at` yields `409`), and the
+  storage split (the asset's `visual_identity_id` is **NULL** on this path, so the
+  consumer must persist `identity_id → asset_id` itself). OpenAPI `0.14.0 → 0.14.1`
+  (description + client guidance only; no schema, endpoint, behavior, or
+  generated-code change). **No migration** (head stays **19**).
+
 ## Cost optimization waves (Wave 3/4)
 
 - **Wave 3 — Measurement + cost-accounting truth** (implemented): generation economics telemetry, planned-call reservation sizing, provider-reported cost reconciliation, reservation-scoped cost events, identity lifetime ledger updates, decoded-byte `max_megapixels` enforcement, and pack fallback parity are wired through the governed paths. Design + verification: `docs/superpowers/specs/2026-08-08-wave3-cost-truth-design.md`.

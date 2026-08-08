@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -387,6 +388,15 @@ func writeJobServiceError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, jobs.ErrEnqueueFailed):
 		httperr.Write(w, r, http.StatusInternalServerError, httperr.CodeInternalError, "could not enqueue generation job")
 	default:
+		// An unclassified create failure is a defect, not a client problem: a
+		// constraint violation, a bad column value, a driver error. The response
+		// body stays deliberately generic, but swallowing the cause entirely made
+		// a real 500 (a cache-hit insert missing fallback_policy) diagnosable only
+		// by reading Postgres' own log. Log it here.
+		slog.Default().Error("create generation job failed",
+			"request_id", telemetry.RequestIDFromContext(r.Context()),
+			"path", r.URL.Path,
+			"error", err)
 		httperr.Write(w, r, http.StatusInternalServerError, httperr.CodeInternalError, "could not create generation job")
 	}
 }

@@ -319,7 +319,7 @@ func (h *GenerationsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case rerr == nil:
 			telemetry.DefaultMetrics().RecordCacheHit()
-			h.respondCacheHit(w, r, tenantID, principal.TokenID, identity.ID, req, renderHash, existing.ID, idemKey, endpoint, requestHash)
+			h.respondCacheHit(w, r, tenantID, principal.TokenID, identity.ID, identity.WorldID, req, renderHash, existing.ID, idemKey, endpoint, requestHash)
 			return
 		case errors.Is(rerr, assets.ErrNotFound):
 			telemetry.DefaultMetrics().RecordCacheMiss()
@@ -472,7 +472,7 @@ func (h *GenerationsHandler) Create(w http.ResponseWriter, r *http.Request) {
 // artifact cache-hit path: the synchronously-completed state,
 // cache_result=exact_match, and final_asset_ids are observed via
 // GET /v1/jobs/{job_id}; estimated_cost_usd is "0.0000" — the reuse is free.
-func (h *GenerationsHandler) respondCacheHit(w http.ResponseWriter, r *http.Request, tenantID, tokenID, visualIdentityID string, req apigen.GenerationRequest, renderHash, assetID, idemKey, endpoint, requestHash string) {
+func (h *GenerationsHandler) respondCacheHit(w http.ResponseWriter, r *http.Request, tenantID, tokenID, visualIdentityID, worldID string, req apigen.GenerationRequest, renderHash, assetID, idemKey, endpoint, requestHash string) {
 	var identityID *string
 	if visualIdentityID != "" {
 		identityID = &visualIdentityID
@@ -481,12 +481,21 @@ func (h *GenerationsHandler) respondCacheHit(w http.ResponseWriter, r *http.Requ
 		TenantID:           tenantID,
 		RequestedByTokenID: tokenID,
 		JobType:            "generation",
-		VisualIdentityID:   identityID,
+		// WorldID and FallbackPolicy must match what the miss path records for
+		// the same request (see the CreateAndEnqueueParams above): a reused job
+		// is the same job with the provider work skipped, so its lineage and
+		// policy columns cannot differ. FallbackPolicy in particular is NOT
+		// NULLable — generation_jobs_fallback_policy_check accepts only
+		// none|compatible_only|preview_allowed|any_existing — so omitting it
+		// made every cache hit fail the insert with a 500.
+		WorldID:          worldID,
+		VisualIdentityID: identityID,
 		InputPayload: map[string]any{
 			"identity_id": req.Subject.IdentityId,
 			"intent":      string(req.Render.Intent),
 			"prompt_hash": renderHash,
 		},
+		FallbackPolicy: string(apigen.CompatibleOnly),
 		FinalAssetID:   assetID,
 		IdempotencyKey: idemKey,
 		Endpoint:       endpoint,

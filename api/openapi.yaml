@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: DreamChat Image Platform API
-  version: 0.14.0
+  version: 0.14.1
   description: |
     Standalone API for generating, storing, retrieving, and versioning persistent visual assets for DreamChat worlds.
 
@@ -49,6 +49,18 @@ info:
       asset at zero cost; only `force_regenerate` produces a new render. A
       consumer must not re-request an asset it already has in order to "refresh"
       it.
+    * **Polling MUST use bounded, jittered backoff.** Reads are rate-limited
+      exactly like writes (60 req/min, 1000 req/hour per token by default), and a
+      denied request still increments the counter — so fixed-interval polling is
+      self-harming: continuing to poll while limited keeps your own window pinned.
+      Start ~1s, back off ~1.5–2x to a ~15s cap with full jitter, honour
+      `Retry-After` on `429 rate_limit_exceeded`, cap total attempts, and stop at a
+      terminal status. There is no list-jobs endpoint, status filter, `since`
+      cursor, or conditional-request support, so each poll is one full read per job.
+
+    A worked, end-to-end integration walkthrough (token, style, identity,
+    generation, poll, asset fetch, plus the governance envelope and the traps) is
+    in `docs/api/integration-quickstart.md`.
 
     ## Docs
 
@@ -2784,6 +2796,14 @@ components:
 # Confidence to Implement
 #
 # Score: 94/100 — Very High
+#
+# v0.14.1 — documentation + client-guidance only (NO schema, endpoint, or behavior
+# change; no generated-code change):
+#   * `info.description` now REQUIRES bounded, jittered polling backoff and states
+#     why (reads share the write rate limit and a denied request still increments
+#     the counter, so fixed-interval polling is self-harming).
+#   * Points at `docs/api/integration-quickstart.md`, a verified end-to-end
+#     walkthrough executed against a real stack.
 #
 # v0.14.0 — outbound webhook event contract published (additive, no served
 # endpoint changed; no request/response schema changed):
