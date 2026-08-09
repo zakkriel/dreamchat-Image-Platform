@@ -10,14 +10,16 @@
 > `**PLANNED**` markers there.
 >
 > **Served today:** the cost surface (price-book CRUD, cost-budget CRUD,
-> cost-reservations / cost-events list — Phase 4B, scope `admin:costs`), admin
+> cost-reservations list — Phase 4B, scope `admin:costs`), admin
 > job control (`POST /v1/admin/jobs/{job_id}/cancel|retry` — Phase 7C-1, scope
 > `admin:jobs`), and the webhook-endpoint config (`PUT`/`GET
 > /v1/admin/webhook-endpoint` — Phase 7C-4, scope `admin:jobs`).
 >
 > **Still planned (not served):** provider controls, route controls, the admin
-> job **list** endpoint, and `POST`/`GET /v1/admin/audit-events`. These remain
-> the specification for future work.
+> job **list** endpoint, `GET /v1/admin/cost-events` (the `cost_events` table is
+> written internally, but no read endpoint is mounted — use SQL per
+> `docs/runbooks/cost-spike.md` until it lands), and `POST`/`GET
+> /v1/admin/audit-events`. These remain the specification for future work.
 
 ## Purpose
 

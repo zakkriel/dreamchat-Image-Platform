@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: DreamChat Image Platform API
-  version: 0.14.1
+  version: 0.14.2
   description: |
     Standalone API for generating, storing, retrieving, and versioning persistent visual assets for DreamChat worlds.
 
@@ -419,6 +419,14 @@ paths:
     post:
       tags: [Assets]
       summary: Regenerate an asset as a new generation job
+      description: |
+        **PLANNED — not yet served.** No route is mounted for this path
+        (`internal/http/router.go`). Regeneration is served today by
+        `force_regenerate: true` on the generate endpoints
+        (`/v1/artifacts/{artifact_id}/generate`,
+        `/v1/characters/{character_id}/generate-pack`,
+        `/v1/places/{place_id}/generate-pack` — Phase 6A4), which
+        supersedes the prior asset in the same slot.
       security:
         - BearerAuth: [images:write]
       parameters:
@@ -564,6 +572,12 @@ paths:
     get:
       tags: [Models]
       summary: List available provider models
+      description: |
+        **PLANNED — not yet served.** No route is mounted for this path
+        (`internal/http/router.go`). Provider models and their routes are
+        seeded by migration and selected server-side by the route resolver
+        (`internal/providers/routing`); there is no client-facing model
+        catalogue yet.
       security:
         - BearerAuth: [models:read]
       responses:
@@ -614,12 +628,14 @@ paths:
   # Endpoints under /v1/admin/ are the admin surface referenced by the
   # operational runbooks. Some are now served; the rest remain planned.
   #   Served today: the cost surface (price-book, cost-budgets,
-  #   cost-reservations/cost-events — Phase 4B), admin job control
+  #   cost-reservations — Phase 4B), admin job control
   #   (jobs/{id}/cancel|retry — Phase 7C-1), and webhook-endpoint config
   #   (PUT/GET /v1/admin/webhook-endpoint — Phase 7C-4).
   #   Still planned (NOT served): provider controls, route controls, the
-  #   admin job LIST endpoint. These keep the `**PLANNED**` marker in their
-  #   description until implemented.
+  #   admin job LIST endpoint, and the cost-event log
+  #   (GET /v1/admin/cost-events — the cost_events table is written
+  #   internally, but no read endpoint is mounted). These keep the
+  #   `**PLANNED**` marker in their description until implemented.
   # There is NO /v1/admin/audit-events endpoint (planned / non-MVP); the
   # audit_events table is written internally by the served admin endpoints.
   #
@@ -2796,6 +2812,19 @@ components:
 # Confidence to Implement
 #
 # Score: 94/100 — Very High
+#
+# v0.14.2 — served/planned accuracy correction (documentation only; NO schema,
+# endpoint, or behavior change; no generated-code change):
+#   * The Admin-surface banner listed `/v1/admin/cost-events` under "Served
+#     today". It is NOT served — `mountAdminCost` (`internal/http/router.go`)
+#     mounts price-book, cost-budgets, and cost-reservations only, and the
+#     endpoint's own description already said **PLANNED**. The banner now
+#     agrees with the endpoint and with the router.
+#   * `GET /v1/models` and `POST /v1/assets/{asset_id}/regenerate` were
+#     declared with no description and therefore no **PLANNED** marker,
+#     reading as served. Neither has a mounted route; both now carry the
+#     marker and name what serves the need today (`force_regenerate` for
+#     regeneration; server-side route resolution for models).
 #
 # v0.14.1 — documentation + client-guidance only (NO schema, endpoint, or behavior
 # change; no generated-code change):

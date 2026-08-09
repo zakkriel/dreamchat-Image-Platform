@@ -238,10 +238,16 @@ counter.
 - **Configurable safety margin** on the reservation (`reserved_amount =
   estimated_amount × (1 + margin_pct)`) — pick a default (10%?) before
   enabling enforcement.
-- **Quality-tier downgrade enforcement** — when a budget hits its soft
+- ~~**Quality-tier downgrade enforcement** — when a budget hits its soft
   warning (e.g. 80%), should the router auto-downgrade `quality_tier`
-  to `draft`? Behavior is undefined here; currently a separate
-  decision via `POST /v1/admin/routes/{id}/disable`.
+  to `draft`?~~ **RESOLVED — REJECTED.** The cost-optimization waves plan
+  (`docs/superpowers/plans/2026-08-07-cost-optimization-waves.md`, "No silent
+  quality downgrades under budget pressure") rejects this outright: budget
+  denial stays an explicit `422 budget_exceeded`, never a silently degraded
+  result. Deliberately shedding quality remains an operator action via
+  `POST /v1/admin/routes/{id}/disable` (see `docs/runbooks/cost-spike.md` §4b),
+  so the downgrade is visible in the route table rather than implicit at
+  reservation time.
 - **Per-period reset semantics** — daily resets at tenant-local
   midnight or UTC? Spec'd as UTC for MVP; revisit when the platform
   serves customers across timezones.
@@ -260,7 +266,8 @@ counter.
 The data model, the 11-step pipeline, and the failure surface are all
 concrete. Postgres + row-level locks in §3 step 7 handle concurrent
 correctness without exotic infra. The admin endpoints to manage the
-price book, budgets, and reservations all exist in
-`docs/api/openapi.yaml` (PLANNED). Subtracting points only for the four
-open follow-ups in §7 — each is a defined decision, not a research
-question.
+price book, budgets, and reservations are defined in
+`docs/api/openapi.yaml` and served (Phase 4B); only `GET
+/v1/admin/cost-events` remains PLANNED. Subtracting points only for the
+three remaining open follow-ups in §7 — each is a defined decision, not a
+research question.

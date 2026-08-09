@@ -158,8 +158,16 @@ requests carry none, so BFL keeps serving all scene/artifact work unchanged.
 
 - An acceptance/quality benchmark validates recurring-character consistency →
   promote fal to `production_capable` and seed higher tiers / [max].
-- A dedicated single-character (non-pack) identity generation endpoint is added →
-  seed an `identity_capable` fal route and wire references on that path too.
+- ~~A dedicated single-character (non-pack) identity generation endpoint is added →
+  seed an `identity_capable` fal route and wire references on that path too.~~
+  **FIRED (Wave 1 + 2).** Wave 1 wired reference propagation into the
+  single-image `POST /v1/generations` worker path (it gathers + presigns
+  identity anchors exactly like the pack path), and migration
+  `0018_fal_identity_route_seed.sql` seeded
+  `route_fal_text_to_image_identity` (`required_capability=identity_capable`,
+  `preview_capability=no_preview`, priority 200). The identity path is now
+  first-class in the route table instead of implicit via the capability
+  hierarchy.
 - Reference TTL proves too short under backlog → mint per-item or raise the
   reference-specific TTL.
 
