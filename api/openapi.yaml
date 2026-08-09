@@ -633,8 +633,8 @@ paths:
   #   (PUT/GET /v1/admin/webhook-endpoint — Phase 7C-4).
   #   Still planned (NOT served): provider controls, route controls, the
   #   admin job LIST endpoint, and the cost-event log
-  #   (GET /v1/admin/cost-events — the cost_events table is written
-  #   internally, but no read endpoint is mounted). These keep the
+  #   (GET /v1/admin/cost-events — the generation_cost_events table is
+  #   written internally, but no read endpoint is mounted). These keep the
   #   `**PLANNED**` marker in their description until implemented.
   # There is NO /v1/admin/audit-events endpoint (planned / non-MVP); the
   # audit_events table is written internally by the served admin endpoints.
