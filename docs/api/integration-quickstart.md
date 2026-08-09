@@ -91,12 +91,15 @@ deterministic placeholder PNG. Verified end to end.
 **Sequence B — real images via fal. An anchor is required, and it must not be a placeholder.**
 
 ```
-FAL_KEY=<key>                           # and leave ALLOW_SYNTHETIC_PROVIDERS unset
+FAL_KEY=<key>                           # registers fal (identity/pack)
+BFL_API_KEY=<key>                       # registers bfl (scene) — REQUIRED for step 3
 
 1. POST /v1/styles                                   -> style_profile_id
 2. POST /v1/characters/{id}/visual-identity          -> visual_identity_id
-3. POST /v1/artifacts/{artifact_id}/generate         -> 202   # scene_capable -> BFL
+3. POST /v1/artifacts/{artifact_id}/generate         -> 202   # scene_capable
+        {"provider_id": "bfl", ...}                          # PIN bfl — see below
    GET  /v1/jobs/{job_id}/assets                     -> asset_id (status=ready)
+   GET  /v1/assets/{asset_id} | jq .provider_id      -> MUST be "bfl", not "mock"
 4. POST /v1/characters/{id}/visual-identity/anchors
         {"world_id": "...", "anchor_asset_ids": ["<asset_id from 3>"]}
 5. POST /v1/generations {subject.identity_id}        -> 202   # identity_capable -> fal
@@ -107,6 +110,19 @@ the first `ready` asset must be generated — and `POST /v1/generations` forces 
 `identity_capable` floor, so it can never route to BFL. The artifact endpoint
 requires only `scene_capable`, which BFL satisfies. That is the one way to obtain a
 real first anchor through the API.
+
+**Step 3 MUST pin `provider_id: "bfl"`, and turning `ALLOW_SYNTHETIC_PROVIDERS`
+off does not do it for you.** The synthetic policy only gates the *identity axis*
+(`internal/providers/capability.go` — "Scene/draft routes are unaffected by the
+synthetic policy"). Step 3 asks for `scene_capable`, so mock stays eligible no
+matter how that flag is set, and route priority is **lower-is-preferred**: mock's
+scene routes are `100`, `route_bfl_text_to_image_standard` is `200`. An unpinned
+step 3 therefore resolves **mock** and hands you a placeholder grid that passes
+every anchor check. `provider_id` is a hard, fail-closed filter
+(`ErrRequestedProviderUnavailable` → `422 provider_preference_unavailable` when
+the key is unset), so pinning it either gets you BFL or tells you plainly that it
+cannot. Verify the anchor's stamped `provider_id` before step 4 — that one check
+is the difference between a real portrait and a smoke-over-grid.
 
 **Do not use a synthetic asset as a fal anchor.** A mock-generated asset *would*
 pass anchor validation — it is `ready`, has a `high_res_url`, and
@@ -170,6 +186,31 @@ identity axis, leaving `route_fal_text_to_image_identity` as the only match.
 reference-conditioned, so any identity without a usable anchor now fails with
 `missing_reference_assets` instead of quietly returning a placeholder. Flip the
 provider and add the anchor step in the same change, not separately.
+
+**The flip does not retire portraits you already generated.** Exact reuse is keyed
+on tenant + render hash only (`internal/db/queries/visual_assets.sql`
+`FindReadyGenerationByPromptHash`: `tenant_id + prompt_hash + asset_type='artifact'
+ + variant_key='default' + status='ready'`), and provider is **deliberately not
+part of the key** (`internal/assets/generation_hash.go`: "Provider/model identity
+is deliberately NOT part of the key"). So an identity that already has a `ready`
+mock placeholder keeps returning that exact placeholder after the flip — a
+zero-cost cache hit, no fal call, forever. You get stale grids on everything
+already generated and `missing_reference_assets` on everything new.
+
+`/v1/generations` has **no `force_regenerate`** (only the artifact and pack
+requests do), and it decodes with `DisallowUnknownFields`, so sending one is a
+hard `422 invalid or unknown field` — not a silent no-op. Two real options:
+
+1. **Platform-side (preferred):** archive the stale placeholder assets
+   (`status='archived'`). The lookup requires `status='ready'`, so reuse misses
+   and the next request generates for real. Do this in the **same window** as the
+   flip: while mock still backs the identity axis, a miss simply regenerates
+   another `ready` mock asset under the same hash and undoes the archive.
+2. **Client-side:** change any hash input — identity id, the identity's
+   `display_name`, `subject.anchor_asset_id`, `subject.derive_from`,
+   `render.intent`, `max_megapixels` (default `4.0`), or `render.transform`.
+   Attaching anchors and then sending `subject.anchor_asset_id` is the natural
+   one, since it changes the hash as a side effect of doing the bootstrap.
 
 ### 1.2 Token and scopes
 
