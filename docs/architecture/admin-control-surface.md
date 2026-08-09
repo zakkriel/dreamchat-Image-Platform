@@ -16,8 +16,9 @@
 > /v1/admin/webhook-endpoint` — Phase 7C-4, scope `admin:jobs`).
 >
 > **Still planned (not served):** provider controls, route controls, the admin
-> job **list** endpoint, `GET /v1/admin/cost-events` (the `cost_events` table is
-> written internally, but no read endpoint is mounted — use SQL per
+> job **list** endpoint, `GET /v1/admin/cost-events` (the
+> `generation_cost_events` table is written internally, but no read endpoint
+> is mounted — use SQL per
 > `docs/runbooks/cost-spike.md` until it lands), and `POST`/`GET
 > /v1/admin/audit-events`. These remain the specification for future work.
 
