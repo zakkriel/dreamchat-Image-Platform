@@ -47,16 +47,20 @@ minio                   # S3-compatible local
 minio-init              # one-shot job that creates the bucket
 ```
 
-`make up` brings the stack up. `make migrate` applies the goose migrations in
-`migrations/` via `go run ./cmd/migrate up`. `make dev` is the full bootstrap
-(compose + migrate + seed dev token). `make test` runs `go test ./...`.
+`make start` is the one-command path: it brings the compose infra up, migrates,
+seeds tokens, and runs the api + worker on the host (`scripts/dev.sh`). `make up`
+brings only the containers up. `make migrate` applies the goose migrations in
+`migrations/` via `go run ./cmd/migrate up`. `make dev` is the container-only
+bootstrap (compose + migrate + seed dev token). `make test` runs `go test ./...`.
 
 ## Canonical environment variables
 
 There is **one** name per concern. No aliases.
 
 ```
-APP_PORT                     # default 8080
+APP_PORT                     # default 8080 — the IN-CONTAINER port; compose
+                             # publishes it on host 8081 because the sibling
+                             # dreamchat-world-backend api owns host 8080
 ENVIRONMENT                  # dev | test | live (matches token environments)
 LOG_LEVEL                    # info | debug
 WORKER_CONCURRENCY           # asynq worker pool size
@@ -71,6 +75,12 @@ REDIS_PASSWORD               # optional
 S3_BUCKET
 S3_REGION
 S3_ENDPOINT                  # full URL; configurable so MinIO/R2 work
+S3_PUBLIC_ENDPOINT           # optional; origin presigned READ URLs are signed
+                             # for, when the client-reachable host differs from
+                             # the write endpoint (compose: localhost:9000 vs
+                             # minio:9000). SigV4 signs Host, so a presigned URL
+                             # can never be rewritten after signing. Falls back
+                             # to S3_ENDPOINT when unset
 S3_ACCESS_KEY_ID
 S3_SECRET_ACCESS_KEY
 S3_USE_PATH_STYLE            # true for MinIO/local; false/default for AWS S3/R2 virtual-hosted style
@@ -176,7 +186,7 @@ broad API-role grants, webhook at-least-once / no-DLQ / no-replay / no-rotation
 
 ## Phase 0 acceptance
 
-`make dev` brings the stack up. `curl localhost:8080/health` returns
+`make start` brings the stack up. `curl localhost:8081/health` returns
 `200 OK` with a `request_id` response header. CI runs
 `openapi-spec-validator docs/api/openapi.yaml`, `go test ./...`,
 `sqlc vet`, and applies migrations via `go run ./cmd/migrate up` (goose) to a
