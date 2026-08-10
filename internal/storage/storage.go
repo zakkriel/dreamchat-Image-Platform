@@ -17,9 +17,20 @@ import (
 // Presign computes an ephemeral https GET URL from the object key at read time
 // — it is never persisted (it embeds an expiry and a signature), per the
 // Phase 6B delivery design.
+//
+// Presign and PresignForProvider exist separately because the two URLs are
+// fetched by DIFFERENT parties and therefore may need different hosts. Presign
+// addresses the CALLER (a browser or the world backend — locally
+// http://localhost:9000). PresignForProvider addresses an EXTERNAL PROVIDER's
+// servers (fal downloads reference `image_urls` itself, so a localhost URL
+// fails with file_download_error and it needs a publicly reachable origin).
+// SigV4 binds the Host header, so one URL cannot be rewritten into the other —
+// the split has to happen at signing time. When no separate reference origin is
+// configured the two are identical.
 type Storage interface {
 	Put(ctx context.Context, key string, body []byte, contentType string) (string, error)
 	Presign(ctx context.Context, key string, ttl time.Duration) (string, error)
+	PresignForProvider(ctx context.Context, key string, ttl time.Duration) (string, error)
 }
 
 // CanonicalURL formats the s3:// URL recorded on visual_assets rows.

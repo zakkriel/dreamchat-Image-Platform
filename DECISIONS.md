@@ -81,6 +81,15 @@ S3_PUBLIC_ENDPOINT           # optional; origin presigned READ URLs are signed
                              # minio:9000). SigV4 signs Host, so a presigned URL
                              # can never be rewritten after signing. Falls back
                              # to S3_ENDPOINT when unset
+S3_REFERENCE_ENDPOINT        # optional; origin used ONLY to presign reference
+                             # images handed to an EXTERNAL provider, which
+                             # fetches them from its own servers (fal downloads
+                             # image_urls), so it must be publicly reachable —
+                             # a localhost URL fails file_download_error. Kept
+                             # separate from S3_PUBLIC_ENDPOINT because the two
+                             # have different audiences: delivery is fetched by
+                             # the caller, references by the provider. Falls
+                             # back to S3_PUBLIC_ENDPOINT, then S3_ENDPOINT
 S3_ACCESS_KEY_ID
 S3_SECRET_ACCESS_KEY
 S3_USE_PATH_STYLE            # true for MinIO/local; false/default for AWS S3/R2 virtual-hosted style

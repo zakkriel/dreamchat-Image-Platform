@@ -102,9 +102,16 @@ func TestProviderSatisfiesRouteSyntheticPolicy(t *testing.T) {
 		}
 	}
 
-	// Synthetic + scene axis: always allowed (policy is identity-axis scoped).
-	if !ProviderSatisfiesRoute(synthetic, CapabilitySceneCapable, false) {
-		t.Error("synthetic must still satisfy scene_capable when synthetic identity disabled")
+	// Synthetic + scene axis: ALSO blocked when disabled. The policy is not
+	// identity-axis scoped — an operator who turns synthetic off must not keep
+	// receiving mock placeholder grids for scene/artifact work (mock outranks
+	// the real providers on route priority, so the old exemption meant the flag
+	// silently did nothing for scenes).
+	if ProviderSatisfiesRoute(synthetic, CapabilitySceneCapable, false) {
+		t.Error("synthetic must NOT satisfy scene_capable when synthetic providers are disabled")
+	}
+	if !ProviderSatisfiesRoute(synthetic, CapabilitySceneCapable, true) {
+		t.Error("synthetic must satisfy scene_capable when synthetic providers are enabled")
 	}
 
 	// Real provider: policy never blocks it.

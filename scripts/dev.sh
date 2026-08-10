@@ -82,35 +82,49 @@ docker compose exec -T postgres pg_isready -U image_platform >/dev/null 2>&1 ||
 	die "postgres never became ready"
 
 # ------------------------------------------------------------------ tunnel ---
-# Only worth its cost (and its exposure) when a real provider will fetch
-# reference images. With mock alone, localhost is reachable by the browser.
+# Two different audiences need two different origins, and SigV4 binds the Host
+# header so one URL cannot be rewritten into the other:
+#
+#   S3_PUBLIC_ENDPOINT    delivery — fetched by YOU (browser, world backend).
+#                         Always http://localhost:9000 locally. Never depends on
+#                         the tunnel, so a dead tunnel can no longer silhouette
+#                         every portrait in the frontend.
+#   S3_REFERENCE_ENDPOINT reference images — fetched by the PROVIDER's servers
+#                         (fal downloads image_urls itself). Must be publicly
+#                         reachable, so this is what the tunnel backs.
+#
+# The tunnel is therefore opened only when a real provider key is present AND
+# only to serve provider reference fetches. Set DEV_TUNNEL=off to skip it (real
+# reference-conditioned generation will then fail closed with
+# file_download_error / missing reachable references — delivery is unaffected).
 PUBLIC_ENDPOINT="http://localhost:${MINIO_PORT}"
-if [[ -n "${FAL_KEY:-}${BFL_API_KEY:-}" ]]; then
+REFERENCE_ENDPOINT=""
+if [[ -n "${FAL_KEY:-}${BFL_API_KEY:-}" && "${DEV_TUNNEL:-on}" != "off" ]]; then
 	URL_FILE="$RUN_DIR/tunnel.url"
 	TUNNEL_LOG="$RUN_DIR/tunnel.log"
 	EXISTING=""
 	[[ -f "$URL_FILE" ]] && EXISTING="$(cat "$URL_FILE")"
 
 	if [[ -n "$EXISTING" ]] && curl -fsS --max-time 5 "$EXISTING/minio/health/live" >/dev/null 2>&1; then
-		log "reusing tunnel $EXISTING"
-		PUBLIC_ENDPOINT="$EXISTING"
+		log "reusing tunnel $EXISTING (provider reference fetches only)"
+		REFERENCE_ENDPOINT="$EXISTING"
 	elif command -v cloudflared >/dev/null 2>&1; then
-		log "opening public MinIO tunnel (a provider key is configured)…"
+		log "opening public MinIO tunnel for provider reference fetches…"
 		: >"$TUNNEL_LOG"
 		cloudflared tunnel --url "http://localhost:${MINIO_PORT}" --no-autoupdate \
 			>>"$TUNNEL_LOG" 2>&1 &
 		PIDS+=("$!")
 		for _ in $(seq 1 40); do
-			PUBLIC_ENDPOINT="$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$TUNNEL_LOG" | head -1 || true)"
-			[[ -n "$PUBLIC_ENDPOINT" ]] && break
+			REFERENCE_ENDPOINT="$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$TUNNEL_LOG" | head -1 || true)"
+			[[ -n "$REFERENCE_ENDPOINT" ]] && break
 			sleep 0.5
 		done
-		[[ -n "$PUBLIC_ENDPOINT" ]] || die "cloudflared never printed a tunnel URL (see $TUNNEL_LOG)"
-		printf '%s\n' "$PUBLIC_ENDPOINT" >"$URL_FILE"
-		log "tunnel $PUBLIC_ENDPOINT"
+		[[ -n "$REFERENCE_ENDPOINT" ]] || die "cloudflared never printed a tunnel URL (see $TUNNEL_LOG)"
+		printf '%s\n' "$REFERENCE_ENDPOINT" >"$URL_FILE"
+		log "tunnel $REFERENCE_ENDPOINT"
 		warn "the image-platform bucket allows anonymous download — objects are world-readable while this tunnel is up"
 	else
-		warn "cloudflared not installed; real fal/bfl generation will fail with file_download_error"
+		warn "cloudflared not installed; real fal/bfl reference generation will fail with file_download_error"
 		warn "  brew install cloudflared"
 	fi
 fi
@@ -123,12 +137,15 @@ export S3_BUCKET="image-platform"
 export S3_REGION="us-east-1"
 export S3_ENDPOINT="http://localhost:${MINIO_PORT}"
 export S3_PUBLIC_ENDPOINT="$PUBLIC_ENDPOINT"
+export S3_REFERENCE_ENDPOINT="$REFERENCE_ENDPOINT"
 export S3_ACCESS_KEY_ID="minioadmin"
 export S3_SECRET_ACCESS_KEY="minioadmin"
 export S3_USE_PATH_STYLE="true"
 export IMAGE_PROVIDER="${IMAGE_PROVIDER:-mock}"
-# Mock is synthetic, so identity/pack routes are barred unless this is on. Local
-# only — production must fail those requests closed instead.
+# Mock is synthetic. With this off, mock backs NO route (identity OR scene) and
+# only real providers serve — that is what makes `make start` come up
+# fal/BFL-only. Local default stays on so a keyless checkout still works; .env
+# overrides it durably (set ALLOW_SYNTHETIC_PROVIDERS=false there for real art).
 export ALLOW_SYNTHETIC_PROVIDERS="${ALLOW_SYNTHETIC_PROVIDERS:-true}"
 export API_TOKEN_PEPPER="${API_TOKEN_PEPPER:-dev-pepper-change-me}"
 export OPENAPI_DOCS_ENABLED="true"
@@ -246,7 +263,8 @@ cat <<EOF
   $(printf '\033[1;32mready\033[0m')
   ui        http://localhost:${UI_PORT}          (tokens pre-filled)
   api       http://localhost:${API_HOST_PORT}    docs at /docs
-  assets    ${PUBLIC_ENDPOINT}
+  assets    ${PUBLIC_ENDPOINT}    (delivery — browser/backend)
+  refs      ${REFERENCE_ENDPOINT:-none}$([[ -z "$REFERENCE_ENDPOINT" ]] && echo "    (no tunnel — provider reference fetches will fail)" || echo "    (provider fetches)")
   provider  ${IMAGE_PROVIDER}$([[ -n "${FAL_KEY:-}" ]] && echo " (+fal configured — pin provider_id=fal to use it)")
 
   Ctrl-C stops the api, worker, playground and tunnel.

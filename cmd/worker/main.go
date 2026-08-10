@@ -50,13 +50,14 @@ func main() {
 	defer pool.Close()
 
 	store, err := storage.NewS3Storage(context.Background(), storage.S3Config{
-		Bucket:          cfg.S3Bucket,
-		Region:          cfg.S3Region,
-		Endpoint:        cfg.S3Endpoint,
-		PublicEndpoint:  cfg.S3PublicEndpoint,
-		AccessKeyID:     cfg.S3AccessKeyID,
-		SecretAccessKey: cfg.S3SecretAccessKey,
-		UsePathStyle:    cfg.S3UsePathStyle,
+		Bucket:            cfg.S3Bucket,
+		Region:            cfg.S3Region,
+		Endpoint:          cfg.S3Endpoint,
+		PublicEndpoint:    cfg.S3PublicEndpoint,
+		ReferenceEndpoint: cfg.S3ReferenceEndpoint,
+		AccessKeyID:       cfg.S3AccessKeyID,
+		SecretAccessKey:   cfg.S3SecretAccessKey,
+		UsePathStyle:      cfg.S3UsePathStyle,
 	})
 	if err != nil {
 		logger.Error("storage init failed", "error", err)

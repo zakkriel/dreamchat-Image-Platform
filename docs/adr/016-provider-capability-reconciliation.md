@@ -59,17 +59,30 @@ adapters actually advertise, and fail closed:
    `route_capability_mismatch`).
 4. Readiness distinguishes real providers from synthetic/test-only providers (a
    `Synthetic` marker on `ProviderCapabilities`; mock sets it). **Synthetic
-   providers do not participate in identity/pack routing by default.** A synthetic
-   provider satisfies identity-axis routes (identity/pack/production) only when
-   `ALLOW_SYNTHETIC_PROVIDERS` is on — defaulting **false in every environment**.
+   providers do not participate in routing at all by default.** A synthetic
+   provider satisfies a route only when `ALLOW_SYNTHETIC_PROVIDERS` is on —
+   defaulting **false in every environment**.
    Safety must not depend on `ENVIRONMENT` (a production deployment may run with
    `ENVIRONMENT=dev`), so the default does not key off it. So a deployment with
    only a scene-capable real provider fails character/pack requests closed instead
-   of resolving synthetic placeholder grids; local/dev/CI mock identity-pack tests
-   set the flag true deliberately. Synthetic providers still back scene/draft
-   routes in any environment.
+   of resolving synthetic placeholder grids; local/dev/CI mock tests
+   set the flag true deliberately.
    The readiness warning alone is **not** the control — fail-closed routing
-   excludes synthetic identity providers by default; the warning is observability.
+   excludes synthetic providers by default; the warning is observability.
+
+   **Amendment (2026-08-10).** The policy originally exempted the scene/draft
+   axis: synthetic providers kept backing scene routes in every environment, on
+   the theory that only recurring characters need consistency. That exemption was
+   wrong in practice. Mock's scene routes outrank the real providers on priority
+   (mock `100`, bfl/fal `200`), so an operator who set
+   `ALLOW_SYNTHETIC_PROVIDERS=false` specifically to get real art still silently
+   received mock placeholder grids for every scene/artifact request — observed
+   live when a six-image scene batch came back as grids on a stack whose boot log
+   correctly read `synthetic_identity_allowed:false`. The flag now covers every
+   axis, so it means what its name says. A deployment with no real provider for an
+   axis fails closed (`422 no_route`) rather than shipping placeholders, matching
+   the contract the identity axis always had. Dev/CI are unaffected: compose and
+   `scripts/dev.sh` default the flag to true.
 
 Route resolution already runs before cost reservation in the handler, so a
 fail-closed rejection happens before any budget hold is taken — no dangling

@@ -95,8 +95,13 @@ func TestReconcileSyntheticPolicyMarksMockPackInvalidWhenDisabled(t *testing.T) 
 	for _, d := range disabled.Decisions {
 		byID[d.RouteID] = d
 	}
-	if !byID["r_mock_scene"].Valid {
-		t.Errorf("synthetic provider must still back scene routes: %+v", byID["r_mock_scene"])
+	// Both axes are now invalidated by policy: the flag means "no synthetic
+	// output from this deployment", not "no synthetic identities".
+	if byID["r_mock_scene"].Valid {
+		t.Errorf("synthetic scene route must be invalid when synthetic is disabled: %+v", byID["r_mock_scene"])
+	}
+	if byID["r_mock_scene"].Reason != reconcileReasonSyntheticDisabled {
+		t.Errorf("expected reason %q for scene, got %q", reconcileReasonSyntheticDisabled, byID["r_mock_scene"].Reason)
 	}
 	if byID["r_mock_pack"].Valid {
 		t.Errorf("synthetic pack route must be invalid when synthetic identity disabled: %+v", byID["r_mock_pack"])

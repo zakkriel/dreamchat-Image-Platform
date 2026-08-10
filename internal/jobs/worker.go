@@ -1308,7 +1308,10 @@ func (w *Worker) referenceURLsForIdentity(ctx context.Context, identityID, tenan
 		if !ok {
 			return nil, fmt.Errorf("%w: anchor %q has an unparseable high-res url", errInvalidReference, anchorID)
 		}
-		signed, err := w.Storage.Presign(ctx, key, ttl)
+		// Provider-facing origin: fal downloads this URL from ITS servers, so it
+		// must be publicly reachable — not the caller-facing delivery origin,
+		// which locally is http://localhost:9000.
+		signed, err := w.Storage.PresignForProvider(ctx, key, ttl)
 		if err != nil {
 			return nil, fmt.Errorf("worker: presign reference anchor %q: %w", anchorID, err)
 		}

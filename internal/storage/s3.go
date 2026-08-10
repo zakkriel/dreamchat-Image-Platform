@@ -30,10 +30,16 @@ type S3Config struct {
 	// written through an internal endpoint may be read through a CDN origin.
 	// SigV4 signs the Host header, so a presigned URL cannot be rewritten after
 	// the fact — it must be signed for the host the client will actually call.
-	PublicEndpoint  string
-	AccessKeyID     string
-	SecretAccessKey string
-	UsePathStyle    bool
+	PublicEndpoint string
+	// ReferenceEndpoint is the origin used when signing reference images handed
+	// to an external provider that fetches them itself (fal). Empty falls back
+	// to PublicEndpoint, then Endpoint — so a deployment whose single origin is
+	// publicly reachable (R2/CDN) needs no extra configuration, while local dev
+	// can deliver over http://localhost:9000 and still hand fal a tunnel URL.
+	ReferenceEndpoint string
+	AccessKeyID       string
+	SecretAccessKey   string
+	UsePathStyle      bool
 }
 
 type s3Storage struct {
@@ -43,6 +49,9 @@ type s3Storage struct {
 	// client as writes. It is a separate client precisely because the signature
 	// is bound to the endpoint host.
 	presign *s3.PresignClient
+	// presignRef signs reference URLs for an external provider's own fetcher;
+	// it equals presign unless ReferenceEndpoint differs.
+	presignRef *s3.PresignClient
 }
 
 // NewS3Storage builds the S3 client per ADR-011. Honors S3_ENDPOINT and
@@ -77,10 +86,18 @@ func NewS3Storage(ctx context.Context, cfg S3Config) (Storage, error) {
 	if cfg.PublicEndpoint != "" && cfg.PublicEndpoint != cfg.Endpoint {
 		presignClient = newClient(cfg.PublicEndpoint)
 	}
+	// Reference signing falls back to the delivery presign client, so behavior is
+	// unchanged for every deployment that does not set ReferenceEndpoint.
+	refClient := presignClient
+	refEndpoint := cfg.ReferenceEndpoint
+	if refEndpoint != "" && refEndpoint != cfg.PublicEndpoint {
+		refClient = newClient(refEndpoint)
+	}
 	return &s3Storage{
-		bucket:  cfg.Bucket,
-		client:  client,
-		presign: s3.NewPresignClient(presignClient),
+		bucket:     cfg.Bucket,
+		client:     client,
+		presign:    s3.NewPresignClient(presignClient),
+		presignRef: s3.NewPresignClient(refClient),
 	}, nil
 }
 
@@ -98,17 +115,30 @@ func (s *s3Storage) Put(ctx context.Context, key string, body []byte, contentTyp
 }
 
 // Presign mints a time-limited authenticated GET URL for the object at key,
-// valid for ttl. The signing is purely local (no network round-trip) and
-// honors S3_USE_PATH_STYLE plus S3_PUBLIC_ENDPOINT (falling back to
-// S3_ENDPOINT), so the URL works against MinIO (path-style) and R2 alike and
-// addresses the host the client can actually reach. The URL is computed per
-// request from a deterministic object key and is never persisted.
+// valid for ttl, addressed to the CALLER-reachable origin (S3_PUBLIC_ENDPOINT,
+// falling back to S3_ENDPOINT). The signing is purely local (no network
+// round-trip) and honors S3_USE_PATH_STYLE, so the URL works against MinIO
+// (path-style) and R2 alike. The URL is computed per request from a
+// deterministic object key and is never persisted.
 func (s *s3Storage) Presign(ctx context.Context, key string, ttl time.Duration) (string, error) {
+	return sign(ctx, s.presign, s.bucket, key, ttl)
+}
+
+// PresignForProvider mints the same kind of URL as Presign but addressed to
+// S3_REFERENCE_ENDPOINT — the origin an EXTERNAL provider's servers can reach.
+// fal downloads reference `image_urls` itself, so a delivery URL pointing at
+// localhost would fail with file_download_error. Falls back to the delivery
+// presign client when no separate reference origin is configured.
+func (s *s3Storage) PresignForProvider(ctx context.Context, key string, ttl time.Duration) (string, error) {
+	return sign(ctx, s.presignRef, s.bucket, key, ttl)
+}
+
+func sign(ctx context.Context, p *s3.PresignClient, bucket, key string, ttl time.Duration) (string, error) {
 	if ttl <= 0 {
 		ttl = defaultPresignTTL
 	}
-	req, err := s.presign.PresignGetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(s.bucket),
+	req, err := p.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	}, s3.WithPresignExpires(ttl))
 	if err != nil {

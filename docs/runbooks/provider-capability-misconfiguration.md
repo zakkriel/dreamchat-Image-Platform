@@ -45,9 +45,11 @@ deployment that leaves it unset/false fails character/pack requests closed inste
 of resolving mock and producing placeholder grids. Local/dev/CI mock identity-pack
 tests must set `ALLOW_SYNTHETIC_PROVIDERS=true` deliberately; public/Railway
 deployments must leave it false unless intentionally testing mock placeholders.
-Mock still backs scene/artifact routes regardless of this flag. The readiness
-warning alone is not the safeguard — fail-closed routing excludes synthetic
-identity providers by default.
+With the flag false, mock backs NO route — scene/artifact included. (It formerly
+kept serving the scene axis, which meant an operator who disabled synthetic
+providers still received mock placeholder grids for every scene request, since
+mock outranks the real providers on priority.) The readiness warning alone is not
+the safeguard — fail-closed routing excludes synthetic providers entirely.
 
 Note: the current BFL `flux-pro-1.1` is **for scenes and artifacts**, not
 recurring characters. Recurring character consistency requires a

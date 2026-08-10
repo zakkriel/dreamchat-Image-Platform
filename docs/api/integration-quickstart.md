@@ -111,18 +111,19 @@ the first `ready` asset must be generated — and `POST /v1/generations` forces 
 requires only `scene_capable`, which BFL satisfies. That is the one way to obtain a
 real first anchor through the API.
 
-**Step 3 MUST pin `provider_id: "bfl"`, and turning `ALLOW_SYNTHETIC_PROVIDERS`
-off does not do it for you.** The synthetic policy only gates the *identity axis*
-(`internal/providers/capability.go` — "Scene/draft routes are unaffected by the
-synthetic policy"). Step 3 asks for `scene_capable`, so mock stays eligible no
-matter how that flag is set, and route priority is **lower-is-preferred**: mock's
-scene routes are `100`, `route_bfl_text_to_image_standard` is `200`. An unpinned
-step 3 therefore resolves **mock** and hands you a placeholder grid that passes
-every anchor check. `provider_id` is a hard, fail-closed filter
-(`ErrRequestedProviderUnavailable` → `422 provider_preference_unavailable` when
-the key is unset), so pinning it either gets you BFL or tells you plainly that it
-cannot. Verify the anchor's stamped `provider_id` before step 4 — that one check
-is the difference between a real portrait and a smoke-over-grid.
+**Step 3 should pin `provider_id: "bfl"`.** Route priority is
+**lower-is-preferred** — mock's scene routes are `100`,
+`route_bfl_text_to_image_standard` is `200` — so whenever mock is eligible it
+wins an unpinned scene request and hands you a placeholder grid that passes
+every anchor check. Setting `ALLOW_SYNTHETIC_PROVIDERS=false` now removes mock
+from **every** axis including scene (it used to gate only the identity axis,
+which is exactly how a batch of "real" scenes came back as mock grids), so with
+the flag off an unpinned step 3 resolves BFL correctly. Pin it anyway: the pin
+is a hard, fail-closed filter (`ErrRequestedProviderUnavailable` →
+`422 provider_preference_unavailable` when the key is unset), so it states the
+intent explicitly instead of depending on a deployment flag. Verify the anchor's
+stamped `provider_id` before step 4 — that one check is the difference between a
+real portrait and a smoke-over-grid.
 
 **Do not use a synthetic asset as a fal anchor.** A mock-generated asset *would*
 pass anchor validation — it is `ready`, has a `high_res_url`, and
