@@ -160,11 +160,13 @@ func TestPackWithReferenceAssetsBuildsReferenceURLs(t *testing.T) {
 		if len(refs) != 2 {
 			t.Fatalf("call %d: expected 2 reference urls, got %v", i, refs)
 		}
-		// fakeStorage.Presign returns https://example.test/<key>?sig=test; the key
-		// is the high-res object for each anchor asset.
+		// Reference URLs must be signed for the PROVIDER-reachable origin
+		// (fakeStorage.PresignForProvider → https://provider.example.test/<key>),
+		// not the caller-facing delivery origin: fal fetches these itself, so a
+		// localhost delivery URL would fail with file_download_error.
 		for _, u := range refs {
-			if !strings.Contains(u, "https://example.test/") || !strings.Contains(u, "high") {
-				t.Fatalf("call %d: reference url not a presigned high-res object: %q", i, u)
+			if !strings.Contains(u, "https://provider.example.test/") || !strings.Contains(u, "high") {
+				t.Fatalf("call %d: reference url not a provider-signed high-res object: %q", i, u)
 			}
 		}
 	}

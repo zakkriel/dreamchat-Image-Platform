@@ -91,11 +91,15 @@ services:
       # browser cannot resolve), while the host publishes it on localhost:9000.
       # SigV4 signs the Host header, so the URL must be signed for the host the
       # client will call — it cannot be rewritten after signing.
-      # Override it (shell export or ./.env) with a PUBLIC tunnel URL when a real
-      # provider must fetch reference images: fal downloads image_urls from its
-      # own servers, so a localhost URL fails with file_download_error. See
-      # docs/runbooks/local-development.md.
+      # Delivery origin — fetched by the CALLER (browser / world backend), so it
+      # stays localhost. Do NOT point this at a tunnel: when the tunnel dies,
+      # every already-delivered image 404s.
       S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-http://localhost:9000}
+      # Reference origin — fetched by the PROVIDER's own servers (fal downloads
+      # image_urls itself), so this is the one that needs a public tunnel URL.
+      # Empty falls back to S3_PUBLIC_ENDPOINT. See
+      # docs/runbooks/local-development.md.
+      S3_REFERENCE_ENDPOINT: ${S3_REFERENCE_ENDPOINT:-}
       S3_ACCESS_KEY_ID: minioadmin
       S3_SECRET_ACCESS_KEY: minioadmin
       S3_USE_PATH_STYLE: "true"
@@ -161,10 +165,12 @@ services:
       S3_BUCKET: image-platform
       S3_REGION: us-east-1
       S3_ENDPOINT: http://minio:9000
-      # See the API service. The worker is what presigns REFERENCE image URLs
-      # for a reference-conditioned provider, so this value must be publicly
-      # fetchable whenever fal is used — and must match the API's.
+      # Delivery origin (see the API service) — caller-facing, stays localhost.
       S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-http://localhost:9000}
+      # The worker is the process that presigns REFERENCE image URLs for a
+      # reference-conditioned provider, so THIS is the value that must be
+      # publicly fetchable whenever fal is used — and must match the API's.
+      S3_REFERENCE_ENDPOINT: ${S3_REFERENCE_ENDPOINT:-}
       S3_ACCESS_KEY_ID: minioadmin
       S3_SECRET_ACCESS_KEY: minioadmin
       S3_USE_PATH_STYLE: "true"

@@ -68,9 +68,10 @@ func TestSingleImageReferenceConditionedThreadsRefs(t *testing.T) {
 	if len(calls[0]) != 2 {
 		t.Fatalf("expected 2 reference urls, got %v", calls[0])
 	}
+	// Provider-reachable origin, not the delivery origin — see the pack test.
 	for _, u := range calls[0] {
-		if !strings.Contains(u, "https://example.test/") || !strings.Contains(u, "high") {
-			t.Fatalf("reference url not a presigned high-res object: %q", u)
+		if !strings.Contains(u, "https://provider.example.test/") || !strings.Contains(u, "high") {
+			t.Fatalf("reference url not a provider-signed high-res object: %q", u)
 		}
 	}
 	if job := repo.jobs["job_gen_ref1"]; job.Status != "completed" {

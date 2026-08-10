@@ -650,6 +650,13 @@ func (s *fakeStorage) Presign(_ context.Context, key string, _ time.Duration) (s
 	return "https://example.test/" + key + "?sig=test", nil
 }
 
+// PresignForProvider mirrors Presign but marks the origin, so a test can assert
+// the worker signs reference images for the PROVIDER-reachable host rather than
+// the caller-facing delivery host.
+func (s *fakeStorage) PresignForProvider(_ context.Context, key string, _ time.Duration) (string, error) {
+	return "https://provider.example.test/" + key + "?sig=test", nil
+}
+
 // tinyPNGBytes is a valid 8x8 PNG used by provider stubs so the worker's
 // downscale (imaging.EncodeTiers) can decode the "provider output". Tiny
 // sources are not upscaled, so the three tiers come out identical — pack/cost

@@ -189,14 +189,26 @@ func TestSyntheticProviderSatisfiesPackWhenEnabled(t *testing.T) {
 	}
 }
 
-// TestSyntheticProviderStillServesSceneWhenDisabled proves the synthetic policy is
-// scoped to the identity axis: mock can still back a scene route even with
-// synthetic identity disabled (scene/artifact generation keeps working).
-func TestSyntheticProviderStillServesSceneWhenDisabled(t *testing.T) {
-	got, err := resolveWithSyntheticPolicy(t, []Route{mockRoute()}, map[string]bool{"mock": true}, syntheticMockIndex(), false,
+// TestSyntheticProviderIsExcludedFromSceneWhenDisabled proves the synthetic
+// policy covers the scene axis too: with synthetic disabled, mock cannot back a
+// scene route and the request fails closed rather than resolving a placeholder.
+// This is the routing half of the fix for "ALLOW_SYNTHETIC_PROVIDERS=false but
+// every artifact still came back as a mock grid".
+func TestSyntheticProviderIsExcludedFromSceneWhenDisabled(t *testing.T) {
+	_, err := resolveWithSyntheticPolicy(t, []Route{mockRoute()}, map[string]bool{"mock": true}, syntheticMockIndex(), false,
+		ResolveRequest{OperationType: "text_to_image", QualityTier: "standard", RequiredCapability: "scene_capable"})
+	if err == nil {
+		t.Fatal("synthetic provider must NOT serve scene routes when synthetic is disabled")
+	}
+}
+
+// TestSyntheticProviderServesSceneWhenEnabled keeps the dev/CI path pinned: with
+// the flag on, mock backs scene work exactly as before.
+func TestSyntheticProviderServesSceneWhenEnabled(t *testing.T) {
+	got, err := resolveWithSyntheticPolicy(t, []Route{mockRoute()}, map[string]bool{"mock": true}, syntheticMockIndex(), true,
 		ResolveRequest{OperationType: "text_to_image", QualityTier: "standard", RequiredCapability: "scene_capable"})
 	if err != nil {
-		t.Fatalf("synthetic provider must still serve scene routes: %v", err)
+		t.Fatalf("synthetic-enabled scene request should resolve mock: %v", err)
 	}
 	if got.ProviderID != "mock" {
 		t.Fatalf("expected mock scene route, got %+v", got)

@@ -67,14 +67,29 @@ cd playground && npm install && npm run dev    # http://localhost:5174
 It proxies `/api/*` to `http://localhost:8081` (the backend ships no CORS).
 Paste the tenant and admin tokens into the Connection panel.
 
-## Presigned URLs: `S3_PUBLIC_ENDPOINT`
+## Presigned URLs: two origins, two audiences
 
-Containers write to MinIO at `http://minio:9000` — a Docker network name no
-browser can resolve. `S3_PUBLIC_ENDPOINT` is the origin presigned READ URLs are
-signed for; compose defaults it to `http://localhost:9000`. SigV4 signs the Host
-header, so a presigned URL can never be rewritten after signing — it must be
-signed for the host the client will actually call. Leave it unset in a
-deployment where reads and writes share an origin.
+SigV4 signs the `Host` header, so a presigned URL can never be rewritten after
+signing — it must be signed for the host that will actually fetch it. There are
+two different fetchers, so there are two knobs:
+
+| Variable | Fetched by | Local value |
+|---|---|---|
+| `S3_PUBLIC_ENDPOINT` | the **caller** — browser, playground, world backend | `http://localhost:9000` (compose/dev.sh default) |
+| `S3_REFERENCE_ENDPOINT` | the **provider's servers** — fal downloads `image_urls` itself | the cloudflared tunnel URL, set automatically by `make start` |
+
+Containers write to MinIO at `http://minio:9000`, a Docker network name no
+browser can resolve, which is why delivery is signed for `localhost:9000`.
+
+**Delivery no longer depends on the tunnel.** `make start` points
+`S3_PUBLIC_ENDPOINT` at `localhost:9000` unconditionally and gives the tunnel URL
+to `S3_REFERENCE_ENDPOINT` only. A dead tunnel now breaks *new reference-
+conditioned generation* (loudly, at job level) instead of silhouetting every
+image already delivered to the frontend — which it did three times.
+
+`S3_REFERENCE_ENDPOINT` falls back to `S3_PUBLIC_ENDPOINT`, so a deployment whose
+single origin is publicly reachable (R2/CDN) sets neither. `DEV_TUNNEL=off` skips
+the tunnel entirely when you are not exercising a real provider.
 
 ## Providers
 
@@ -116,13 +131,19 @@ A presigned `localhost` URL fails with
 anchor assets attached, or the job fails closed with `missing_reference_assets`
 before any provider call.
 
-Expose MinIO through a tunnel and presign against it:
+`make start` does this for you: it opens the tunnel and exports it as
+`S3_REFERENCE_ENDPOINT`, leaving delivery on `localhost:9000`. To do it by hand
+against compose:
 
 ```bash
 cloudflared tunnel --url http://localhost:9000     # prints https://<name>.trycloudflare.com
-echo "S3_PUBLIC_ENDPOINT=https://<name>.trycloudflare.com" >> .env
+echo "S3_REFERENCE_ENDPOINT=https://<name>.trycloudflare.com" >> .env
 docker compose up -d image-platform-api image-platform-worker
 ```
+
+> Set `S3_REFERENCE_ENDPOINT`, **not** `S3_PUBLIC_ENDPOINT`. Pointing delivery at
+> the tunnel is what made every already-delivered image 404 each time the tunnel
+> rotated.
 
 > The compose bucket has anonymous download enabled, so while the tunnel is up
 > every object in it is world-readable to anyone holding a URL. Stop the tunnel
@@ -133,9 +154,9 @@ docker compose up -d image-platform-api image-platform-worker
 | Symptom | Cause |
 | --- | --- |
 | `422 provider_preference_unavailable` | request pinned a `provider_id` whose key is unset, so the provider is not registered |
-| `422 route_capability_mismatch` on a pack | mock is synthetic and `ALLOW_SYNTHETIC_PROVIDERS` is off |
+| `422 route_capability_mismatch` / `no_route` | mock is synthetic and `ALLOW_SYNTHETIC_PROVIDERS` is off, so it backs no route on any axis |
 | pack fails `missing_reference_assets` | the visual identity has no anchor assets and the route is reference-conditioned |
-| `fal: … file_download_error` | `S3_PUBLIC_ENDPOINT` is not reachable from the public internet |
+| `fal: … file_download_error` | `S3_REFERENCE_ENDPOINT` is unset or not reachable from the public internet |
 | broken image thumbnails in the playground | `S3_PUBLIC_ENDPOINT` not set, so URLs point at `minio:9000` |
 | `compile: signal: killed` during build | Docker ran out of memory building both binaries at once — build them serially |
 

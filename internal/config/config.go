@@ -62,6 +62,16 @@ type Config struct {
 	S3AccessKeyID     string
 	S3SecretAccessKey string
 	S3UsePathStyle    bool
+	// S3ReferenceEndpoint is the origin used ONLY when presigning reference
+	// images handed to an EXTERNAL provider (fal fetches `image_urls` from its
+	// own servers, so those URLs must be reachable from the public internet —
+	// a localhost URL fails with file_download_error). It is deliberately
+	// separate from S3PublicEndpoint because the two have different audiences:
+	// delivery URLs are fetched by the caller (a browser or the world backend,
+	// which locally means http://localhost:9000), provider reference URLs are
+	// fetched by the provider. Empty falls back to S3PublicEndpoint, then
+	// S3Endpoint, so single-origin deployments (R2/CDN) need not set it.
+	S3ReferenceEndpoint string
 	// S3PresignTTL bounds how long a minted presigned read URL stays valid
 	// (Phase 6B delivery). Default 15m.
 	S3PresignTTL time.Duration
@@ -85,8 +95,9 @@ type Config struct {
 	// default a deployment with only a scene-capable real provider fails
 	// character/pack requests closed (HTTP 422) instead of resolving synthetic
 	// placeholder grids. Local/dev/CI mock identity-pack tests must set
-	// ALLOW_SYNTHETIC_PROVIDERS=true explicitly. Mock still backs scene/draft
-	// routes regardless of this flag.
+	// ALLOW_SYNTHETIC_PROVIDERS=true explicitly. The policy covers EVERY axis:
+	// with it off, mock backs no route at all (scene/artifact included), so a
+	// deployment with real providers never silently serves placeholder grids.
 	AllowSyntheticProviders bool
 
 	// GovernanceEnforcement gates the media-eligibility verification at the
@@ -114,14 +125,15 @@ func Load() (*Config, error) {
 		RedisAddr:         getEnv("REDIS_ADDR", ""),
 		RedisPassword:     getEnv("REDIS_PASSWORD", ""),
 
-		S3Bucket:          getEnv("S3_BUCKET", ""),
-		S3Region:          getEnv("S3_REGION", ""),
-		S3Endpoint:        getEnv("S3_ENDPOINT", ""),
-		S3PublicEndpoint:  getEnv("S3_PUBLIC_ENDPOINT", ""),
-		S3AccessKeyID:     getEnv("S3_ACCESS_KEY_ID", ""),
-		S3SecretAccessKey: getEnv("S3_SECRET_ACCESS_KEY", ""),
-		S3UsePathStyle:    getEnvBool("S3_USE_PATH_STYLE", false),
-		S3PresignTTL:      getEnvDuration("S3_PRESIGN_TTL", 15*time.Minute),
+		S3Bucket:            getEnv("S3_BUCKET", ""),
+		S3Region:            getEnv("S3_REGION", ""),
+		S3Endpoint:          getEnv("S3_ENDPOINT", ""),
+		S3PublicEndpoint:    getEnv("S3_PUBLIC_ENDPOINT", ""),
+		S3ReferenceEndpoint: getEnv("S3_REFERENCE_ENDPOINT", ""),
+		S3AccessKeyID:       getEnv("S3_ACCESS_KEY_ID", ""),
+		S3SecretAccessKey:   getEnv("S3_SECRET_ACCESS_KEY", ""),
+		S3UsePathStyle:      getEnvBool("S3_USE_PATH_STYLE", false),
+		S3PresignTTL:        getEnvDuration("S3_PRESIGN_TTL", 15*time.Minute),
 
 		ImageProvider: Provider(getEnv("IMAGE_PROVIDER", string(ProviderMock))),
 		BFLAPIKey:     getEnv("BFL_API_KEY", ""),

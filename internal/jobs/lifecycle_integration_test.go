@@ -46,6 +46,10 @@ func (memStorage) Presign(_ context.Context, key string, _ time.Duration) (strin
 	return "https://test.local/" + key + "?sig=x", nil
 }
 
+func (memStorage) PresignForProvider(_ context.Context, key string, _ time.Duration) (string, error) {
+	return "https://test.local/" + key + "?sig=x", nil
+}
+
 // To run (requires Postgres + MinIO with migrations 0001–0003 applied):
 //   POSTGRES_DSN=... S3_* ... go test -tags=integration ./internal/jobs/... -run Lifecycle
 

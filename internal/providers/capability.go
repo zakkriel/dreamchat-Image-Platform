@@ -84,13 +84,23 @@ func IsIdentityAxisCapability(need Capability) bool {
 // ProviderSatisfiesRoute reports whether a provider may serve a route requiring
 // `need`, applying BOTH the §8.3 capability hierarchy AND the synthetic-provider
 // policy (PRD 03 §8): a SYNTHETIC provider (mock / fixture / test-only) does NOT
-// satisfy an identity-axis capability (identity/pack/production) unless
-// allowSynthetic is true. Scene/draft routes are unaffected by the synthetic
-// policy, so mock can still back scene work in any environment. This is what
-// makes character/pack generation fail closed in production-like environments
-// instead of silently producing synthetic placeholder grids.
+// satisfy ANY route capability unless allowSynthetic is true.
+//
+// The policy deliberately covers the scene/draft axis as well as the identity
+// axis. It originally exempted scene routes, on the theory that only recurring
+// characters need consistency — but the exemption meant an operator who set
+// ALLOW_SYNTHETIC_PROVIDERS=false to get real art still silently received mock
+// placeholder grids for every scene/artifact request, because mock's scene
+// routes stay eligible and outrank the real providers on priority (mock 100 vs
+// bfl/fal 200). The flag now means what its name says: no synthetic output from
+// this deployment, on any axis. A deployment with no real provider for an axis
+// fails closed (422 no_route) instead of quietly shipping placeholders, which is
+// the same fail-closed contract the identity axis already had.
+//
+// Local dev and CI opt in explicitly (compose and scripts/dev.sh default the
+// flag to true), so mock-backed development is unaffected.
 func ProviderSatisfiesRoute(caps ProviderCapabilities, need Capability, allowSynthetic bool) bool {
-	if caps.Synthetic && !allowSynthetic && IsIdentityAxisCapability(need) {
+	if caps.Synthetic && !allowSynthetic {
 		return false
 	}
 	return CapabilitiesSatisfy(caps.Capabilities, need)
