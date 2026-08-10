@@ -488,6 +488,9 @@ func (memStorage) Put(_ context.Context, key string, _ []byte, _ string) (string
 func (memStorage) Presign(_ context.Context, key string, _ time.Duration) (string, error) {
 	return "https://test.local/" + key, nil
 }
+func (memStorage) PresignForProvider(_ context.Context, key string, _ time.Duration) (string, error) {
+	return "https://provider.test.local/" + key, nil
+}
 
 func newWorker(pool *pgxpool.Pool) *jobs.Worker {
 	reg := providers.NewRegistry()
