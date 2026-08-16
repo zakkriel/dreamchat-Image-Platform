@@ -4,10 +4,11 @@ import "testing"
 
 func baseGenerationInput() GenerationHashInput {
 	return GenerationHashInput{
-		TenantID:    "tenant_a",
-		IdentityID:  "vi_hero",
-		DisplayName: "Captain Mira",
-		Intent:      "commit",
+		TenantID:       "tenant_a",
+		IdentityID:     "vi_hero",
+		DisplayName:    "Captain Mira",
+		StyleProfileID: "sty_captain",
+		Intent:         "commit",
 	}
 }
 
@@ -27,6 +28,7 @@ func TestGenerationRenderHashChangesPerField(t *testing.T) {
 		"tenant":         func(in *GenerationHashInput) { in.TenantID = "tenant_b" },
 		"identity":       func(in *GenerationHashInput) { in.IdentityID = "vi_other" },
 		"display name":   func(in *GenerationHashInput) { in.DisplayName = "Commander Mira" },
+		"style profile":  func(in *GenerationHashInput) { in.StyleProfileID = "sty_commander" },
 		"anchor":         func(in *GenerationHashInput) { in.AnchorAssetID = "va_anchor" },
 		"derive from":    func(in *GenerationHashInput) { in.DeriveFrom = "va_source" },
 		"intent":         func(in *GenerationHashInput) { in.Intent = "draft" },

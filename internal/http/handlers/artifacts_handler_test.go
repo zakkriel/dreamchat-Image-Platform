@@ -319,6 +319,12 @@ func TestArtifactGenerateHappyPath(t *testing.T) {
 	if creator.calls[0].IdempotencyKey != "" {
 		t.Fatalf("expected no idempotency key for no-header request, got %q", creator.calls[0].IdempotencyKey)
 	}
+	if got := creator.calls[0].InputPayload["style_positive_prompt"]; got != "cinematic key art" {
+		t.Fatalf("expected style_positive_prompt pinned from style, got %v", got)
+	}
+	if got := creator.calls[0].InputPayload["style_negative_prompt"]; got != "muddy details" {
+		t.Fatalf("expected style_negative_prompt pinned from style, got %v", got)
+	}
 }
 
 func TestArtifactGenerateNoPriceEntryReturns422(t *testing.T) {
@@ -425,15 +431,24 @@ func TestArtifactGenerateBodyTenantIDReturns400(t *testing.T) {
 	assertError(t, rec, http.StatusBadRequest, "invalid_request")
 }
 
-func TestArtifactGenerateUnknownStyleReturns422(t *testing.T) {
+func TestArtifactGenerateUnknownStyleStillEnqueuesWithEmptyStyleDirectives(t *testing.T) {
 	creator := newStubCreator()
 	stylesRepo := newStubStylesRepo() // empty
 	router := newArtifactsRouter(creator, stylesRepo, config.ProviderMock)
 	body := map[string]any{"world_id": "w1", "style_profile_id": "sty_ghost", "description": "x"}
 	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/artifacts/art_1/generate", tenantA, []string{"images:write"}, body, nil)
-	assertError(t, rec, http.StatusUnprocessableEntity, "invalid_style_profile")
-	if len(creator.calls) != 0 {
-		t.Fatalf("expected zero service calls on unknown style, got %d", len(creator.calls))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 for unknown style profile, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(creator.calls) != 1 {
+		t.Fatalf("expected one service call, got %d", len(creator.calls))
+	}
+	payload := creator.calls[0].InputPayload
+	if got := payload["style_positive_prompt"]; got != "" {
+		t.Fatalf("expected empty style_positive_prompt for missing style profile, got %v", got)
+	}
+	if got := payload["style_negative_prompt"]; got != "" {
+		t.Fatalf("expected empty style_negative_prompt for missing style profile, got %v", got)
 	}
 }
 
@@ -586,7 +601,14 @@ func (w *wrappedErr) Unwrap() error { return w.err }
 
 func seededStyles() *stubStylesRepo {
 	repo := newStubStylesRepo()
-	repo.seed(styles.StyleProfile{ID: "sty_ok", TenantID: tenantA, Status: "active"})
+	negative := "muddy details"
+	repo.seed(styles.StyleProfile{
+		ID:             "sty_ok",
+		TenantID:       tenantA,
+		PositivePrompt: "cinematic key art",
+		NegativePrompt: &negative,
+		Status:         "active",
+	})
 	return repo
 }
 

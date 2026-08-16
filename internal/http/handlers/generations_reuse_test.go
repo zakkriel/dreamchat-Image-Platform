@@ -29,10 +29,11 @@ func genTierResolver(tier string) *fakeResolver {
 // test request (draft intent, no anchors, no transform).
 func expectedGenHash() string {
 	return assets.GenerationRenderHash(assets.GenerationHashInput{
-		TenantID:    tenantA,
-		IdentityID:  testIdentityID,
-		DisplayName: testIdentityDisplay,
-		Intent:      "draft",
+		TenantID:       tenantA,
+		IdentityID:     testIdentityID,
+		DisplayName:    testIdentityDisplay,
+		StyleProfileID: "sty_ok",
+		Intent:         "draft",
 	})
 }
 
@@ -65,7 +66,7 @@ func TestGenerationsStampsRenderHashAndQualityTier(t *testing.T) {
 // newReuseGenerationsRouter wires a generations handler with the exact-reuse
 // lookup, mirroring the production mount (router.go mountGenerations).
 func newReuseGenerationsRouter(creator *stubCreator, resolver *fakeResolver, reuse GenerationReuseLookup) chi.Router {
-	h := NewGenerationsHandler(creator, resolver, seededGenIDRepo())
+	h := NewGenerationsHandler(creator, resolver, seededGenIDRepo(), seededStyles())
 	h.Verifier = alwaysOKVerifier{}
 	h.Mode = governance.ModeEnforce
 	h.Audit = noopAuditSink{}

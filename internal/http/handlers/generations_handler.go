@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/zakkriel/drchat-image-platform/internal/assets"
@@ -18,6 +19,7 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/identities"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
 	"github.com/zakkriel/drchat-image-platform/internal/providers/routing"
+	"github.com/zakkriel/drchat-image-platform/internal/styles"
 	"github.com/zakkriel/drchat-image-platform/internal/telemetry"
 )
 
@@ -61,6 +63,7 @@ type GenerationsHandler struct {
 	Service    jobs.Creator
 	Resolver   RouteResolver
 	Identities identities.Repository
+	Styles     styles.Repository
 
 	// Verifier is the governance.Verifier applied at the chokepoint (Task 8).
 	// When nil the gate is skipped (log_only no-op); wired in production by router.go.
@@ -78,11 +81,12 @@ type GenerationsHandler struct {
 }
 
 // NewGenerationsHandler wires a GenerationsHandler.
-func NewGenerationsHandler(svc jobs.Creator, resolver RouteResolver, idRepo identities.Repository) *GenerationsHandler {
+func NewGenerationsHandler(svc jobs.Creator, resolver RouteResolver, idRepo identities.Repository, stylesRepo styles.Repository) *GenerationsHandler {
 	return &GenerationsHandler{
 		Service:    svc,
 		Resolver:   resolver,
 		Identities: idRepo,
+		Styles:     stylesRepo,
 	}
 }
 
@@ -290,6 +294,23 @@ func (h *GenerationsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	identityPrompt := identity.DisplayName
+	// A generation prompt must describe what to draw. Use the identity's
+	// canonical appearance when present; it is the world's visual source of
+	// truth. DisplayName is only the fallback for older identities that predate
+	// canonical traits.
+	if appearance, ok := identity.CanonicalVisualTraits["appearance"].(string); ok {
+		if trimmed := strings.TrimSpace(appearance); trimmed != "" {
+			identityPrompt = trimmed
+		}
+	}
+
+	stylePositivePrompt, styleNegativePrompt, serr := loadStylePrompts(r.Context(), h.Styles, tenantID, identity.StyleProfileID)
+	if serr != nil {
+		httperr.Write(w, r, http.StatusInternalServerError, httperr.CodeInternalError, "could not load style profile")
+		return
+	}
+
 	// Combined-contract exact reuse (retrieval-before-generation, ADR-009).
 	// The deterministic generation render hash is computed from the request's
 	// render-determining fields (identity, display name, anchors, derive_from,
@@ -305,14 +326,15 @@ func (h *GenerationsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	renderHash := assets.GenerationRenderHash(assets.GenerationHashInput{
-		TenantID:      tenantID,
-		IdentityID:    req.Subject.IdentityId,
-		DisplayName:   identity.DisplayName,
-		AnchorAssetID: deref(req.Subject.AnchorAssetId),
-		DeriveFrom:    deref(req.Subject.DeriveFrom),
-		Intent:        string(req.Render.Intent),
-		MaxMegapixels: maxMegapixels,
-		TransformJSON: transformJSON,
+		TenantID:       tenantID,
+		IdentityID:     req.Subject.IdentityId,
+		DisplayName:    identityPrompt,
+		StyleProfileID: identity.StyleProfileID,
+		AnchorAssetID:  deref(req.Subject.AnchorAssetId),
+		DeriveFrom:     deref(req.Subject.DeriveFrom),
+		Intent:         string(req.Render.Intent),
+		MaxMegapixels:  maxMegapixels,
+		TransformJSON:  transformJSON,
 	})
 	if h.Reuse != nil {
 		existing, rerr := h.Reuse.FindReadyGenerationByPromptHash(r.Context(), tenantID, renderHash)
@@ -386,9 +408,12 @@ func (h *GenerationsHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	params.MaxMegapixels = &maxMegapixels
 
-	// Seed payload["description"] from the fetched identity (identity-derived prompt).
-	// This mirrors the pack flow's identity.DisplayName → payload["display_name"] path.
-	payload["description"] = identity.DisplayName
+	// Seed payload["description"] from the fetched identity's canonical
+	// appearance (or DisplayName when absent) so the worker prompts with visual
+	// traits, not an identifier.
+	payload["description"] = identityPrompt
+	payload["style_positive_prompt"] = stylePositivePrompt
+	payload["style_negative_prompt"] = styleNegativePrompt
 	// Stamp the deterministic render hash so the worker persists it as the
 	// produced asset's prompt_hash (the reuse cache key) and the effective
 	// quality tier from the resolved route (the intent-driven path resolves

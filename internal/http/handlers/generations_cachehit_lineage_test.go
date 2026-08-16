@@ -26,7 +26,7 @@ func genIDRepoWithWorld(worldID string) *stubIdentitiesRepo {
 }
 
 func newGenerationsHandlerWithReuse(creator *stubCreator, idRepo *stubIdentitiesRepo, reuse GenerationReuseLookup) chi.Router {
-	h := NewGenerationsHandler(creator, okResolver(), idRepo)
+	h := NewGenerationsHandler(creator, okResolver(), idRepo, seededStyles())
 	h.Verifier = alwaysOKVerifier{}
 	h.Mode = governance.ModeEnforce
 	h.Audit = noopAuditSink{}

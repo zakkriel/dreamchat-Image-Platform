@@ -122,11 +122,8 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 
 	previewFirst := req.DeliveryMode != nil && *req.DeliveryMode == apigen.PreviewFirst
 
-	if _, err := h.Styles.GetByIDForTenant(r.Context(), req.StyleProfileId, principal.TenantID); err != nil {
-		if errors.Is(err, styles.ErrNotFound) {
-			httperr.Write(w, r, http.StatusUnprocessableEntity, httperr.CodeInvalidStyleProfile, "style profile not found for tenant")
-			return
-		}
+	stylePositivePrompt, styleNegativePrompt, err := loadStylePrompts(r.Context(), h.Styles, principal.TenantID, req.StyleProfileId)
+	if err != nil {
 		httperr.Write(w, r, http.StatusInternalServerError, httperr.CodeInternalError, "could not validate style profile")
 		return
 	}
@@ -179,13 +176,15 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	payload := map[string]any{
-		"artifact_id":      artifactID,
-		"world_id":         req.WorldId,
-		"style_profile_id": req.StyleProfileId,
-		"description":      req.Description,
-		"fallback_policy":  fallback,
-		"quality_tier":     qualityTier,
-		"prompt_hash":      renderHash,
+		"artifact_id":           artifactID,
+		"world_id":              req.WorldId,
+		"style_profile_id":      req.StyleProfileId,
+		"description":           req.Description,
+		"fallback_policy":       fallback,
+		"quality_tier":          qualityTier,
+		"prompt_hash":           renderHash,
+		"style_positive_prompt": stylePositivePrompt,
+		"style_negative_prompt": styleNegativePrompt,
 	}
 	// Persist the requested provider preference for observability (what the caller
 	// asked for, alongside the resolved provider applyResolvedRoute stamps). Only
@@ -428,6 +427,27 @@ func decodeFromRaw(w http.ResponseWriter, r *http.Request, raw []byte, v any) bo
 		return false
 	}
 	return true
+}
+
+func loadStylePrompts(ctx context.Context, repo styles.Repository, tenantID, styleProfileID string) (string, string, error) {
+	if repo == nil || strings.TrimSpace(styleProfileID) == "" {
+		return "", "", nil
+	}
+
+	profile, err := repo.GetByIDForTenant(ctx, styleProfileID, tenantID)
+	if err != nil {
+		if errors.Is(err, styles.ErrNotFound) {
+			return "", "", nil
+		}
+		return "", "", err
+	}
+
+	positive := strings.TrimSpace(profile.PositivePrompt)
+	negative := ""
+	if profile.NegativePrompt != nil {
+		negative = strings.TrimSpace(*profile.NegativePrompt)
+	}
+	return positive, negative, nil
 }
 
 func validLatencyTier(l apigen.LatencyTier) bool {

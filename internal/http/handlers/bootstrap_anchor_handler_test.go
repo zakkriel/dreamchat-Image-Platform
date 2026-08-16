@@ -11,7 +11,7 @@ import (
 )
 
 func newBootstrapAnchorRouter(creator jobs.Creator, idents identities.Repository, resolver RouteResolver, reuse ArtifactReuseLookup) chi.Router {
-	h := NewCharacterBootstrapAnchorHandler(creator, idents, resolver, "mock", reuse)
+	h := NewCharacterBootstrapAnchorHandler(creator, idents, seededStyles(), resolver, "mock", reuse)
 	r := chi.NewRouter()
 	r.Post("/v1/characters/{character_id}/visual-identity/bootstrap-anchor", h.BootstrapCharacterAnchor)
 	return r
@@ -75,6 +75,12 @@ func TestBootstrapCharacterAnchorFreshIdentityEnqueuesWithAnchorPayload(t *testi
 	payload := creator.calls[0].InputPayload
 	if payload["anchor_for_identity_id"] != "vi_alice" {
 		t.Fatalf("anchor_for_identity_id=%v, want vi_alice", payload["anchor_for_identity_id"])
+	}
+	if got := payload["style_positive_prompt"]; got != "cinematic key art" {
+		t.Fatalf("expected style_positive_prompt pinned, got %v", got)
+	}
+	if got := payload["style_negative_prompt"]; got != "muddy details" {
+		t.Fatalf("expected style_negative_prompt pinned, got %v", got)
 	}
 }
 

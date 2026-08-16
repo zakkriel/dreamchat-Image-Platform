@@ -560,7 +560,9 @@ func (w *Worker) process(ctx context.Context, jobID, expectedReservationID strin
 	if job.WorldID != nil {
 		worldID = *job.WorldID
 	}
-	description, _ := job.InputPayload["description"].(string)
+	description := payloadString(job.InputPayload, "description")
+	prompt := composePromptWithStyle(description, payloadString(job.InputPayload, "style_positive_prompt"))
+	negativePrompt := payloadString(job.InputPayload, "style_negative_prompt")
 
 	// Phase 7C-4: walk the resolved chain (primary first, then each persisted
 	// same-price fallback) until one route succeeds. Each route records its own
@@ -568,12 +570,13 @@ func (w *Worker) process(ctx context.Context, jobID, expectedReservationID strin
 	// route fails, do the terminal job-fail/release here on the final asynq
 	// attempt, then return so asynq retries the whole chain.
 	out, gerr := w.generateWithFallback(ctx, job, resolved, providers.ProviderGenerateRequest{
-		JobID:         job.ID,
-		Operation:     providers.OperationTextToImage,
-		Prompt:        description,
-		Width:         renderEdgeForMax(job, deliveryRenderEdge),
-		Height:        renderEdgeForMax(job, deliveryRenderEdge),
-		ReferenceURLs: refs,
+		JobID:          job.ID,
+		Operation:      providers.OperationTextToImage,
+		Prompt:         prompt,
+		NegativePrompt: negativePrompt,
+		Width:          renderEdgeForMax(job, deliveryRenderEdge),
+		Height:         renderEdgeForMax(job, deliveryRenderEdge),
+		ReferenceURLs:  refs,
 		Metadata: map[string]any{
 			"world_id": worldID,
 			"job_type": job.JobType,
@@ -856,7 +859,9 @@ func (w *Worker) processPreviewFirst(ctx context.Context, job Job, resolved reso
 	if job.WorldID != nil {
 		worldID = *job.WorldID
 	}
-	description, _ := job.InputPayload["description"].(string)
+	description := payloadString(job.InputPayload, "description")
+	prompt := composePromptWithStyle(description, payloadString(job.InputPayload, "style_positive_prompt"))
+	negativePrompt := payloadString(job.InputPayload, "style_negative_prompt")
 
 	// Reference-conditioned two-phase generation: gather the identity's
 	// references once; both the preview and the final walk condition on the
@@ -878,12 +883,13 @@ func (w *Worker) processPreviewFirst(ctx context.Context, job Job, resolved reso
 		// Phase 7C-4: the preview phase walks the chain independently — its
 		// provenance reflects whichever route produced the preview bytes.
 		out, gerr := w.generateWithFallback(ctx, job, resolved, providers.ProviderGenerateRequest{
-			JobID:         job.ID,
-			Operation:     providers.OperationTextToImage,
-			Prompt:        description,
-			Width:         renderEdgeForMax(job, previewRenderEdge),
-			Height:        renderEdgeForMax(job, previewRenderEdge),
-			ReferenceURLs: refs,
+			JobID:          job.ID,
+			Operation:      providers.OperationTextToImage,
+			Prompt:         prompt,
+			NegativePrompt: negativePrompt,
+			Width:          renderEdgeForMax(job, previewRenderEdge),
+			Height:         renderEdgeForMax(job, previewRenderEdge),
+			ReferenceURLs:  refs,
 			Metadata: map[string]any{
 				"world_id": worldID,
 				"job_type": job.JobType,
@@ -1005,12 +1011,13 @@ func (w *Worker) processPreviewFirst(ctx context.Context, job Job, resolved reso
 	// phase — its winner (and thus the final asset's provenance + the success cost
 	// event) may differ from the preview phase's winner.
 	out, gerr := w.generateWithFallback(ctx, job, resolved, providers.ProviderGenerateRequest{
-		JobID:         job.ID,
-		Operation:     providers.OperationTextToImage,
-		Prompt:        description,
-		Width:         renderEdgeForMax(job, deliveryRenderEdge),
-		Height:        renderEdgeForMax(job, deliveryRenderEdge),
-		ReferenceURLs: refs,
+		JobID:          job.ID,
+		Operation:      providers.OperationTextToImage,
+		Prompt:         prompt,
+		NegativePrompt: negativePrompt,
+		Width:          renderEdgeForMax(job, deliveryRenderEdge),
+		Height:         renderEdgeForMax(job, deliveryRenderEdge),
+		ReferenceURLs:  refs,
 		Metadata: map[string]any{
 			"world_id": worldID,
 			"job_type": job.JobType,
@@ -1784,6 +1791,35 @@ func strPtr(s string) *string {
 	}
 	out := s
 	return &out
+}
+
+// composePromptWithStyle joins what the caller asked to see with how this tenant's images are meant
+// to look.
+//
+// The style profile was required on every request, folded into the reuse key and stamped on the
+// asset as provenance — and never once reached a provider. So `dreamchat-default` carried
+// "painterly, soft rim light, cinematic" while three worlds came back as ink-and-wash rooms, an oil
+// portrait and a stock photograph of a ticket stack covered in garbled text. That last one is the
+// clearest evidence: the same profile's negative prompt says "text, watermark".
+//
+// Every provider request in this file goes through here, deliberately. The single-image path, the
+// preview phase and the final phase each built their own request, and a style applied to two of
+// three would produce a preview that does not look like the image it previews.
+//
+// Blank-separated rather than comma-joined: a description is a sentence and a style is a list of
+// directives, and running them together with a comma reads as one longer sentence to a model that
+// weights position.
+func composePromptWithStyle(description, stylePositivePrompt string) string {
+	description = strings.TrimSpace(description)
+	stylePositivePrompt = strings.TrimSpace(stylePositivePrompt)
+	switch {
+	case description == "":
+		return stylePositivePrompt
+	case stylePositivePrompt == "":
+		return description
+	default:
+		return description + "\n\n" + stylePositivePrompt
+	}
 }
 
 // payloadString reads an optional string out of a job input payload, returning

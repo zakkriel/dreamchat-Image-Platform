@@ -67,7 +67,7 @@ func (f *fakeAuditSink) lastEvent() (audit.Event, bool) {
 // newGovernedGenerationsRouter wires a GenerationsHandler with the supplied
 // governance verifier, mode, and audit sink — used by governance gate unit tests.
 func newGovernedGenerationsRouter(creator jobs.Creator, idRepo identities.Repository, resolver RouteResolver, verifier governance.Verifier, mode governance.Mode, sink AuditSink) chi.Router {
-	h := NewGenerationsHandler(creator, resolver, idRepo)
+	h := NewGenerationsHandler(creator, resolver, idRepo, seededStyles())
 	h.Verifier = verifier
 	h.Mode = mode
 	h.Audit = sink
@@ -86,9 +86,10 @@ const (
 func seededGenIDRepo() *stubIdentitiesRepo {
 	repo := newStubIdentitiesRepo()
 	repo.byOwner[identityKey{tenantA, "w1", "character", "char_alice"}] = identities.VisualIdentity{
-		ID:          testIdentityID,
-		TenantID:    tenantA,
-		DisplayName: testIdentityDisplay,
+		ID:             testIdentityID,
+		TenantID:       tenantA,
+		DisplayName:    testIdentityDisplay,
+		StyleProfileID: "sty_ok",
 	}
 	return repo
 }
@@ -135,7 +136,7 @@ func (generationReuseHit) FindReadyGenerationByPromptHash(context.Context, strin
 }
 
 func newGenerationsRouter(creator jobs.Creator, idRepo identities.Repository, resolver RouteResolver) chi.Router {
-	h := NewGenerationsHandler(creator, resolver, idRepo)
+	h := NewGenerationsHandler(creator, resolver, idRepo, seededStyles())
 	h.Verifier = alwaysOKVerifier{}
 	h.Mode = governance.ModeEnforce
 	h.Audit = noopAuditSink{}
@@ -173,7 +174,7 @@ func TestGenerationsValidMinimal202(t *testing.T) {
 
 func TestGenerationsCacheHitPersistsIdentityID(t *testing.T) {
 	creator := newStubCreator()
-	handler := NewGenerationsHandler(creator, okResolver(), seededGenIDRepo())
+	handler := NewGenerationsHandler(creator, okResolver(), seededGenIDRepo(), seededStyles())
 	handler.Verifier = alwaysOKVerifier{}
 	handler.Mode = governance.ModeEnforce
 	handler.Audit = noopAuditSink{}
@@ -363,10 +364,15 @@ func TestGenerationsIdentityNotFound422(t *testing.T) {
 	}
 }
 
-// payload["description"] == identity.DisplayName (identity-derived prompt).
-func TestGenerationsPayloadDescriptionEqualsIdentityDisplayName(t *testing.T) {
+// The generation prompt uses the identity's canonical appearance when present,
+// not its display name label.
+func TestGenerationsPayloadDescriptionUsesCanonicalAppearance(t *testing.T) {
 	creator := newStubCreator()
 	idRepo := seededGenIDRepo()
+	identity := idRepo.byOwner[identityKey{tenantA, "w1", "character", "char_alice"}]
+	identity.DisplayName = "emery_voss"
+	identity.CanonicalVisualTraits = map[string]any{"appearance": "  gaunt explorer with scarred knuckles  "}
+	idRepo.byOwner[identityKey{tenantA, "w1", "character", "char_alice"}] = identity
 	router := newGenerationsRouter(creator, idRepo, okResolver())
 
 	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/generations", tenantA,
@@ -378,8 +384,52 @@ func TestGenerationsPayloadDescriptionEqualsIdentityDisplayName(t *testing.T) {
 		t.Fatalf("expected exactly 1 service call, got %d", len(creator.calls))
 	}
 	desc := creator.calls[0].InputPayload["description"]
-	if desc != testIdentityDisplay {
-		t.Fatalf("expected description=%q (identity.DisplayName), got %v", testIdentityDisplay, desc)
+	if desc != "gaunt explorer with scarred knuckles" {
+		t.Fatalf("expected description from canonical appearance, got %v", desc)
+	}
+	if desc == "emery_voss" {
+		t.Fatal("description must not fall back to display name when appearance is present")
+	}
+}
+
+func TestGenerationsPayloadPinsStylePrompts(t *testing.T) {
+	creator := newStubCreator()
+	idRepo := seededGenIDRepo()
+	router := newGenerationsRouter(creator, idRepo, okResolver())
+
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/generations", tenantA,
+		[]string{"images:write"}, minimalGenBody(testIdentityID, "idem-style-009"), nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	payload := creator.calls[0].InputPayload
+	if got := payload["style_positive_prompt"]; got != "cinematic key art" {
+		t.Fatalf("expected style_positive_prompt pinned from style profile, got %v", got)
+	}
+	if got := payload["style_negative_prompt"]; got != "muddy details" {
+		t.Fatalf("expected style_negative_prompt pinned from style profile, got %v", got)
+	}
+}
+
+func TestGenerationsMissingStyleProfileStillPinsEmptyStyleDirectives(t *testing.T) {
+	creator := newStubCreator()
+	idRepo := seededGenIDRepo()
+	identity := idRepo.byOwner[identityKey{tenantA, "w1", "character", "char_alice"}]
+	identity.StyleProfileID = "sty_missing"
+	idRepo.byOwner[identityKey{tenantA, "w1", "character", "char_alice"}] = identity
+	router := newGenerationsRouter(creator, idRepo, okResolver())
+
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/generations", tenantA,
+		[]string{"images:write"}, minimalGenBody(testIdentityID, "idem-style-missing"), nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	payload := creator.calls[0].InputPayload
+	if got := payload["style_positive_prompt"]; got != "" {
+		t.Fatalf("expected empty style_positive_prompt for missing style profile, got %v", got)
+	}
+	if got := payload["style_negative_prompt"]; got != "" {
+		t.Fatalf("expected empty style_negative_prompt for missing style profile, got %v", got)
 	}
 }
 

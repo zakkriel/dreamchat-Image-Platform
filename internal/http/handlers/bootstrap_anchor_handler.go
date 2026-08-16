@@ -15,6 +15,7 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/identities"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
 	"github.com/zakkriel/drchat-image-platform/internal/providers/routing"
+	"github.com/zakkriel/drchat-image-platform/internal/styles"
 )
 
 // CharacterBootstrapAnchorHandler generates and attaches one anchor image for a
@@ -23,6 +24,7 @@ import (
 type CharacterBootstrapAnchorHandler struct {
 	Service  jobs.Creator
 	Identity identities.Repository
+	Styles   styles.Repository
 	Resolver RouteResolver
 	// ProviderPreference is the process-level IMAGE_PROVIDER tie-break preference.
 	ProviderPreference string
@@ -33,10 +35,11 @@ type CharacterBootstrapAnchorHandler struct {
 	Gate GovernanceGate
 }
 
-func NewCharacterBootstrapAnchorHandler(service jobs.Creator, identity identities.Repository, resolver RouteResolver, providerPreference string, reuse ArtifactReuseLookup) *CharacterBootstrapAnchorHandler {
+func NewCharacterBootstrapAnchorHandler(service jobs.Creator, identity identities.Repository, stylesRepo styles.Repository, resolver RouteResolver, providerPreference string, reuse ArtifactReuseLookup) *CharacterBootstrapAnchorHandler {
 	return &CharacterBootstrapAnchorHandler{
 		Service:            service,
 		Identity:           identity,
+		Styles:             stylesRepo,
 		Resolver:           resolver,
 		ProviderPreference: providerPreference,
 		Reuse:              reuse,
@@ -148,6 +151,12 @@ func (h *CharacterBootstrapAnchorHandler) BootstrapCharacterAnchor(w http.Respon
 			"description is required: the identity carries no canonical appearance to fall back on")
 		return
 	}
+	stylePositivePrompt, styleNegativePrompt, serr := loadStylePrompts(r.Context(), h.Styles, principal.TenantID, identity.StyleProfileID)
+	if serr != nil {
+		httperr.Write(w, r, http.StatusInternalServerError, httperr.CodeInternalError, "could not validate style profile")
+		return
+	}
+
 	renderHash := assets.ArtifactRenderHash(assets.ArtifactHashInput{
 		TenantID:       principal.TenantID,
 		WorldID:        req.WorldID,
@@ -167,6 +176,8 @@ func (h *CharacterBootstrapAnchorHandler) BootstrapCharacterAnchor(w http.Respon
 		"world_id":                req.WorldID,
 		"style_profile_id":        identity.StyleProfileID,
 		"description":             description,
+		"style_positive_prompt":   stylePositivePrompt,
+		"style_negative_prompt":   styleNegativePrompt,
 		"fallback_policy":         fallback,
 		"quality_tier":            qualityTier,
 		"prompt_hash":             renderHash,

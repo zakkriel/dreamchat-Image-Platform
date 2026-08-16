@@ -172,7 +172,7 @@ func TestGenerationsGovernanceEnforceBlockLeavesNoReservation(t *testing.T) {
 	idRepo := identities.NewRepository(pool)
 	resolver := itResolver(pool)
 
-	h := handlers.NewGenerationsHandler(svc, resolver, idRepo)
+	h := handlers.NewGenerationsHandler(svc, resolver, idRepo, nil)
 	h.Verifier = blockVerifier{}
 	h.Mode = governance.ModeEnforce
 	h.Audit = discardAuditSink{}
@@ -256,7 +256,7 @@ func TestGenerationsGovernancePromptNeverReachesGate(t *testing.T) {
 	idRepo := identities.NewRepository(pool)
 	resolver := itResolver(pool)
 
-	h := handlers.NewGenerationsHandler(svc, resolver, idRepo)
+	h := handlers.NewGenerationsHandler(svc, resolver, idRepo, nil)
 	h.Verifier = spy
 	h.Mode = governance.ModeEnforce
 	h.Audit = discardAuditSink{}

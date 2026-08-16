@@ -226,6 +226,7 @@ func mountIdentities(v1 chi.Router, deps Deps) {
 			bootstrap := handlers.NewCharacterBootstrapAnchorHandler(
 				deps.JobsService,
 				deps.IdentitiesRepo,
+				deps.StylesRepo,
 				deps.Resolver,
 				string(deps.Config.ImageProvider),
 				deps.AssetsRepo,
@@ -322,7 +323,7 @@ func mountGenerations(v1 chi.Router, deps Deps) {
 	if deps.JobsService == nil || deps.Resolver == nil || deps.IdentitiesRepo == nil {
 		return
 	}
-	h := handlers.NewGenerationsHandler(deps.JobsService, deps.Resolver, deps.IdentitiesRepo)
+	h := handlers.NewGenerationsHandler(deps.JobsService, deps.Resolver, deps.IdentitiesRepo, deps.StylesRepo)
 
 	// Wire the governance gate when a verifier is configured. The mode defaults
 	// to log_only (safe open) when zero-valued. The audit sink is wired when a
