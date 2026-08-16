@@ -1836,7 +1836,7 @@ components:
             high-res object, unassigned or already bound to this identity.
     BootstrapCharacterAnchorRequest:
       type: object
-      required: [world_id]
+      required: [world_id, description]
       properties:
         governance:
           $ref: '#/components/schemas/GovernanceEnvelope'
@@ -1844,6 +1844,20 @@ components:
             Optional media-eligibility envelope (same verification flow as
             other generation endpoints).
         world_id: { type: string }
+        description:
+          type: string
+          minLength: 1
+          description: |
+            What the character LOOKS LIKE, in prose. This is the prompt the
+            prompt-only provider renders, and the anchor it produces conditions
+            every later portrait — so a weak description here degrades the
+            character's appearance permanently, not just once.
+
+            It is required for a reason worth stating: an earlier revision
+            omitted it and fell back to the identity's display_name, so the
+            provider was handed a bare identifier like `emery_voss` and returned
+            art with no relationship to the character at all.
+        world_id_note: {}
         provider_id:
           type: string
           description: |
