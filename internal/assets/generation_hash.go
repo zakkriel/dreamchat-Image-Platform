@@ -32,20 +32,21 @@ import (
 )
 
 // generationHashVersion namespaces the hash so the input set can evolve
-// MaxMegapixels became behavioral in Wave 3, so the version is bumped from
-// the pre-enforcement hash definition.
-const generationHashVersion = "2"
+// MaxMegapixels became behavioral in Wave 3 and style_profile_id now affects
+// the worker prompt, so the version is bumped from prior definitions.
+const generationHashVersion = "3"
 
 // GenerationHashInput is the well-typed set of combined-contract fields that
 // determine a generation render. TenantID comes from the principal; the rest
-// mirror the validated request plus the fetched identity's display name.
+// mirror the validated request plus the fetched identity prompt source.
 type GenerationHashInput struct {
-	TenantID      string
-	IdentityID    string
-	DisplayName   string
-	AnchorAssetID string
-	DeriveFrom    string
-	Intent        string
+	TenantID       string
+	IdentityID     string
+	DisplayName    string
+	StyleProfileID string
+	AnchorAssetID  string
+	DeriveFrom     string
+	Intent         string
 	// MaxMegapixels is the effective validated pixel budget persisted by the
 	// handler. It is serialized with lossless round-trip formatting before hashing.
 	MaxMegapixels float64
@@ -54,7 +55,7 @@ type GenerationHashInput struct {
 
 // GenerationRenderHash returns the deterministic hex render hash for the
 // input. The same inputs always produce the same hash; any material change
-// (different identity, display name, anchor, derive source, intent, pixel
+// (different identity, prompt source, style profile, anchor, derive source, intent, pixel
 // budget, or transform) produces a different hash.
 func GenerationRenderHash(in GenerationHashInput) string {
 	var b strings.Builder
@@ -62,6 +63,7 @@ func GenerationRenderHash(in GenerationHashInput) string {
 	writeHashField(&b, "tenant_id", in.TenantID)
 	writeHashField(&b, "identity_id", in.IdentityID)
 	writeHashField(&b, "display_name", NormalizeArtifactDescription(in.DisplayName))
+	writeHashField(&b, "style_profile_id", in.StyleProfileID)
 	writeHashField(&b, "anchor_asset_id", in.AnchorAssetID)
 	writeHashField(&b, "derive_from", in.DeriveFrom)
 	writeHashField(&b, "intent", in.Intent)

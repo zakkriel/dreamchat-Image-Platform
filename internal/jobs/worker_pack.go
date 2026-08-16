@@ -362,18 +362,20 @@ func packAggregateCostEventID(job Job) string {
 func (w *Worker) generatePackItem(ctx context.Context, job Job, plan packPlan, resolved resolvedRoute, variantKey string, index int, referenceURLs []string) (string, error) {
 	// 5A keeps the prompt trivial: the variant_key is an opaque role string
 	// appended to the identity's name. Variant semantics are 5B.
-	prompt := plan.displayName + " — " + variantKey
+	prompt := composePromptWithStyle(plan.displayName+" — "+variantKey, payloadString(job.InputPayload, "style_positive_prompt"))
+	negativePrompt := payloadString(job.InputPayload, "style_negative_prompt")
 
 	// Pack cells use the same persisted primary + same-price fallback chain as
 	// single-image generation. Failed routes are recorded as provider attempts,
 	// and content-policy rejection stops the walk in generateWithFallback.
 	out, providerErr := w.generateWithFallback(ctx, job, resolved, providers.ProviderGenerateRequest{
-		JobID:         job.ID,
-		Operation:     providers.OperationTextToImage,
-		Prompt:        prompt,
-		Width:         renderEdgeForMax(job, deliveryRenderEdge),
-		Height:        renderEdgeForMax(job, deliveryRenderEdge),
-		ReferenceURLs: referenceURLs,
+		JobID:          job.ID,
+		Operation:      providers.OperationTextToImage,
+		Prompt:         prompt,
+		NegativePrompt: negativePrompt,
+		Width:          renderEdgeForMax(job, deliveryRenderEdge),
+		Height:         renderEdgeForMax(job, deliveryRenderEdge),
+		ReferenceURLs:  referenceURLs,
 		Metadata: map[string]any{
 			"world_id":    plan.worldID,
 			"job_type":    job.JobType,

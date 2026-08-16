@@ -690,6 +690,49 @@ func (errorProvider) Capabilities() providers.ProviderCapabilities {
 	return providers.ProviderCapabilities{ProviderID: "error", ModelName: "error-v1"}
 }
 
+type capturingProvider struct {
+	mu       sync.Mutex
+	requests []providers.ProviderGenerateRequest
+}
+
+func (p *capturingProvider) Generate(_ context.Context, req providers.ProviderGenerateRequest) (providers.ProviderGenerateResult, error) {
+	p.mu.Lock()
+	p.requests = append(p.requests, req)
+	p.mu.Unlock()
+	return providers.ProviderGenerateResult{
+		Images:     []providers.ProviderImage{{Bytes: tinyPNGBytes(), ContentType: "image/png"}},
+		PromptHash: "hash",
+		Seed:       "seed",
+	}, nil
+}
+
+func (p *capturingProvider) PollStatus(context.Context, string) (providers.ProviderJobStatus, error) {
+	return providers.ProviderJobStatus{}, providers.ErrNotApplicable
+}
+
+func (p *capturingProvider) Upscale(context.Context, providers.ProviderUpscaleRequest) (providers.ProviderGenerateResult, error) {
+	return providers.ProviderGenerateResult{}, providers.ErrNotImplemented
+}
+
+func (p *capturingProvider) Capabilities() providers.ProviderCapabilities {
+	return providers.ProviderCapabilities{ProviderID: "mock", ModelName: "mock-v1"}
+}
+
+func (p *capturingProvider) callCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.requests)
+}
+
+func (p *capturingProvider) firstRequest() providers.ProviderGenerateRequest {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.requests) == 0 {
+		return providers.ProviderGenerateRequest{}
+	}
+	return p.requests[0]
+}
+
 func TestWorkerProcessHappyPath(t *testing.T) {
 	jobsRepo := newFakeJobsRepo()
 	assetsRepo := &fakeAssetsRepo{}
@@ -747,6 +790,79 @@ func TestWorkerProcessHappyPath(t *testing.T) {
 	}
 	if len(jobsRepo.costEvents) != 1 || jobsRepo.costEvents[0].Status != "completed" {
 		t.Fatalf("expected one completed cost event, got %+v", jobsRepo.costEvents)
+	}
+}
+
+func TestWorkerProcessThreadsStylePromptsIntoProviderRequest(t *testing.T) {
+	jobsRepo := newFakeJobsRepo()
+	assetsRepo := &fakeAssetsRepo{}
+	jobsRepo.assets = assetsRepo
+	storage := &fakeStorage{}
+	provider := &capturingProvider{}
+
+	worldID := "w1"
+	tokenID := "tok_test"
+	_, _ = jobsRepo.Insert(context.Background(), InsertParams{
+		ID:                 "job_style_prompt",
+		TenantID:           "tenant_a",
+		WorldID:            &worldID,
+		JobType:            "artifact",
+		RequestedByTokenID: &tokenID,
+		InputPayload: map[string]any{
+			"world_id":              "w1",
+			"description":           "bronze key",
+			"style_positive_prompt": "cinematic key art",
+			"style_negative_prompt": "muddy details",
+		},
+	})
+
+	w := &Worker{Jobs: jobsRepo, Assets: assetsRepo, Storage: storage, Providers: testRegistry(provider)}
+	if err := w.Process(context.Background(), "job_style_prompt", 0); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if provider.callCount() != 1 {
+		t.Fatalf("expected one provider call, got %d", provider.callCount())
+	}
+	req := provider.firstRequest()
+	if req.Prompt != "bronze key\n\ncinematic key art" {
+		t.Fatalf("expected style prompt appended to description, got %q", req.Prompt)
+	}
+	if req.NegativePrompt != "muddy details" {
+		t.Fatalf("expected negative prompt threaded, got %q", req.NegativePrompt)
+	}
+}
+
+func TestWorkerProcessWithoutStyleDirectivesUsesBareDescription(t *testing.T) {
+	jobsRepo := newFakeJobsRepo()
+	assetsRepo := &fakeAssetsRepo{}
+	jobsRepo.assets = assetsRepo
+	storage := &fakeStorage{}
+	provider := &capturingProvider{}
+
+	worldID := "w1"
+	tokenID := "tok_test"
+	_, _ = jobsRepo.Insert(context.Background(), InsertParams{
+		ID:                 "job_no_style_prompt",
+		TenantID:           "tenant_a",
+		WorldID:            &worldID,
+		JobType:            "artifact",
+		RequestedByTokenID: &tokenID,
+		InputPayload: map[string]any{
+			"world_id":    "w1",
+			"description": "bronze key",
+		},
+	})
+
+	w := &Worker{Jobs: jobsRepo, Assets: assetsRepo, Storage: storage, Providers: testRegistry(provider)}
+	if err := w.Process(context.Background(), "job_no_style_prompt", 0); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	req := provider.firstRequest()
+	if req.Prompt != "bronze key" {
+		t.Fatalf("expected bare description prompt, got %q", req.Prompt)
+	}
+	if req.NegativePrompt != "" {
+		t.Fatalf("expected empty negative prompt without style directives, got %q", req.NegativePrompt)
 	}
 }
 
