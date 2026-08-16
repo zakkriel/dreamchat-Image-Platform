@@ -49,6 +49,11 @@ const (
 	AssetTypePlaceScene        AssetType = "place_scene"
 )
 
+// Defines values for BootstrapCharacterAnchorAlreadyAnchoredStatus.
+const (
+	AlreadyAnchored BootstrapCharacterAnchorAlreadyAnchoredStatus = "already_anchored"
+)
+
 // Defines values for BudgetPeriod.
 const (
 	Daily   BudgetPeriod = "daily"
@@ -378,6 +383,36 @@ type AttachAnchorAssetsRequest struct {
 	// high-res object, unassigned or already bound to this identity.
 	AnchorAssetIds []string `json:"anchor_asset_ids"`
 	WorldId        string   `json:"world_id"`
+}
+
+// BootstrapCharacterAnchorAlreadyAnchored defines model for BootstrapCharacterAnchorAlreadyAnchored.
+type BootstrapCharacterAnchorAlreadyAnchored struct {
+	AnchorAssetIds   []string                                      `json:"anchor_asset_ids"`
+	Status           BootstrapCharacterAnchorAlreadyAnchoredStatus `json:"status"`
+	VisualIdentityId string                                        `json:"visual_identity_id"`
+}
+
+// BootstrapCharacterAnchorAlreadyAnchoredStatus defines model for BootstrapCharacterAnchorAlreadyAnchored.Status.
+type BootstrapCharacterAnchorAlreadyAnchoredStatus string
+
+// BootstrapCharacterAnchorRequest defines model for BootstrapCharacterAnchorRequest.
+type BootstrapCharacterAnchorRequest struct {
+	// FallbackPolicy Controls which retrieval outcomes count as a usable hit vs. forcing
+	// generation. Default `compatible_only`. See
+	// `docs/architecture/variant-compatibility-matrix.md` §5.
+	FallbackPolicy *FallbackPolicy     `json:"fallback_policy,omitempty"`
+	Governance     *GovernanceEnvelope `json:"governance,omitempty"`
+
+	// LatencyTier Latency preference for provider routing.
+	LatencyTier *LatencyTier `json:"latency_tier,omitempty"`
+
+	// ProviderId Optional per-request provider pin. When set, routing is constrained
+	// to this provider or fails closed.
+	ProviderId *string `json:"provider_id,omitempty"`
+
+	// QualityTier Output quality tier requested for generation.
+	QualityTier *QualityTier `json:"quality_tier,omitempty"`
+	WorldId     string       `json:"world_id"`
 }
 
 // BudgetPeriod Reset period for a cost budget.
@@ -1453,6 +1488,14 @@ type PostV1CharactersCharacterIdVisualIdentityParams struct {
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
 }
 
+// PostV1CharactersCharacterIdVisualIdentityBootstrapAnchorParams defines parameters for PostV1CharactersCharacterIdVisualIdentityBootstrapAnchor.
+type PostV1CharactersCharacterIdVisualIdentityBootstrapAnchorParams struct {
+	// IdempotencyKey Client-generated idempotency key. The same key + token + endpoint + body
+	// hash returns the same job. Same key + different body returns 409.
+	// See `idempotency.md`.
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
+}
+
 // PostV1GenerationsParams defines parameters for PostV1Generations.
 type PostV1GenerationsParams struct {
 	// IdempotencyKey Client-generated idempotency key. The same key + token + endpoint + body
@@ -1533,6 +1576,9 @@ type PostV1CharactersCharacterIdVisualIdentityJSONRequestBody = CreateVisualIden
 
 // PostV1CharactersCharacterIdVisualIdentityAnchorsJSONRequestBody defines body for PostV1CharactersCharacterIdVisualIdentityAnchors for application/json ContentType.
 type PostV1CharactersCharacterIdVisualIdentityAnchorsJSONRequestBody = AttachAnchorAssetsRequest
+
+// PostV1CharactersCharacterIdVisualIdentityBootstrapAnchorJSONRequestBody defines body for PostV1CharactersCharacterIdVisualIdentityBootstrapAnchor for application/json ContentType.
+type PostV1CharactersCharacterIdVisualIdentityBootstrapAnchorJSONRequestBody = BootstrapCharacterAnchorRequest
 
 // PostV1GenerationsJSONRequestBody defines body for PostV1Generations for application/json ContentType.
 type PostV1GenerationsJSONRequestBody = GenerationRequest
