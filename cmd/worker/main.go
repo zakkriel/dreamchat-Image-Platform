@@ -93,16 +93,18 @@ func main() {
 		logger.Info("fal provider registered (reference-conditioned identity/pack)")
 	}
 
+	identitiesRepo := identities.NewRepository(pool)
 	worker := &jobs.Worker{
-		Jobs:          jobs.NewRepository(pool),
-		Assets:        assets.NewRepository(pool),
-		Storage:       store,
-		Providers:     registry,
-		Logger:        logger,
-		Finalizer:     cost.NewLifecycle(pool, logger),
-		Webhooks:      webhookEmitter,
-		Identities:    identities.NewRepository(pool),
-		RefPresignTTL: cfg.S3PresignTTL,
+		Jobs:            jobs.NewRepository(pool),
+		Assets:          assets.NewRepository(pool),
+		Storage:         store,
+		Providers:       registry,
+		Logger:          logger,
+		Finalizer:       cost.NewLifecycle(pool, logger),
+		Webhooks:        webhookEmitter,
+		Identities:      identitiesRepo,
+		IdentityAnchors: identitiesRepo,
+		RefPresignTTL:   cfg.S3PresignTTL,
 	}
 
 	redisOpt := asynq.RedisClientOpt{

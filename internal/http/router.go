@@ -219,6 +219,20 @@ func mountIdentities(v1 chi.Router, deps Deps) {
 		h = h.WithAssets(deps.AssetsRepo)
 		v1.With(auth.RequireScopes("images:write")).Post("/characters/{character_id}/visual-identity/anchors", h.AttachCharacterAnchors)
 		v1.With(auth.RequireScopes("images:write")).Post("/places/{place_id}/visual-identity/anchors", h.AttachPlaceAnchors)
+		// Bootstrap-anchor generation needs assets (exact-reuse lookup) plus the
+		// generation stack (jobs service + route resolver). Mount only when every
+		// required dep is wired so the endpoint never half-works.
+		if deps.JobsService != nil && deps.Resolver != nil {
+			bootstrap := handlers.NewCharacterBootstrapAnchorHandler(
+				deps.JobsService,
+				deps.IdentitiesRepo,
+				deps.Resolver,
+				string(deps.Config.ImageProvider),
+				deps.AssetsRepo,
+			)
+			bootstrap.Gate = governanceGateFromDeps(deps)
+			v1.With(auth.RequireScopes("images:write")).Post("/characters/{character_id}/visual-identity/bootstrap-anchor", bootstrap.BootstrapCharacterAnchor)
+		}
 	}
 }
 

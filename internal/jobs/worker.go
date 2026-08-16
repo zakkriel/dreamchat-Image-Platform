@@ -102,6 +102,13 @@ type IdentityReader interface {
 	GetByIDForTenant(ctx context.Context, id, tenantID string) (identities.VisualIdentity, error)
 }
 
+// IdentityAnchorWriter is the narrow write the worker uses to attach a newly
+// generated bootstrap anchor back onto a visual identity. Optional/nil-safe:
+// when unset, generation behavior is unchanged.
+type IdentityAnchorWriter interface {
+	SetAnchorAssets(ctx context.Context, identityID, tenantID string, anchorAssetIDs []string) (identities.VisualIdentity, error)
+}
+
 // WebhookEmitter emits job-lifecycle webhook events (Phase 7C-4). The worker
 // depends on this narrow interface rather than the concrete *webhooks.Emitter
 // so it stays unit-testable (nil in tests; *webhooks.Emitter in production).
@@ -138,6 +145,9 @@ type Worker struct {
 	// (nil in unit tests that don't exercise reference generation); required in
 	// production when a reference-conditioned provider (e.g. fal) is configured.
 	Identities IdentityReader
+	// IdentityAnchors attaches generated bootstrap anchors to the identity
+	// referenced by payload.anchor_for_identity_id. Optional/nil-safe.
+	IdentityAnchors IdentityAnchorWriter
 
 	// RefPresignTTL bounds how long the presigned reference image URLs handed to a
 	// reference-conditioned provider stay valid. They are minted at generation time
@@ -474,6 +484,7 @@ func (w *Worker) process(ctx context.Context, jobID, expectedReservationID strin
 	// duplicate generation.
 	switch job.Status {
 	case "completed":
+		w.attachGeneratedIdentityAnchor(ctx, job)
 		if err := w.commitReservation(ctx, job); err != nil {
 			w.log().Error("worker: commit cost reservation (terminal job)", "job_id", jobID, "error", err)
 			return err
@@ -675,6 +686,10 @@ func (w *Worker) process(ctx context.Context, jobID, expectedReservationID strin
 	w.emit(ctx, job.TenantID, webhooks.EventCompleted, job.ID, map[string]any{
 		"final_asset_ids": []string{asset.ID},
 	})
+	completed := job
+	completed.Status = "completed"
+	completed.FinalAssetIds = []string{asset.ID}
+	w.attachGeneratedIdentityAnchor(ctx, completed)
 
 	// Commit the cost reservation: reserved → committed, move the held
 	// estimate from reserved to spent, stamp actual_cost on the job + event.
@@ -1744,6 +1759,23 @@ func (w *Worker) log() *slog.Logger {
 		return slog.Default()
 	}
 	return w.Logger
+}
+
+// attachGeneratedIdentityAnchor best-effort binds a generated asset to its
+// identity when the creating endpoint carried payload.anchor_for_identity_id.
+// Failure is logged and ignored so a completed job never reverts to failed.
+func (w *Worker) attachGeneratedIdentityAnchor(ctx context.Context, job Job) {
+	if w.IdentityAnchors == nil || len(job.FinalAssetIds) == 0 {
+		return
+	}
+	identityID := payloadString(job.InputPayload, "anchor_for_identity_id")
+	if identityID == "" {
+		return
+	}
+	assetID := job.FinalAssetIds[len(job.FinalAssetIds)-1]
+	if _, err := w.IdentityAnchors.SetAnchorAssets(ctx, identityID, job.TenantID, []string{assetID}); err != nil {
+		w.log().Warn("worker: attach generated identity anchor", "job_id", job.ID, "identity_id", identityID, "asset_id", assetID, "error", err)
+	}
 }
 
 func strPtr(s string) *string {
