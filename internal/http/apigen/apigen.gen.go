@@ -397,6 +397,17 @@ type BootstrapCharacterAnchorAlreadyAnchoredStatus string
 
 // BootstrapCharacterAnchorRequest defines model for BootstrapCharacterAnchorRequest.
 type BootstrapCharacterAnchorRequest struct {
+	// Description What the character LOOKS LIKE, in prose. This is the prompt the
+	// prompt-only provider renders, and the anchor it produces conditions
+	// every later portrait — so a weak description here degrades the
+	// character's appearance permanently, not just once.
+	//
+	// It is required for a reason worth stating: an earlier revision
+	// omitted it and fell back to the identity's display_name, so the
+	// provider was handed a bare identifier like `emery_voss` and returned
+	// art with no relationship to the character at all.
+	Description string `json:"description"`
+
 	// FallbackPolicy Controls which retrieval outcomes count as a usable hit vs. forcing
 	// generation. Default `compatible_only`. See
 	// `docs/architecture/variant-compatibility-matrix.md` §5.
@@ -413,6 +424,7 @@ type BootstrapCharacterAnchorRequest struct {
 	// QualityTier Output quality tier requested for generation.
 	QualityTier *QualityTier `json:"quality_tier,omitempty"`
 	WorldId     string       `json:"world_id"`
+	WorldIdNote *interface{} `json:"world_id_note,omitempty"`
 }
 
 // BudgetPeriod Reset period for a cost budget.

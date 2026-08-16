@@ -46,6 +46,7 @@ func NewCharacterBootstrapAnchorHandler(service jobs.Creator, identity identitie
 type bootstrapAnchorRequest struct {
 	Governance     *apigen.GovernanceEnvelope `json:"governance,omitempty"`
 	WorldID        string                     `json:"world_id"`
+	Description    string                     `json:"description"`
 	ProviderID     *string                    `json:"provider_id,omitempty"`
 	QualityTier    *apigen.QualityTier        `json:"quality_tier,omitempty"`
 	LatencyTier    *apigen.LatencyTier        `json:"latency_tier,omitempty"`
@@ -128,7 +129,25 @@ func (h *CharacterBootstrapAnchorHandler) BootstrapCharacterAnchor(w http.Respon
 		qualityTier = string(*req.QualityTier)
 	}
 
-	description := identity.DisplayName
+	// The prompt is the caller's appearance prose, and nothing else will do. An earlier revision
+	// used identity.DisplayName here, so bfl was handed the bare identifier "emery_voss" and
+	// returned a furry creature on a cliff; the anchor it produced then conditioned every portrait
+	// of that character. A name is not an appearance.
+	//
+	// The stored canonical trait is the fallback rather than the display name because it is the same
+	// text the caller sends and the only other place the world's own description of the character
+	// lives. If neither exists there is nothing to draw, and saying so beats rendering an identifier.
+	description := strings.TrimSpace(req.Description)
+	if description == "" {
+		if appearance, ok := identity.CanonicalVisualTraits["appearance"].(string); ok {
+			description = strings.TrimSpace(appearance)
+		}
+	}
+	if description == "" {
+		httperr.Write(w, r, http.StatusUnprocessableEntity, httperr.CodeInvalidRequest,
+			"description is required: the identity carries no canonical appearance to fall back on")
+		return
+	}
 	renderHash := assets.ArtifactRenderHash(assets.ArtifactHashInput{
 		TenantID:       principal.TenantID,
 		WorldID:        req.WorldID,
