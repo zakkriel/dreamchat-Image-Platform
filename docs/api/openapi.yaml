@@ -200,6 +200,52 @@ paths:
                 $ref: '#/components/schemas/VisualIdentity'
         default:
           $ref: '#/components/responses/ErrorResponse'
+  /v1/characters/{character_id}/visual-identity/bootstrap-anchor:
+    post:
+      tags: [Characters]
+      summary: Bootstrap a character identity anchor image
+      description: |
+        Generates a first canonical anchor image for the character's existing
+        visual identity and queues asynchronous rendering work. If the identity
+        already has one or more `anchor_asset_ids`, no job is created and this
+        endpoint returns `200 already_anchored`.
+      security:
+        - BearerAuth: [images:write]
+      parameters:
+        - $ref: '#/components/parameters/CharacterId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BootstrapCharacterAnchorRequest'
+      responses:
+        '200':
+          description: Character identity already anchored (no job created)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BootstrapCharacterAnchorAlreadyAnchored'
+        '202':
+          description: Generation job accepted
+          headers:
+            X-RateLimit-Requests-Per-Minute: { $ref: '#/components/headers/RateLimitRequestsPerMinute' }
+            X-RateLimit-Requests-Per-Minute-Remaining: { $ref: '#/components/headers/RateLimitRequestsPerMinuteRemaining' }
+            X-RateLimit-Requests-Per-Minute-Reset: { $ref: '#/components/headers/RateLimitRequestsPerMinuteReset' }
+            X-RateLimit-Requests-Per-Hour: { $ref: '#/components/headers/RateLimitRequestsPerHour' }
+            X-RateLimit-Requests-Per-Hour-Remaining: { $ref: '#/components/headers/RateLimitRequestsPerHourRemaining' }
+            X-RateLimit-Requests-Per-Hour-Reset: { $ref: '#/components/headers/RateLimitRequestsPerHourReset' }
+            X-RateLimit-Concurrent-Jobs: { $ref: '#/components/headers/RateLimitConcurrentJobs' }
+            X-RateLimit-Concurrent-Jobs-Remaining: { $ref: '#/components/headers/RateLimitConcurrentJobsRemaining' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationJobAccepted'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
   /v1/characters/{character_id}/generate-pack:
     post:
       tags: [Characters]
@@ -1788,6 +1834,38 @@ components:
             The reference asset ids to set as the identity's anchors. Replaces
             the existing set. Each must be a ready, tenant-owned asset with a
             high-res object, unassigned or already bound to this identity.
+    BootstrapCharacterAnchorRequest:
+      type: object
+      required: [world_id]
+      properties:
+        governance:
+          $ref: '#/components/schemas/GovernanceEnvelope'
+          description: |
+            Optional media-eligibility envelope (same verification flow as
+            other generation endpoints).
+        world_id: { type: string }
+        provider_id:
+          type: string
+          description: |
+            Optional per-request provider pin. When set, routing is constrained
+            to this provider or fails closed.
+        quality_tier:
+          $ref: '#/components/schemas/QualityTier'
+        latency_tier:
+          $ref: '#/components/schemas/LatencyTier'
+        fallback_policy:
+          $ref: '#/components/schemas/FallbackPolicy'
+    BootstrapCharacterAnchorAlreadyAnchored:
+      type: object
+      required: [status, visual_identity_id, anchor_asset_ids]
+      properties:
+        status:
+          type: string
+          enum: [already_anchored]
+        visual_identity_id: { type: string }
+        anchor_asset_ids:
+          type: array
+          items: { type: string }
     VisualIdentity:
       type: object
       required: [id, world_id, owner_type, owner_id, display_name, style_profile_id, current_version, status]
