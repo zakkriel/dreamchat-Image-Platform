@@ -155,6 +155,11 @@ type Worker struct {
 	// sufficient. Zero falls back to a built-in default.
 	RefPresignTTL time.Duration
 
+	// Background strips the backdrop from transparent-pack renders before tier encoding (the
+	// sprite contract). Optional: nil means "not configured", and a transparent job then fails
+	// closed with background_removal_failed rather than shipping opaque sprites.
+	Background BackgroundRemover
+
 	// Finalizer commits the cost reservation on success and releases it on
 	// terminal failure (docs/architecture/cost-control.md §3 steps 9–10).
 	// Optional: nil in unit tests that don't exercise the cost lifecycle.

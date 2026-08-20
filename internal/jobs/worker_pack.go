@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/hibiken/asynq"
@@ -360,9 +361,15 @@ func packAggregateCostEventID(job Job) string {
 // provider call, image upload, visual_assets insert, asset_pack_items
 // insert. Returns the new asset id, or the per-item error.
 func (w *Worker) generatePackItem(ctx context.Context, job Job, plan packPlan, resolved resolvedRoute, variantKey string, index int, referenceURLs []string) (string, error) {
-	// 5A keeps the prompt trivial: the variant_key is an opaque role string
-	// appended to the identity's name. Variant semantics are 5B.
-	prompt := composePromptWithStyle(plan.displayName+" — "+variantKey, payloadString(job.InputPayload, "style_positive_prompt"))
+	// A caller-authored cell renders exactly the subject prose the caller sent — the platform does
+	// not know what a variant key MEANS, only how to render, condition, store, and reuse it. A cell
+	// with no caller prompt keeps the 5A shape (name — role) unchanged.
+	subject := plan.displayName + " — " + variantKey
+	if p, ok := plan.variantPrompts[variantKey]; ok && strings.TrimSpace(p) != "" {
+		subject = p
+	}
+	aspectRatio := plan.aspectRatio
+	prompt := composePromptWithStyle(subject, payloadString(job.InputPayload, "style_positive_prompt"))
 	negativePrompt := payloadString(job.InputPayload, "style_negative_prompt")
 
 	// Pack cells use the same persisted primary + same-price fallback chain as
@@ -375,6 +382,7 @@ func (w *Worker) generatePackItem(ctx context.Context, job Job, plan packPlan, r
 		NegativePrompt: negativePrompt,
 		Width:          renderEdgeForMax(job, deliveryRenderEdge),
 		Height:         renderEdgeForMax(job, deliveryRenderEdge),
+		AspectRatio:    aspectRatio,
 		ReferenceURLs:  referenceURLs,
 		Metadata: map[string]any{
 			"world_id":    plan.worldID,
@@ -391,6 +399,18 @@ func (w *Worker) generatePackItem(ctx context.Context, job Job, plan packPlan, r
 	if sizeErr := validateProviderImages(job, result.Images); sizeErr != nil {
 		w.recordAttemptFailureWithCost(ctx, job, out.attemptID, resolved.providerID, resolved.modelID, sizeErr, out.latencyMs, reportedProviderCostPtr(result))
 		return "", sizeErr
+	}
+
+	// The sprite contract: a transparent pack background-removes every provider image BEFORE tier
+	// encoding, so all three stored tiers carry real alpha. Failure is a per-variant failure with
+	// its own code — an opaque image must never ship under a transparent promise.
+	if payloadString(job.InputPayload, "output_background") == "transparent" {
+		cleaned, remErr := w.removeBackgrounds(ctx, result.Images)
+		if remErr != nil {
+			w.recordAttemptFailureWithCost(ctx, job, out.attemptID, resolved.providerID, resolved.modelID, remErr, out.latencyMs, reportedProviderCostPtr(result))
+			return "", remErr
+		}
+		result.Images = cleaned
 	}
 
 	assetID := ids.NewVisualAssetID()
@@ -589,6 +609,12 @@ type packPlan struct {
 	// forceRegenerate (Phase 6A4) makes every role supersede its slot instead of
 	// a plain insert. Carried on the job input_payload by the pack handler.
 	forceRegenerate bool
+	// variantPrompts is the caller-authored subject prose per variant key (the `variants` request
+	// field). The keys are opaque vocabulary owned by the caller; a key with no entry falls back to
+	// the 5A prompt shape.
+	variantPrompts map[string]string
+	// aspectRatio, when set, is forwarded to the provider for every cell.
+	aspectRatio string
 }
 
 // packSupersedeStateVersion is the state version a forced pack regeneration
@@ -649,6 +675,15 @@ func packPlanFromJob(job Job) (packPlan, error) {
 	if len(plan.variantKeys) == 0 {
 		return plan, fmt.Errorf("pack job %s has no variant_keys in input_payload", job.ID)
 	}
+	if rawPrompts, ok := job.InputPayload["variant_prompts"].(map[string]any); ok {
+		plan.variantPrompts = make(map[string]string, len(rawPrompts))
+		for key, v := range rawPrompts {
+			if s, ok := v.(string); ok && s != "" {
+				plan.variantPrompts[key] = s
+			}
+		}
+	}
+	plan.aspectRatio = payloadString(job.InputPayload, "aspect_ratio")
 
 	if job.WorldID != nil {
 		plan.worldID = *job.WorldID

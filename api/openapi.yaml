@@ -1903,6 +1903,13 @@ components:
     # ------------------------------------------------------------------------
     # Generation requests
     # ------------------------------------------------------------------------
+    PackVariant:
+      type: object
+      required: [key, prompt]
+      properties:
+        key: { type: string, minLength: 1, maxLength: 64 }
+        prompt: { type: string, minLength: 1, maxLength: 600 }
+
     GenerateCharacterPackRequest:
       type: object
       required: [world_id, style_profile_id]
@@ -1919,6 +1926,36 @@ components:
             callers are unaffected until enforcement is switched on.
         world_id: { type: string }
         style_profile_id: { type: string }
+        background:
+          type: string
+          enum: [opaque, transparent]
+          description: |
+            Output background for every generated variant (v0.14.0, additive;
+            character packs only). `transparent` runs a background-removal
+            step after the provider render and stores real-alpha PNGs.
+            Default `opaque` is byte-for-byte today's behavior. A transparent
+            request never reuses an opaque render: retrieval is bypassed
+            exactly like force_regenerate.
+        variants:
+          type: array
+          maxItems: 12
+          items:
+            $ref: '#/components/schemas/PackVariant'
+          description: |
+            Caller-defined pack cells (v0.14.0, additive). Each entry names a
+            variant_key and the full subject prose that cell renders with,
+            composed with the style profile exactly like every other
+            caller-authored prompt source (style prose, scene descriptions).
+            The platform stays ignorant of what the keys MEAN — vocabulary
+            belongs to the caller. Takes precedence over variant_keys and
+            pack_template.
+        aspect_ratio:
+          type: string
+          pattern: '^\d{1,2}:\d{1,2}$'
+          description: |
+            Optional aspect ratio applied to every generated cell, forwarded
+            to providers that support one (e.g. 3:4 for portrait busts) and
+            omitted otherwise.
         provider_id:
           type: string
           description: |
@@ -3154,3 +3191,8 @@ components:
 #     stub at MVP (matrix safety itself is active) — the override grows as
 #     the product surfaces more world-state hints to the retrieval call.
 # ----------------------------------------------------------------------------
+# v0.14.0 — caller-defined pack cells (additive): GenerateCharacterPackRequest gains optional
+#   `background: opaque|transparent`, `variants: [{key, prompt}]`, and `aspect_ratio`. Transparent
+#   character packs skip retrieval reuse and background-remove each image before tier encoding;
+#   `variants` lets the caller name each cell and author its subject prose, so pack vocabulary
+#   (e.g. an emotion set) lives with the caller, not here.
