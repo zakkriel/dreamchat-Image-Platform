@@ -109,7 +109,7 @@ func (f *FalBackgroundRemover) Remove(ctx context.Context, image providers.Provi
 	if err != nil {
 		return providers.ProviderImage{}, fmt.Errorf("birefnet request: %w", err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(res.Body, 64<<20))
 	if err != nil {
 		return providers.ProviderImage{}, fmt.Errorf("read birefnet response: %w", err)
@@ -162,7 +162,7 @@ func (f *FalBackgroundRemover) fetchResult(ctx context.Context, url string) ([]b
 	if err != nil {
 		return nil, fmt.Errorf("download birefnet result: %w", err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return nil, fmt.Errorf("birefnet download status %d", res.StatusCode)
 	}
