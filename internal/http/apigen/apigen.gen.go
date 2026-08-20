@@ -97,6 +97,12 @@ const (
 	PreviewAllowed FallbackPolicy = "preview_allowed"
 )
 
+// Defines values for GenerateCharacterPackRequestBackground.
+const (
+	Opaque      GenerateCharacterPackRequestBackground = "opaque"
+	Transparent GenerateCharacterPackRequestBackground = "transparent"
+)
+
 // Defines values for GenerationJobAcceptedStatus.
 const (
 	GenerationJobAcceptedStatusQueued GenerationJobAcceptedStatus = "queued"
@@ -717,6 +723,19 @@ type GenerateArtifactRequest struct {
 
 // GenerateCharacterPackRequest defines model for GenerateCharacterPackRequest.
 type GenerateCharacterPackRequest struct {
+	// AspectRatio Optional aspect ratio applied to every generated cell, forwarded
+	// to providers that support one (e.g. 3:4 for portrait busts) and
+	// omitted otherwise.
+	AspectRatio *string `json:"aspect_ratio,omitempty"`
+
+	// Background Output background for every generated variant (v0.14.0, additive;
+	// character packs only). `transparent` runs a background-removal
+	// step after the provider render and stores real-alpha PNGs.
+	// Default `opaque` is byte-for-byte today's behavior. A transparent
+	// request never reuses an opaque render: retrieval is bypassed
+	// exactly like force_regenerate.
+	Background *GenerateCharacterPackRequestBackground `json:"background,omitempty"`
+
 	// FallbackPolicy Controls which retrieval outcomes count as a usable hit vs. forcing
 	// generation. Default `compatible_only`. See
 	// `docs/architecture/variant-compatibility-matrix.md` §5.
@@ -768,8 +787,25 @@ type GenerateCharacterPackRequest struct {
 	QualityTier    *QualityTier `json:"quality_tier,omitempty"`
 	StyleProfileId string       `json:"style_profile_id"`
 	VariantKeys    *[]string    `json:"variant_keys,omitempty"`
-	WorldId        string       `json:"world_id"`
+
+	// Variants Caller-defined pack cells (v0.14.0, additive). Each entry names a
+	// variant_key and the full subject prose that cell renders with,
+	// composed with the style profile exactly like every other
+	// caller-authored prompt source (style prose, scene descriptions).
+	// The platform stays ignorant of what the keys MEAN — vocabulary
+	// belongs to the caller. Takes precedence over variant_keys and
+	// pack_template.
+	Variants *[]PackVariant `json:"variants,omitempty"`
+	WorldId  string         `json:"world_id"`
 }
+
+// GenerateCharacterPackRequestBackground Output background for every generated variant (v0.14.0, additive;
+// character packs only). `transparent` runs a background-removal
+// step after the provider render and stores real-alpha PNGs.
+// Default `opaque` is byte-for-byte today's behavior. A transparent
+// request never reuses an opaque render: retrieval is bypassed
+// exactly like force_regenerate.
+type GenerateCharacterPackRequestBackground string
 
 // GeneratePlacePackRequest defines model for GeneratePlacePackRequest.
 type GeneratePlacePackRequest struct {
@@ -955,6 +991,12 @@ type MatchType string
 
 // OwnerType Owning entity of a visual identity.
 type OwnerType string
+
+// PackVariant defines model for PackVariant.
+type PackVariant struct {
+	Key    string `json:"key"`
+	Prompt string `json:"prompt"`
+}
 
 // PreviewCapability Whether the provider model can return a fast low-cost preview
 // before the final asset. See ADR-010 and PRD 06 §3.4.

@@ -6,12 +6,14 @@ import (
 	"net/http"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/zakkriel/drchat-image-platform/internal/assets"
 	"github.com/zakkriel/drchat-image-platform/internal/config"
+	"github.com/zakkriel/drchat-image-platform/internal/http/apigen"
 	"github.com/zakkriel/drchat-image-platform/internal/identities"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
 	"github.com/zakkriel/drchat-image-platform/internal/providers/routing"
@@ -987,4 +989,45 @@ func (c *estimatingPackCreator) CreateCompletedPackReuseJob(_ context.Context, p
 		FinalAssetIDs:    final,
 		AssetPackID:      "pack_reuse",
 	}, nil
+}
+
+// Caller-defined cells: the keys are opaque, the prose is the caller's, and malformed input fails
+// loudly at the boundary rather than rendering something half-meant.
+func TestCallerVariantPlanValidatesAndPreservesOrder(t *testing.T) {
+	keys, prompts, err := callerVariantPlan([]apigen.PackVariant{
+		{Key: "emotion_neutral", Prompt: "a duelist, calm"},
+		{Key: "emotion_happy", Prompt: "a duelist, smiling"},
+	})
+	if err != nil {
+		t.Fatalf("callerVariantPlan: %v", err)
+	}
+	if len(keys) != 2 || keys[0] != "emotion_neutral" || keys[1] != "emotion_happy" {
+		t.Fatalf("keys = %v, want the caller's order preserved", keys)
+	}
+	if prompts["emotion_happy"] != "a duelist, smiling" {
+		t.Fatalf("prompts = %v", prompts)
+	}
+
+	if _, _, err := callerVariantPlan([]apigen.PackVariant{{Key: "", Prompt: "p"}}); err == nil {
+		t.Fatal("an empty key was accepted")
+	}
+	if _, _, err := callerVariantPlan([]apigen.PackVariant{{Key: "k", Prompt: "  "}}); err == nil {
+		t.Fatal("a blank prompt was accepted")
+	}
+	if _, _, err := callerVariantPlan([]apigen.PackVariant{
+		{Key: "k", Prompt: "a"}, {Key: "k", Prompt: "b"},
+	}); err == nil {
+		t.Fatal("a duplicate key was accepted")
+	}
+	if _, _, err := callerVariantPlan([]apigen.PackVariant{{Key: "k", Prompt: strings.Repeat("x", 601)}}); err == nil {
+		t.Fatal("an over-length prompt was accepted")
+	}
+}
+
+func TestPackAspectRatioShape(t *testing.T) {
+	for ratio, want := range map[string]bool{"3:4": true, "16:9": true, "wide": false, "3:4:5": false} {
+		if got := packAspectRatioRe.MatchString(ratio); got != want {
+			t.Fatalf("aspect %q = %v, want %v", ratio, got, want)
+		}
+	}
 }

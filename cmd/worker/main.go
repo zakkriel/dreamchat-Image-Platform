@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -94,6 +95,16 @@ func main() {
 	}
 
 	identitiesRepo := identities.NewRepository(pool)
+	// Background removal rides the same FAL_KEY the Kontext adapter uses: transparent character
+	// packs need it, and a deployment without it simply fails those jobs closed with their own code.
+	var remover jobs.BackgroundRemover
+	if cfg.FalKey != "" {
+		remover = &jobs.FalBackgroundRemover{
+			BaseURL: "https://fal.run",
+			APIKey:  cfg.FalKey,
+			Doer:    &http.Client{Timeout: 90 * time.Second},
+		}
+	}
 	worker := &jobs.Worker{
 		Jobs:            jobs.NewRepository(pool),
 		Assets:          assets.NewRepository(pool),
@@ -104,6 +115,7 @@ func main() {
 		Webhooks:        webhookEmitter,
 		Identities:      identitiesRepo,
 		IdentityAnchors: identitiesRepo,
+		Background:      remover,
 		RefPresignTTL:   cfg.S3PresignTTL,
 	}
 

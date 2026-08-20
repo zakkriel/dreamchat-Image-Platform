@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -109,7 +110,12 @@ func minimalTemplateRoles(entityType, template string) []string {
 
 // maxPackVariants caps the fan-out (and therefore the priced unit count) of
 // a single pack request.
-const maxPackVariants = 12
+const (
+	maxPackVariants = 12
+
+	packBackgroundOpaque      = "opaque"
+	packBackgroundTransparent = "transparent"
+)
 
 // errUnknownPackTemplate is returned by resolvePackPlan when pack_template
 // names a template that is not defined for the entity → 400 invalid_request.
@@ -190,6 +196,43 @@ func (h *PacksHandler) GeneratePlacePack(w http.ResponseWriter, r *http.Request)
 	h.generate(w, r, placePackKind)
 }
 
+func validPackBackground(v string) bool {
+	return v == packBackgroundOpaque || v == packBackgroundTransparent
+}
+
+// callerVariantPlan validates caller-defined pack cells and returns their ordered keys plus the
+// per-key subject prose. The keys are OPAQUE here — what an "emotion_happy" means is the caller's
+// vocabulary, exactly as a style profile's prose is — and the prompts ride the job payload to the
+// worker verbatim, length-capped like every other caller-authored prompt source.
+func callerVariantPlan(variants []apigen.PackVariant) (keys []string, prompts map[string]string, err error) {
+	raw := make([]string, 0, len(variants))
+	prompts = make(map[string]string, len(variants))
+	for _, v := range variants {
+		key := strings.TrimSpace(v.Key)
+		prompt := strings.TrimSpace(v.Prompt)
+		if key == "" || prompt == "" {
+			return nil, nil, errors.New("variants entries need a non-empty key and prompt")
+		}
+		if len(prompt) > 600 {
+			return nil, nil, errors.New("a variant prompt is capped at 600 characters")
+		}
+		if _, dup := prompts[key]; dup {
+			return nil, nil, fmt.Errorf("variant key %q appears twice", key)
+		}
+		raw = append(raw, key)
+		prompts[key] = prompt
+	}
+	keys, err = dedupVariants(raw)
+	if err != nil {
+		return nil, nil, err
+	}
+	return keys, prompts, nil
+}
+
+// packAspectRatioRe is the one shape an aspect ratio may take. Validated here so a typo is a 422
+// with the field named, not a provider-side rejection mid-pack.
+var packAspectRatioRe = regexp.MustCompile(`^\d{1,2}:\d{1,2}$`)
+
 func (h *PacksHandler) generate(w http.ResponseWriter, r *http.Request, kind packKind) {
 	principal := auth.PrincipalFromContext(r.Context())
 	if principal == nil {
@@ -236,6 +279,19 @@ func (h *PacksHandler) generate(w http.ResponseWriter, r *http.Request, kind pac
 		return
 	}
 
+	background := packBackgroundOpaque
+	if req.Background != nil {
+		background = strings.TrimSpace(string(*req.Background))
+		if !validPackBackground(background) {
+			httperr.Write(w, r, http.StatusUnprocessableEntity, httperr.CodeInvalidRequest, "background must be one of opaque, transparent")
+			return
+		}
+	}
+	if kind.ownerType != "character" && req.Background != nil {
+		httperr.Write(w, r, http.StatusUnprocessableEntity, httperr.CodeInvalidRequest, "background is only supported for character packs")
+		return
+	}
+
 	var override []string
 	if req.VariantKeys != nil {
 		override = *req.VariantKeys
@@ -244,10 +300,29 @@ func (h *PacksHandler) generate(w http.ResponseWriter, r *http.Request, kind pac
 	if req.PackTemplate != nil {
 		template = *req.PackTemplate
 	}
-	variantKeys, packType, err := resolvePackPlan(kind, override, template)
+	// Caller-defined cells outrank both spellings below, same precedence direction the two of them
+	// already follow (explicit beats named).
+	var variantPrompts map[string]string
+	var variantKeys []string
+	var packType string
+	var err error
+	if req.Variants != nil && len(*req.Variants) > 0 {
+		variantKeys, variantPrompts, err = callerVariantPlan(*req.Variants)
+		packType = kind.customPackType
+	} else {
+		variantKeys, packType, err = resolvePackPlan(kind, override, template)
+	}
 	if err != nil {
 		httperr.Write(w, r, http.StatusBadRequest, httperr.CodeInvalidRequest, err.Error())
 		return
+	}
+	aspectRatio := ""
+	if req.AspectRatio != nil {
+		aspectRatio = strings.TrimSpace(*req.AspectRatio)
+		if aspectRatio != "" && !packAspectRatioRe.MatchString(aspectRatio) {
+			httperr.Write(w, r, http.StatusUnprocessableEntity, httperr.CodeInvalidRequest, "aspect_ratio must look like 3:4")
+			return
+		}
 	}
 
 	if _, err := h.Styles.GetByIDForTenant(r.Context(), req.StyleProfileId, principal.TenantID); err != nil {
@@ -311,6 +386,13 @@ func (h *PacksHandler) generate(w http.ResponseWriter, r *http.Request, kind pac
 		"visual_identity_id": identity.ID,
 		"display_name":       identity.DisplayName,
 		"fallback_policy":    fallback,
+		"output_background":  background,
+	}
+	if len(variantPrompts) > 0 {
+		payload["variant_prompts"] = variantPrompts
+	}
+	if aspectRatio != "" {
+		payload["aspect_ratio"] = aspectRatio
 	}
 	// Persist the requested provider preference for observability (alongside the
 	// resolved provider applyResolvedRoute stamps). Only when present.
@@ -331,6 +413,7 @@ func (h *PacksHandler) generate(w http.ResponseWriter, r *http.Request, kind pac
 	if forceRegenerate {
 		payload["force_regenerate"] = true
 	}
+	transparentOutput := kind.ownerType == "character" && background == packBackgroundTransparent
 
 	// Idempotency context is shared by the reuse and the generate paths so a
 	// same-key replay returns the same pack job regardless of which path created
@@ -363,7 +446,7 @@ func (h *PacksHandler) generate(w http.ResponseWriter, r *http.Request, kind pac
 	// discount and no all-hits synchronous completion.
 	var reuseItems []jobs.PackReuseItem
 	var missing []string
-	if forceRegenerate {
+	if forceRegenerate || transparentOutput {
 		missing = append([]string(nil), variantKeys...)
 	} else {
 		var ok bool
