@@ -16,7 +16,7 @@ import (
 // predate goose adoption and have no real Down; bootstrap stamps exactly these
 // versions on already-migrated databases. NEVER increment this constant —
 // migrations added after goose adoption (Chunk 1+) are applied by Up, not
-// stamped. See docs/adr/ADR-P001-migration-tooling.md.
+// stamped. See docs/adr/ADR-I001-migration-tooling.md.
 const BaselineVersion = 11
 
 // gooseInit points goose at the embedded migrations and the Postgres dialect.
@@ -37,7 +37,7 @@ func Up(db *sql.DB) error {
 // Down rolls back the most recently applied migration, refusing any step that
 // would cross into or below the irreversible baseline floor (allowed only at
 // v12+; a step from v11 would roll back a baseline migration). See
-// docs/adr/ADR-P001-migration-tooling.md.
+// docs/adr/ADR-I001-migration-tooling.md.
 func Down(db *sql.DB) error {
 	if err := gooseInit(); err != nil {
 		return err
@@ -58,7 +58,7 @@ func Down(db *sql.DB) error {
 // DownTo rolls back to (and including) the given target version, refusing any
 // target below the irreversible baseline floor. down-to 11 is allowed (goose
 // leaves v11 applied); down-to 10 and below error. See
-// docs/adr/ADR-P001-migration-tooling.md.
+// docs/adr/ADR-I001-migration-tooling.md.
 func DownTo(db *sql.DB, version int64) error {
 	if version < BaselineVersion {
 		return fmt.Errorf(

@@ -2990,7 +2990,7 @@ components:
 #     governance`, `GeneratePlacePackRequest.governance`, and
 #     `StylePreviewRequest.governance` — optional GovernanceEnvelope. The
 #     legacy generation endpoints now run the SAME media-eligibility gate as
-#     `POST /v1/generations` (ADR-P002 Follow-up 1): the envelope is verified
+#     `POST /v1/generations` (ADR-I002 Follow-up 1): the envelope is verified
 #     (integrity/authorization only; content never inspected; content_class
 #     opaque) and audited on every generation request. Default log_only
 #     posture proceeds (existing callers unaffected); enforce rejects a

@@ -1,7 +1,13 @@
-# ADR-P002: Governance verification + intent-driven cost routing
+# ADR-I002: Governance verification + intent-driven cost routing
 
 - **Status:** accepted (2026-06-24)
-- **Platform ADR** (numbered `ADR-P###` per rule D-5).
+- **Image-platform ADR** (`ADR-I###`). Namespace assigned by `workspace:ADR-W002`;
+  cross-repo citation form is `image:ADR-I002`.
+- **Renamed from `ADR-I002`.** `ADR-P###` is the **world backend's** platform namespace, and
+  `ADR-P001` already meant `dreamchat-world-backend/docs/30_architecture/adr/`
+  `ADR-P001_database_strategy_postgres_jsonb.md` — a different decision in a different repo, so a
+  bare citation of `ADR-P001` was ambiguous. Old references in dated plans and specs under
+  `docs/superpowers/` are left as written; they record the id in use at the time.
 
 ## Context
 

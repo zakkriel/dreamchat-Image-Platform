@@ -28,7 +28,7 @@ type StylePreviewHandler struct {
 	Styles             styles.Repository
 	Resolver           RouteResolver
 	ProviderPreference string
-	// Gate is the shared media-eligibility gate (ADR-P002 Follow-up 1). Zero
+	// Gate is the shared media-eligibility gate (ADR-I002 Follow-up 1). Zero
 	// value = unwired (gate skipped); wired from deps by the router.
 	Gate GovernanceGate
 }
@@ -147,7 +147,7 @@ func (h *StylePreviewHandler) GeneratePreview(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Governance gate (ADR-P002 Follow-up 1): same verification as
+	// Governance gate (ADR-I002 Follow-up 1): same verification as
 	// POST /v1/generations, after replay and before route resolution and
 	// cost reservation.
 	gov, ok := h.Gate.run(w, r, principal.TenantID, principal.TokenID, req.Governance)

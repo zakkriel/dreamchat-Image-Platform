@@ -36,7 +36,7 @@ type PacksHandler struct {
 	// *assets.Retriever). When nil the handler skips reuse and prices/generates
 	// the whole pack (the pre-6A3 behavior).
 	Retriever RetrievalService
-	// Gate is the shared media-eligibility gate (ADR-P002 Follow-up 1). Zero
+	// Gate is the shared media-eligibility gate (ADR-I002 Follow-up 1). Zero
 	// value = unwired (gate skipped); wired from deps by the router.
 	Gate GovernanceGate
 }
@@ -426,7 +426,7 @@ func (h *PacksHandler) generate(w http.ResponseWriter, r *http.Request, kind pac
 		return
 	}
 
-	// Governance gate (ADR-P002 Follow-up 1): same verification as
+	// Governance gate (ADR-I002 Follow-up 1): same verification as
 	// POST /v1/generations, after replay and before reuse planning, route
 	// resolution, and cost reservation.
 	gov, ok := h.Gate.run(w, r, principal.TenantID, principal.TokenID, req.Governance)

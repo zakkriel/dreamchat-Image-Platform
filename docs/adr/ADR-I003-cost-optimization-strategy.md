@@ -1,6 +1,12 @@
-# ADR-P003 — Cost-Optimization Strategy: Anchor Amortization + Deferred Levers
+# ADR-I003 — Cost-Optimization Strategy: Anchor Amortization + Deferred Levers
 
-> **Number:** ADR-P003 — next free `ADR-P###` in the image-platform repo at proposal time (highest present was `ADR-P002`, D-5).
+- **Image-platform ADR** (`ADR-I###`). Namespace assigned by `workspace:ADR-W002`;
+  cross-repo citation form is `image:ADR-I003`.
+- **Renamed from `ADR-I003`.** `ADR-P###` is the **world backend's** platform namespace, and
+  `ADR-P001` already meant `dreamchat-world-backend/docs/30_architecture/adr/`
+  `ADR-P001_database_strategy_postgres_jsonb.md` — a different decision in a different repo, so a
+  bare citation of `ADR-P001` was ambiguous. Old references in dated plans and specs under
+  `docs/superpowers/` are left as written; they record the id in use at the time.
 
 **Type:** ADR (decision · rationale · alternatives · consequences). No implementation detail, acceptance criteria, or build phases — those live in chunk specs/plans.
 **Status:** **Proposed.**

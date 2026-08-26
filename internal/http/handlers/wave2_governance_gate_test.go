@@ -52,7 +52,7 @@ func artifactBody() map[string]any {
 
 // Enforce + no envelope on the legacy artifact endpoint → 403
 // governance_blocked before any reservation (no service call), with the
-// blocked verdict audited. This closes ADR-P002 Follow-up 1's governance
+// blocked verdict audited. This closes ADR-I002 Follow-up 1's governance
 // bypass under enforcement.
 func TestArtifactGovernanceEnforceMissingEnvelope403(t *testing.T) {
 	creator := newStubCreator()

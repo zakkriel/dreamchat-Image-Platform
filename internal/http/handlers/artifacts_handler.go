@@ -46,7 +46,7 @@ type ArtifactsHandler struct {
 	// Reuse is the Phase 6A2 exact-reuse lookup. When nil, the handler skips
 	// retrieval and always generates (the pre-6A2 behavior).
 	Reuse ArtifactReuseLookup
-	// Gate is the shared media-eligibility gate (ADR-P002 Follow-up 1). Zero
+	// Gate is the shared media-eligibility gate (ADR-I002 Follow-up 1). Zero
 	// value = unwired (gate skipped); wired from deps by the router.
 	Gate GovernanceGate
 }
@@ -219,7 +219,7 @@ func (h *ArtifactsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Governance gate (ADR-P002 Follow-up 1): same verification as
+	// Governance gate (ADR-I002 Follow-up 1): same verification as
 	// POST /v1/generations, after replay and before reuse/route/reservation.
 	// The envelope is optional this version; log_only audits and proceeds,
 	// enforce rejects a missing/invalid envelope.

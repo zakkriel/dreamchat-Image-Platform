@@ -65,7 +65,7 @@ A single page with stacked panels:
 ```bash
 cd playground
 npm install
-npm run dev        # http://localhost:5174 (5173 belongs to dreamchat-frontend)
+npm run dev        # http://localhost:5174 (the live frontend owns 5273; 5173 is retired with the archived dreamchat-frontend)
 ```
 
 ### How it reaches the API (CORS)

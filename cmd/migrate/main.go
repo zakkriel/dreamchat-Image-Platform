@@ -1,7 +1,7 @@
 // Command migrate is the single migration runner for local dev, CI, and Railway
 // deploy-from-image. It drives goose over the embedded migrations FS via
 // internal/migrate. Subcommands: up, down, down-to <version>, status, version,
-// bootstrap. See docs/adr/ADR-P001-migration-tooling.md.
+// bootstrap. See docs/adr/ADR-I001-migration-tooling.md.
 package main
 
 import (

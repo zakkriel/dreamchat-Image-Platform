@@ -7,7 +7,7 @@ Implementation status: the Phase 0–7 track is complete (auth, identities,
 styles, async generation, cost pre-flight, packs, retrieval-before-generation,
 delivery, provider routing, rate limits, RLS, webhooks — see
 `IMPLEMENTATION_STATUS.md`, the single source of truth for sequencing), plus
-the combined governance/cost contract `POST /v1/generations` (ADR-P002) and
+the combined governance/cost contract `POST /v1/generations` (ADR-I002) and
 the cost-optimization waves (`docs/superpowers/plans/2026-08-07-cost-optimization-waves.md`).
 
 Integration status: the `dreamchat-world-backend` service is a **live consumer**

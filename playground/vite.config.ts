@@ -14,10 +14,11 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react()],
     server: {
-      // Port 5174, not Vite's default 5173: the sibling `dreamchat-frontend`
-      // dev server owns 5173 (`--strictPort`) in the shared dev environment,
-      // and both must run concurrently. strictPort makes a clash fail loudly
-      // instead of silently drifting to a port the docs don't mention.
+      // Port 5174, not Vite's default 5173. Historically 5173 was owned by the sibling
+      // `dreamchat-frontend` dev server; that repo is archived and 5173 is retired with it
+      // (workspace:ADR-W003). 5174 stays because the LIVE frontend, `dream-weaver-visuals`, runs on
+      // 5273 and both must run concurrently. strictPort makes a clash fail loudly instead of
+      // silently drifting to a port the docs don't mention.
       port: 5174,
       strictPort: true,
       proxy: {
