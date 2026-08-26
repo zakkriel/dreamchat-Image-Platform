@@ -577,7 +577,8 @@ contract needed to leave `log_only`.
 
 ## Integration state — world backend is a live consumer
 
-The three-repo integration (`dreamchat-world-backend`, `dreamchat-frontend`, this
+The three-repo integration (`dreamchat-world-backend`, `dreamchat-frontend` — since archived and
+superseded by `dream-weaver-visuals`, `workspace:ADR-W003` — and this
 platform) is **functionally complete**: the world backend ran a live handshake
 against this platform and the frontend renders portraits end to end through it.
 

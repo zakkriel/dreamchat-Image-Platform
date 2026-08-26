@@ -120,7 +120,7 @@ services:
       ALLOW_SYNTHETIC_PROVIDERS: ${ALLOW_SYNTHETIC_PROVIDERS:-true}
       API_TOKEN_PEPPER: dev-pepper-change-me
       OPENAPI_DOCS_ENABLED: "true"
-      # Governance (ADR-P002). Enforcement stays log_only by default, but the
+      # Governance (ADR-I002). Enforcement stays log_only by default, but the
       # authorized-issuer allowlist must still be populated: an issuer absent from
       # it is recorded as media.eligibility_blocked/unknown_issuer while the
       # request is ALLOWED through, so an empty allowlist looks healthy (202s) and

@@ -21,7 +21,7 @@ var baselineTables = []string{
 }
 
 // Bootstrap converges any database onto the goose version table without
-// destructive re-application. See docs/adr/ADR-P001-migration-tooling.md and the
+// destructive re-application. See docs/adr/ADR-I001-migration-tooling.md and the
 // design spec §4.
 //
 //   - goose_db_version already present  -> delegate to Up (apply pending).

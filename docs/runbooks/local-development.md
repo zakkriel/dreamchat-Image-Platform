@@ -54,7 +54,7 @@ siblings in the shared dev environment:
 | API | `8081` | `8080` | `dreamchat-world-backend/core/api` owns host `8080` |
 | Redis | `6379` | `6379` | — |
 | MinIO | `9000` / `9001` | same | — |
-| Playground UI | `5174` | — | `dreamchat-frontend` owns `5173` (`--strictPort`) |
+| Playground UI | `5174` | — | historically `5173` was taken by `dreamchat-frontend`; that repo is archived and `5173` retired, but 5174 stays so the playground never collides with the live frontend on `5273` |
 
 OpenAPI docs: <http://localhost:8081/docs>.
 

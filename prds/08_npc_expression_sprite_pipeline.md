@@ -4,7 +4,7 @@
 **Status:** Draft — pending sign-off.
 **Repo target:** `prds/08_npc_expression_sprite_pipeline.md` (DreamChat Image Platform repo, D-6).
 **Supersedes:** in this repo, **PRD 04** (`prds/04_asset_packs_variants_and_expressions.md`) **§4 (Character Starter Pack — its NPC portrait/expression-pack content)** for the NPC expression-pack and expression sprite-sheet pipeline. PRD 04 §5 (place packs), §6 (artifact assets), §7 (preview/final for packs), §8 (pack templates), and §11 (UI consumption) remain in force, untouched. *(This PRD corresponds to the backend program's "PRD 08 §5–6"; the asset-packs/sprite-sheet PRD is **PRD 04** in this repo.)*
-**Why a new doc, not an edit:** PRD 04 predates the content-governance contract (ADR-P002 / E-1) and the governed `POST /v1/generations` request contract shipped in the platform's Chunk 2. The standalone `generate-*` endpoints described in the prior API addendum would be ungoverned generation doors, which is now disallowed. This PRD restates the expression-pipeline requirements current to that constraint.
+**Why a new doc, not an edit:** PRD 04 predates the content-governance contract (ADR-I002 / E-1) and the governed `POST /v1/generations` request contract shipped in the platform's Chunk 2. The standalone `generate-*` endpoints described in the prior API addendum would be ungoverned generation doors, which is now disallowed. This PRD restates the expression-pipeline requirements current to that constraint.
 
 ---
 
@@ -54,7 +54,7 @@ The original sheet is stored as a parent asset; each slice is a child carrying i
 The DreamChat core requests an expression asset by desired expression (and optional angle) with a fallback policy. The platform returns, in order: (1) exact expression match, (2) closest mapped expression, (3) neutral, (4) base portrait. **Runtime retrieval must not trigger generation by default.** This is a read endpoint and does not pass through the generation/governance/cost path.
 
 ### R5 — Governance, async, and routing constraints
-- **No generation request may bypass content governance.** Sheet generation is a generation request and must pass the governed path (the verified-envelope gate, ADR-P002 / E-1) before any provider dispatch. No new standalone ungoverned generate endpoint is introduced. *(How this routes — through the existing `/v1/generations` contract vs. a governed sheet sub-path — is an implementation decision for the chunk spec, not this PRD.)*
+- **No generation request may bypass content governance.** Sheet generation is a generation request and must pass the governed path (the verified-envelope gate, ADR-I002 / E-1) before any provider dispatch. No new standalone ungoverned generate endpoint is introduced. *(How this routes — through the existing `/v1/generations` contract vs. a governed sheet sub-path — is an implementation decision for the chunk spec, not this PRD.)*
 - **Generation is asynchronous and never blocks narration** (D-8). The play loop never waits on a sheet.
 - Content is derived from the NPC's structured visual identity after the gate; the gate never reads a prompt.
 
@@ -88,4 +88,4 @@ The DreamChat core requests an expression asset by desired expression (and optio
 
 ## 9. Source documents
 
-Draws from / refines: PRD 04 `prds/04_asset_packs_variants_and_expressions.md` §4 (NPC portrait/expression-pack content); `image_platform/architecture/sprite_sheet_pipeline.md`; `image_platform/api/asset_pack_and_sprite_sheet_api_addendum.md`; `image_platform/implementation_prompt_v2.md`. Governed by: `prd_private_public_content_governance.md`, ADR-P002, and the Rules Register (E-1, D-6, D-8). Builds on platform Chunk 1 schema.
+Draws from / refines: PRD 04 `prds/04_asset_packs_variants_and_expressions.md` §4 (NPC portrait/expression-pack content); `image_platform/architecture/sprite_sheet_pipeline.md`; `image_platform/api/asset_pack_and_sprite_sheet_api_addendum.md`; `image_platform/implementation_prompt_v2.md`. Governed by: `prd_private_public_content_governance.md`, ADR-I002, and the Rules Register (E-1, D-6, D-8). Builds on platform Chunk 1 schema.

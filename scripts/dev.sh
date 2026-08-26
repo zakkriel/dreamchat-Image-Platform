@@ -152,7 +152,7 @@ export OPENAPI_DOCS_ENABLED="true"
 export APP_PORT="$API_HOST_PORT"
 export ENVIRONMENT="dev"
 export LOG_LEVEL="${LOG_LEVEL:-info}"
-# Governance (ADR-P002). Enforcement stays log_only locally, but the
+# Governance (ADR-I002). Enforcement stays log_only locally, but the
 # authorized-issuer allowlist must still be populated: an issuer that is absent
 # is recorded as media.eligibility_blocked/unknown_issuer while the request is
 # still ALLOWED through, so an empty allowlist looks healthy (everything 202s)

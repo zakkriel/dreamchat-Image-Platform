@@ -12,7 +12,7 @@ package assets
 // Why a separate hash from ArtifactRenderHash: the combined contract carries
 // no world/style/quality inputs — its render-determining fields are the
 // subject (identity + anchors + derive_from), the identity's display name
-// (the current prompt source, ADR-P002 Decision 6), the intent (draft/commit
+// (the current prompt source, ADR-I002 Decision 6), the intent (draft/commit
 // selects a different route class and therefore different output quality),
 // and the transform block. Folding those into the artifact hash's field set
 // would collide two unrelated key vocabularies; a versioned sibling keeps

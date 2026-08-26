@@ -275,7 +275,7 @@ func mountArtifacts(v1 chi.Router, deps Deps) {
 }
 
 // governanceGateFromDeps builds the shared media-eligibility gate for the
-// legacy generation endpoints (ADR-P002 Follow-up 1) from the same deps the
+// legacy generation endpoints (ADR-I002 Follow-up 1) from the same deps the
 // generations mount uses: verifier, mode (default log_only), and the
 // tenant-scoped audit sink. Zero-valued (no-op) when no verifier is wired.
 func governanceGateFromDeps(deps Deps) handlers.GovernanceGate {

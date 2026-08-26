@@ -13,7 +13,7 @@ import (
 )
 
 // GovernanceGate is the media-eligibility gate shared by the legacy generation
-// endpoints (artifact, pack, style preview) — ADR-P002 Follow-up 1: every
+// endpoints (artifact, pack, style preview) — ADR-I002 Follow-up 1: every
 // generation path runs the SAME verification as POST /v1/generations. The gate
 // verifies integrity/authorization only (presence, freshness, issuer,
 // signature seam); it never inspects prompt/content and content_class stays
