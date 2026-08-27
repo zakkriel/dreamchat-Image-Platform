@@ -11,8 +11,8 @@ decisions in two repos.
 
 | Namespace | Prefix | Home |
 |---|---|---|
-| World engine (frozen canon set) | `ADR-###` | `dreamchat-world-backend/docs/30_architecture/canon_engine/02_world_state_adrs.md` |
-| World backend platform | `ADR-P###` | `dreamchat-world-backend/docs/30_architecture/adr/` |
+| World engine (frozen canon set) | `ADR-###` | `dreamchat-world-backend/docs/law/02_world_state_adrs.md` |
+| World backend platform | `ADR-P###` | `dreamchat-world-backend/docs/law/adr/` |
 | **Image platform (this repo)** | **`ADR-I###`**, plus the pre-existing plain `001`…`017` series | `docs/adr/` |
 | Live frontend | `ADR-F###` | `dream-weaver-visuals/docs/adr/` |
 | Workspace / cross-repo | `ADR-W###` | the workspace root's `docs/adr/` |
