@@ -2,6 +2,8 @@
 
 > **Workspace harness:** `../AGENTS.md` + `../docs/00_workspace/` govern anything crossing a repo
 > boundary. Read it before cross-repo work; this file governs everything inside this repo.
+> Standalone clone (no parent workspace)? The harness lives at `github.com/zakkriel/dreamchat` —
+> clone it and run its `bootstrap.sh`. This repo's own law and CI apply in full without it.
 
 > **Agent-agnostic entry point.** This file is the canonical instruction set for *any* coding agent
 > working in this repo. Tool-specific files (`CLAUDE.md`, `.claude/`) are one-line pointers here and
