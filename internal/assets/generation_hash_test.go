@@ -25,11 +25,14 @@ func TestGenerationRenderHashIsDeterministic(t *testing.T) {
 func TestGenerationRenderHashChangesPerField(t *testing.T) {
 	base := GenerationRenderHash(baseGenerationInput())
 	mutations := map[string]func(*GenerationHashInput){
-		"tenant":         func(in *GenerationHashInput) { in.TenantID = "tenant_b" },
-		"identity":       func(in *GenerationHashInput) { in.IdentityID = "vi_other" },
-		"display name":   func(in *GenerationHashInput) { in.DisplayName = "Commander Mira" },
-		"style profile":  func(in *GenerationHashInput) { in.StyleProfileID = "sty_commander" },
-		"anchor":         func(in *GenerationHashInput) { in.AnchorAssetID = "va_anchor" },
+		"tenant":        func(in *GenerationHashInput) { in.TenantID = "tenant_b" },
+		"identity":      func(in *GenerationHashInput) { in.IdentityID = "vi_other" },
+		"display name":  func(in *GenerationHashInput) { in.DisplayName = "Commander Mira" },
+		"style profile": func(in *GenerationHashInput) { in.StyleProfileID = "sty_commander" },
+		"anchor":        func(in *GenerationHashInput) { in.AnchorAssetID = "va_anchor" },
+		"identity anchors": func(in *GenerationHashInput) {
+			in.IdentityAnchorAssetIDs = []string{"va_anchor_1"}
+		},
 		"derive from":    func(in *GenerationHashInput) { in.DeriveFrom = "va_source" },
 		"intent":         func(in *GenerationHashInput) { in.Intent = "draft" },
 		"max_megapixels": func(in *GenerationHashInput) { in.MaxMegapixels = 3.5 },
@@ -63,5 +66,51 @@ func TestGenerationRenderHashUsesLosslessMegapixelFormatting(t *testing.T) {
 	b.MaxMegapixels = 1.0000002
 	if GenerationRenderHash(a) == GenerationRenderHash(b) {
 		t.Fatal("distinct megapixel budgets collided in render hash")
+	}
+}
+
+// Replacing a character's reference images changes what it looks like, because
+// the worker conditions the render on the identity's current anchor set. If the
+// key ignored them, the reuse path would keep serving the previous appearance.
+func TestGenerationRenderHashTracksIdentityAnchorSet(t *testing.T) {
+	one := baseGenerationInput()
+	one.IdentityAnchorAssetIDs = []string{"va_a"}
+	two := baseGenerationInput()
+	two.IdentityAnchorAssetIDs = []string{"va_b"}
+	if GenerationRenderHash(one) == GenerationRenderHash(two) {
+		t.Fatal("swapping the identity's anchor asset must change the render hash")
+	}
+
+	added := baseGenerationInput()
+	added.IdentityAnchorAssetIDs = []string{"va_a", "va_b"}
+	if GenerationRenderHash(one) == GenerationRenderHash(added) {
+		t.Fatal("adding an anchor must change the render hash")
+	}
+
+	// Order is passed through to the provider as an ordered reference list, so a
+	// reordering may render differently and must not silently reuse.
+	reordered := baseGenerationInput()
+	reordered.IdentityAnchorAssetIDs = []string{"va_b", "va_a"}
+	if GenerationRenderHash(added) == GenerationRenderHash(reordered) {
+		t.Fatal("reordering anchors must change the render hash")
+	}
+
+	// An empty set and a nil set are the same absence of anchors.
+	empty := baseGenerationInput()
+	empty.IdentityAnchorAssetIDs = []string{}
+	if GenerationRenderHash(empty) != GenerationRenderHash(baseGenerationInput()) {
+		t.Fatal("nil and empty anchor sets must hash identically")
+	}
+}
+
+// Anchor ids are joined into one field, so the join must not let a boundary
+// shift collide (["a","b"] vs ["a,b"]).
+func TestGenerationRenderHashAnchorJoinIsUnambiguous(t *testing.T) {
+	split := baseGenerationInput()
+	split.IdentityAnchorAssetIDs = []string{"va_a", "va_b"}
+	joined := baseGenerationInput()
+	joined.IdentityAnchorAssetIDs = []string{"va_a,va_b"}
+	if GenerationRenderHash(split) == GenerationRenderHash(joined) {
+		t.Fatal("anchor list boundaries must not collide with a comma in an id")
 	}
 }

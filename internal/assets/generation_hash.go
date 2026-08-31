@@ -33,8 +33,10 @@ import (
 
 // generationHashVersion namespaces the hash so the input set can evolve
 // MaxMegapixels became behavioral in Wave 3 and style_profile_id now affects
-// the worker prompt, so the version is bumped from prior definitions.
-const generationHashVersion = "3"
+// the worker prompt, so the version is bumped from prior definitions. Version 4
+// folds in the identity's CURRENT anchor set, which the worker conditions on but
+// the hash previously ignored - see IdentityAnchorAssetIDs.
+const generationHashVersion = "4"
 
 // GenerationHashInput is the well-typed set of combined-contract fields that
 // determine a generation render. TenantID comes from the principal; the rest
@@ -45,8 +47,25 @@ type GenerationHashInput struct {
 	DisplayName    string
 	StyleProfileID string
 	AnchorAssetID  string
-	DeriveFrom     string
-	Intent         string
+	// IdentityAnchorAssetIDs is the identity's CURRENT anchor set - the
+	// reference images a reference-conditioned provider actually renders from
+	// (internal/jobs/worker.go gathers identity.AnchorAssetIds into
+	// ProviderGenerateRequest.ReferenceURLs).
+	//
+	// It has to be in the hash. AnchorAssetID above is only the caller-supplied
+	// request field, which is a deferred contract and is normally empty, so
+	// without this a character whose anchors were replaced kept the same render
+	// hash and the reuse path returned an image of the OLD appearance. Anchors
+	// are deliberately not versioned on the identity row (they are reference
+	// provenance, not a canonical-trait change), which is exactly why the
+	// reuse key has to carry them.
+	//
+	// Order is preserved rather than sorted: it is passed through to the
+	// provider as an ordered reference list, so a reordering may legitimately
+	// render differently and must not silently reuse.
+	IdentityAnchorAssetIDs []string
+	DeriveFrom             string
+	Intent                 string
 	// MaxMegapixels is the effective validated pixel budget persisted by the
 	// handler. It is serialized with lossless round-trip formatting before hashing.
 	MaxMegapixels float64
@@ -55,8 +74,9 @@ type GenerationHashInput struct {
 
 // GenerationRenderHash returns the deterministic hex render hash for the
 // input. The same inputs always produce the same hash; any material change
-// (different identity, prompt source, style profile, anchor, derive source, intent, pixel
-// budget, or transform) produces a different hash.
+// (different identity, prompt source, style profile, request anchor, identity
+// anchor set, derive source, intent, pixel budget, or transform) produces a
+// different hash.
 func GenerationRenderHash(in GenerationHashInput) string {
 	var b strings.Builder
 	writeHashField(&b, "gv", generationHashVersion)
@@ -65,6 +85,13 @@ func GenerationRenderHash(in GenerationHashInput) string {
 	writeHashField(&b, "display_name", NormalizeArtifactDescription(in.DisplayName))
 	writeHashField(&b, "style_profile_id", in.StyleProfileID)
 	writeHashField(&b, "anchor_asset_id", in.AnchorAssetID)
+	// Each anchor is its own labelled field, plus an explicit count. Joining
+	// them into one string would let ["a","b"] collide with ["a,b"] on whatever
+	// separator was chosen; labelled fields cannot.
+	writeHashField(&b, "identity_anchor_count", strconv.Itoa(len(in.IdentityAnchorAssetIDs)))
+	for i, anchorID := range in.IdentityAnchorAssetIDs {
+		writeHashField(&b, "identity_anchor_"+strconv.Itoa(i), anchorID)
+	}
 	writeHashField(&b, "derive_from", in.DeriveFrom)
 	writeHashField(&b, "intent", in.Intent)
 	maxMegapixels := in.MaxMegapixels

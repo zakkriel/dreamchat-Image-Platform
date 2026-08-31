@@ -308,6 +308,12 @@ func (p *Provider) submit(ctx context.Context, req providers.ProviderGenerateReq
 		"prompt":     req.Prompt,
 		"image_urls": req.ReferenceURLs,
 		"num_images": 1,
+		// fal defaults this endpoint's output_format to "jpeg". Every tier we
+		// store is PNG, so the default made each render a lossy round trip for
+		// nothing. It also actively hurt transparent packs: the background
+		// remover has to resolve alpha on hair, and JPEG ringing lands on
+		// exactly those high-frequency edges. Ask for PNG at the source.
+		"output_format": "png",
 	}
 	if req.AspectRatio != "" {
 		body["aspect_ratio"] = req.AspectRatio
