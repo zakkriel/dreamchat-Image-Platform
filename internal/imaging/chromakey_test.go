@@ -250,3 +250,48 @@ func TestChromaKeyRefusesSubjectCrowdingTheKey(t *testing.T) {
 		t.Fatal("subject proximity must be reported so a fallback can explain itself")
 	}
 }
+
+// The rim case. With a narrow ramp most silhouette pixels land FULLY OPAQUE
+// while still carrying backdrop colour, which shows as a thin key-coloured
+// outline. Matte-bound despill never touches them, so despill has to extend to
+// the band around the cutout.
+func TestChromaKeyDespillsOpaqueRimPixels(t *testing.T) {
+	subject := image.Rect(10, 10, 30, 30)
+	src := magentaBacked(40, 40, subject, color.RGBA{R: 20, G: 140, B: 90, A: 255})
+	// A rim pixel contaminated toward magenta but far enough from the key to
+	// stay fully opaque - exactly the pixel that produced the visible rim.
+	rim := color.RGBA{R: 150, G: 120, B: 160, A: 255}
+	for y := 10; y < 30; y++ {
+		src.Set(10, y, rim)
+	}
+
+	banded := DefaultChromaKeyOptions()
+	out, _, err := ChromaKey(src, banded)
+	if err != nil {
+		t.Fatalf("key: %v", err)
+	}
+	noBand := DefaultChromaKeyOptions()
+	noBand.EdgeDespillRadius = 0
+	raw, _, err := ChromaKey(src, noBand)
+	if err != nil {
+		t.Fatalf("key without the band: %v", err)
+	}
+
+	if _, _, _, a := out.At(10, 20).RGBA(); a>>8 != 255 {
+		t.Fatalf("the rim pixel must stay opaque, got alpha %d", a>>8)
+	}
+	dr, dg, db, _ := out.At(10, 20).RGBA()
+	rr, rg, rb, _ := raw.At(10, 20).RGBA()
+	despilled := int(dr>>8) + int(db>>8) - 2*int(dg>>8)
+	original := int(rr>>8) + int(rb>>8) - 2*int(rg>>8)
+	if despilled >= original {
+		t.Fatalf("edge despill did not reduce rim contamination: %d vs %d", despilled, original)
+	}
+
+	// The band must stay a band: a pixel deep inside the subject is untouched.
+	di := out.At(20, 20)
+	ri := raw.At(20, 20)
+	if di != ri {
+		t.Fatalf("despill leaked into the subject interior: %v vs %v", di, ri)
+	}
+}

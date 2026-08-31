@@ -75,6 +75,12 @@ type ChromaKeyOptions struct {
 	OuterTolerance float64
 	// MinBorderCoverage is the fraction of the outer border ring that must key
 	// before the image is accepted as having a backdrop at all.
+	//
+	// It is deliberately NOT near 1.0. A bust crop legitimately runs off the
+	// frame - shoulders reach the bottom and side edges - and a measured render
+	// of exactly that shape covers about 82% of the ring. The check exists to
+	// catch a render with no backdrop at all, which measures 0, not to insist
+	// the subject float clear of the edges.
 	MinBorderCoverage float64
 	// MaxInteriorKeyFraction is how much of the interior may match the key
 	// before the subject is judged to collide with it.
@@ -87,9 +93,20 @@ type ChromaKeyOptions struct {
 	// MaxSubjectNearKeyFraction is how much of the subject may sit inside
 	// DangerTolerance before the key is refused.
 	MaxSubjectNearKeyFraction float64
-	// DespillStrength scales how much key hue is pulled out of partially
-	// transparent pixels. 0 disables despill.
+	// DespillStrength scales how much key hue is pulled out of pixels touched by
+	// the backdrop. 0 disables despill.
 	DespillStrength float64
+	// EdgeDespillRadius extends despill to OPAQUE pixels within this many
+	// pixels of the cutout edge.
+	//
+	// Matte-bound despill is not enough. With a narrow ramp most silhouette
+	// pixels land fully opaque while still carrying backdrop colour, which
+	// shows up as a thin key-coloured rim - visible on a rendered bust even
+	// when only ~0.2% of pixels are partial. Despill is a spatial operation:
+	// it belongs on the band around the cutout, not only on the matte itself.
+	// It is bounded to that band rather than applied globally because skin
+	// tones lean far enough toward magenta to be desaturated by a global pass.
+	EdgeDespillRadius int
 }
 
 // DefaultChromaKeyOptions are deliberately conservative: they would rather
@@ -99,7 +116,7 @@ func DefaultChromaKeyOptions() ChromaKeyOptions {
 		Key:               DefaultChromaKey,
 		InnerTolerance:    28,
 		OuterTolerance:    72,
-		MinBorderCoverage: 0.90,
+		MinBorderCoverage: 0.50,
 		// A hole punched through the subject is the worst outcome, so the
 		// enclosed-region budget is tiny.
 		MaxInteriorKeyFraction: 0.02,
@@ -109,6 +126,7 @@ func DefaultChromaKeyOptions() ChromaKeyOptions {
 		DangerTolerance:           92,
 		MaxSubjectNearKeyFraction: 0.03,
 		DespillStrength:           1,
+		EdgeDespillRadius:         2,
 	}
 }
 
@@ -233,6 +251,10 @@ func ChromaKey(src image.Image, opts ChromaKeyOptions) (*image.NRGBA, ChromaKeyR
 		return nil, report, ErrSubjectNearKey
 	}
 
+	// Distance (in pixels, capped at the radius) from each pixel to the nearest
+	// fully transparent one, so despill can fade out across the rim band.
+	edgeDist := edgeDistance(alpha, connected, w, h, opts.EdgeDespillRadius)
+
 	// Pass 3: compose. Unconnected keyed pixels are restored to opaque so the
 	// subject keeps its silhouette; connected ones carry their ramped alpha and
 	// get despilled.
@@ -247,10 +269,18 @@ func ChromaKey(src image.Image, opts ChromaKeyOptions) (*image.NRGBA, ChromaKeyR
 			if a < 255 && !connected[i] {
 				a = 255
 			}
-			if a < 255 && opts.DespillStrength > 0 {
-				// Spill scales with how much backdrop was removed: a pixel that
-				// is mostly backdrop carries mostly backdrop colour.
-				r, g, b = despill(r, g, b, keyDirCb, keyDirCr, opts.DespillStrength*(1-float64(a)/255))
+			if opts.DespillStrength > 0 {
+				// Spill scales with how much backdrop was removed, and for
+				// opaque rim pixels with how close they sit to the cutout edge.
+				strength := 0.0
+				if a < 255 {
+					strength = 1 - float64(a)/255
+				} else if d := edgeDist[i]; d > 0 {
+					strength = 1 - float64(d-1)/float64(max(opts.EdgeDespillRadius, 1))
+				}
+				if strength > 0 {
+					r, g, b = despill(r, g, b, keyDirCb, keyDirCr, opts.DespillStrength*strength)
+				}
 			}
 			switch {
 			case a == 0:
@@ -362,4 +392,53 @@ func clampChroma(v float64) uint8 {
 		return 255
 	}
 	return uint8(shifted)
+}
+
+// edgeDistance returns, for every pixel, its distance in pixels to the nearest
+// fully transparent pixel, capped at radius. Zero means "further away than the
+// radius" so the despill band has a hard, cheap boundary. A multi-source BFS
+// keeps it linear in the pixel count.
+func edgeDistance(alpha []uint8, connected []bool, w, h, radius int) []int {
+	dist := make([]int, w*h)
+	if radius <= 0 {
+		return dist
+	}
+	queue := make([]int, 0, w*h/8)
+	for i := range alpha {
+		if alpha[i] == 0 && connected[i] {
+			dist[i] = 1
+			queue = append(queue, i)
+		}
+	}
+	for head := 0; head < len(queue); head++ {
+		i := queue[head]
+		if dist[i] > radius {
+			continue
+		}
+		x, y := i%w, i/w
+		visit := func(nx, ny int) {
+			if nx < 0 || ny < 0 || nx >= w || ny >= h {
+				return
+			}
+			n := ny*w + nx
+			if dist[n] != 0 || (alpha[n] == 0 && connected[n]) {
+				return
+			}
+			dist[n] = dist[i] + 1
+			queue = append(queue, n)
+		}
+		visit(x-1, y)
+		visit(x+1, y)
+		visit(x, y-1)
+		visit(x, y+1)
+	}
+	// Drop the seeds and anything beyond the band.
+	for i := range dist {
+		if dist[i] <= 1 || dist[i] > radius+1 {
+			dist[i] = 0
+		} else {
+			dist[i]--
+		}
+	}
+	return dist
 }
