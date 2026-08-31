@@ -100,9 +100,11 @@ func main() {
 	var remover jobs.BackgroundRemover
 	if cfg.FalKey != "" {
 		remover = &jobs.FalBackgroundRemover{
-			BaseURL: "https://fal.run",
-			APIKey:  cfg.FalKey,
-			Doer:    &http.Client{Timeout: 90 * time.Second},
+			BaseURL:             "https://fal.run",
+			APIKey:              cfg.FalKey,
+			Doer:                &http.Client{Timeout: 90 * time.Second},
+			Model:               cfg.BirefnetModel,
+			OperatingResolution: cfg.BirefnetOperatingResolution,
 		}
 	}
 	if cfg.ChromaKeyBackgroundRemoval {

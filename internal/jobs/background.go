@@ -58,9 +58,28 @@ func (w *Worker) removeBackgrounds(ctx context.Context, images []providers.Provi
 	return out, nil
 }
 
-// falBirefnetPath is fal's BiRefNet segmentation endpoint; the "Portrait" model is tuned for
-// people, which is what every emotion-pack variant is.
-const falBirefnetPath = "/fal-ai/birefnet"
+// falBirefnetPath is fal's BiRefNet endpoint. v2 is a superset of v1 and is the endpoint the
+// BiRefNet author points at: it exposes the weight choice, the operating resolution, and
+// mask_only, where v1 fixed all three.
+//
+// The alternatives are not upgrades. rembg, BRIA and Photoroom are all built on or around
+// BiRefNet itself, and BRIA's RMBG-2.0 is gated with license "other" and self-tagged "legal
+// liability" against BiRefNet's MIT. What was available here was a CONFIGURATION upgrade, not a
+// better model.
+const falBirefnetPath = "/fal-ai/birefnet/v2"
+
+// BiRefNet weights exposed by the v2 endpoint. Portrait is trained on P3M-10k portraits; Matting
+// is trained specifically for matting. Which one wins on a bust crop is an empirical question,
+// which is exactly why it is configurable rather than hard-coded.
+const (
+	BirefnetModelPortrait  = "Portrait"
+	BirefnetModelMatting   = "Matting"
+	BirefnetModelDynamic   = "General Use (Dynamic)"
+	BirefnetModelLight     = "General Use (Light)"
+	BirefnetModelLight2K   = "General Use (Light 2K)"
+	BirefnetModelHeavy     = "General Use (Heavy)"
+	birefnetResolutionHigh = "2304x2304"
+)
 
 // FalBackgroundRemover calls fal.ai BiRefNet synchronously (fal.run host). The image travels as a
 // data URI — fal accepts data URIs for file inputs platform-wide — so no intermediate upload
@@ -77,6 +96,14 @@ type FalBackgroundRemover struct {
 	}
 	// Timeout bounds one removal call. Zero falls back to a built-in default.
 	Timeout time.Duration
+	// Model selects the BiRefNet weight. Empty means Portrait, which is what
+	// this platform has always sent - a silent change of weight would change
+	// every cutout without any record of why.
+	Model string
+	// OperatingResolution is the resolution BiRefNet works at. Empty means
+	// 1024x1024, fal's default and the previous behaviour. Higher resolves
+	// finer edges - hair - on high-res input, at more compute.
+	OperatingResolution string
 }
 
 const falRemovalDefaultTimeout = 60 * time.Second
@@ -93,11 +120,31 @@ func (f *FalBackgroundRemover) Remove(ctx context.Context, image providers.Provi
 	if contentType == "" {
 		contentType = "image/png"
 	}
+	model := f.Model
+	if model == "" {
+		model = BirefnetModelPortrait
+	}
+	resolution := f.OperatingResolution
+	if resolution == "" {
+		resolution = "1024x1024"
+	}
+	// fal restricts 2304x2304 to the dynamic-resolution weight. Catching it here
+	// turns a remote 4xx mid-pack into a configuration error at the call site.
+	if resolution == birefnetResolutionHigh && model != BirefnetModelDynamic {
+		return providers.ProviderImage{}, fmt.Errorf("%w: operating resolution %s requires model %q, got %q",
+			errBackgroundRemoval, birefnetResolutionHigh, BirefnetModelDynamic, model)
+	}
 	body, err := json.Marshal(map[string]any{
-		"image_url":     "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(image.Bytes),
-		"model":         "Portrait",
-		"output_format": "png",
-		"sync_mode":     true,
+		"image_url":            "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(image.Bytes),
+		"model":                model,
+		"operating_resolution": resolution,
+		// The foreground-colour estimator is what removes the halo of background
+		// colour left around hair by the raw mask. It defaults true remotely;
+		// sent explicitly so the cutout does not silently change if that default
+		// ever moves.
+		"refine_foreground": true,
+		"output_format":     "png",
+		"sync_mode":         true,
 	})
 	if err != nil {
 		return providers.ProviderImage{}, fmt.Errorf("marshal birefnet request: %w", err)

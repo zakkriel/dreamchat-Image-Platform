@@ -477,3 +477,67 @@ If the acceptance rate is high and edge quality holds, this removes the second
 provider call on most cells — and, incidentally, removes the unpriced BiRefNet
 call from those cells entirely, which is the cost-accounting gap noted in the
 main document.
+
+
+---
+
+# Addendum 2 — Why not one of the "better" removers?
+
+Fair question, and the honest answer is that most of them are the same model.
+
+| Candidate | What it actually is | Verdict |
+|---|---|---|
+| rembg | ships BiRefNet sessions (`birefnet_portrait.py`) among others | same model, self-hosted |
+| BRIA RMBG-2.0 | gated on HF, license `other`, vendor-tagged "legal liability" | licence downgrade from BiRefNet's MIT |
+| Photoroom / remove.bg | built on or around the same family; no published per-image price | unverifiable, no quality argument |
+| SAM / SAM2 | segmentation, not matting — binary masks, no soft alpha | wrong tool for hair |
+| Ideogram RemoveBG / Bria Extract Object | published prices ($0.01 / $0.02) | priced alternatives, not quality upgrades |
+
+So there was no better *model* to switch to. There was a better
+**configuration**, and we were not using it.
+
+## What we were actually running
+
+`fal-ai/birefnet` **v1**, weight `Portrait`, at fal's default 1024x1024,
+with `refine_foreground` left to the remote default.
+
+## What v2 exposes
+
+`fal-ai/birefnet/v2` is a superset and is the endpoint the BiRefNet author
+points at. It makes three things selectable that v1 fixed:
+
+- **weight**: `Portrait` (P3M-10k portraits) vs `Matting` (trained specifically
+  for matting) vs the General Use family;
+- **`operating_resolution`**: 1024 / 2048 / 2304 — higher resolves finer edges
+  on high-res input, which is exactly the hair case;
+- **`mask_only`**, for when only the mask is wanted.
+
+One constraint worth pinning, because it is easy to get wrong: **`2304x2304` is
+only available on `General Use (Dynamic)`** — not on `Matting`. Asking for it
+with any other weight is a 4xx. That pairing is now rejected locally, before the
+call.
+
+## What changed and what deliberately did not
+
+Endpoint moved to v2 and `refine_foreground: true` is now sent explicitly (it is
+the foreground-colour estimator that removes the colour halo around hair; it
+defaults true remotely, but a silent change to that default would silently
+change every cutout).
+
+The weight stays `Portrait` at `1024x1024` by default — identical to previous
+behaviour. `Portrait` is trained on P3M-10k portraits and our subjects are busts,
+so `Matting` is a genuine tradeoff, not a free upgrade, and the model card
+strings differ between v1 and v2 (`BiRefNet-portrait-TR_P3M_10k-epoch_120.pth`
+vs `BiRefNet-portrait`), so parity is not guaranteed either.
+
+`BIREFNET_MODEL` and `BIREFNET_OPERATING_RESOLUTION` make the comparison a
+config change instead of a deploy. The A/B to run once `FAL_KEY` exists:
+Portrait@1024 (today) vs Matting@2048, judged on hair and semi-transparent
+edges over the same renders.
+
+## How this relates to chroma keying
+
+They are not competing on the same axis. BiRefNet is the **quality** path and
+costs a provider call. Chroma keying is the **cost** path — $0, but with harder
+edges and a measured subject-colour hazard, which is why it verifies and falls
+back to exactly this remover. Improving the fallback improves the floor for both.

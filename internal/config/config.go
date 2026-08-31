@@ -96,6 +96,14 @@ type Config struct {
 	// this on changes the prompt for transparent cells.
 	ChromaKeyBackgroundRemoval bool
 
+	// BirefnetModel and BirefnetOperatingResolution tune the hosted matting
+	// call (BIREFNET_MODEL / BIREFNET_OPERATING_RESOLUTION). Empty keeps the
+	// long-standing "Portrait" weight at 1024x1024, so behaviour does not move
+	// on upgrade; they exist so the Portrait-vs-Matting and 1024-vs-2048
+	// comparisons are a config change rather than a deploy.
+	BirefnetModel               string
+	BirefnetOperatingResolution string
+
 	APITokenPepper     string
 	OpenAPIDocsEnabled bool
 
@@ -156,6 +164,9 @@ func Load() (*Config, error) {
 		AllowSyntheticProviders: getEnvBool("ALLOW_SYNTHETIC_PROVIDERS", false),
 
 		ChromaKeyBackgroundRemoval: getEnvBool("CHROMA_KEY_BACKGROUND_REMOVAL", false),
+
+		BirefnetModel:               getEnv("BIREFNET_MODEL", ""),
+		BirefnetOperatingResolution: getEnv("BIREFNET_OPERATING_RESOLUTION", ""),
 
 		GovernanceEnforcement:       GovernanceMode(getEnv("GOVERNANCE_ENFORCEMENT", string(GovernanceLogOnly))),
 		GovernanceMaxAge:            getEnvDuration("GOVERNANCE_MAX_AGE", 24*time.Hour),

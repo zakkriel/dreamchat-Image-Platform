@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -19,9 +20,18 @@ type bgStubDoer struct {
 	lastBody     string
 	lastAuth     string
 	lastURL      string
+	calls        int
+}
+
+// newBgStubDoer returns a stub that answers with a valid one-pixel PNG data URI,
+// so a test can focus on the request it produced.
+func newBgStubDoer() *bgStubDoer {
+	return &bgStubDoer{responseBody: `{"image":{"url":"data:image/png;base64,` +
+		base64.StdEncoding.EncodeToString(tinyPNGBytes()) + `","content_type":"image/png"}}`}
 }
 
 func (d *bgStubDoer) Do(req *http.Request) (*http.Response, error) {
+	d.calls++
 	if req.Body != nil {
 		raw, _ := io.ReadAll(req.Body)
 		d.lastBody = string(raw)
@@ -195,5 +205,75 @@ func TestProcessPackOpaqueSkipsTheRemover(t *testing.T) {
 	}
 	if len(repo.packAssets) != 1 {
 		t.Fatalf("assets = %d, want the one variant", len(repo.packAssets))
+	}
+}
+
+// The v2 request shape is a contract with fal: a wrong field name degrades
+// silently to their default rather than erroring, so it is asserted explicitly.
+func TestFalBackgroundRemoverSendsV2Parameters(t *testing.T) {
+	doer := newBgStubDoer()
+	remover := &FalBackgroundRemover{BaseURL: "https://fal.run", APIKey: "k", Doer: doer}
+
+	if _, err := remover.Remove(context.Background(), providers.ProviderImage{
+		Bytes: []byte("bytes"), ContentType: "image/png",
+	}); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if !strings.Contains(doer.lastURL, "/fal-ai/birefnet/v2") {
+		t.Fatalf("must call the v2 endpoint, got %q", doer.lastURL)
+	}
+	for _, want := range []string{
+		`"model":"Portrait"`,
+		`"operating_resolution":"1024x1024"`,
+		// The foreground refiner is what removes the colour halo around hair.
+		`"refine_foreground":true`,
+		`"output_format":"png"`,
+	} {
+		if !strings.Contains(doer.lastBody, want) {
+			t.Fatalf("request body missing %s: %s", want, doer.lastBody)
+		}
+	}
+}
+
+// The weight and resolution are the A/B knobs; they have to actually reach fal.
+func TestFalBackgroundRemoverHonoursConfiguredWeight(t *testing.T) {
+	doer := newBgStubDoer()
+	remover := &FalBackgroundRemover{
+		BaseURL: "https://fal.run", APIKey: "k", Doer: doer,
+		Model:               BirefnetModelMatting,
+		OperatingResolution: "2048x2048",
+	}
+	if _, err := remover.Remove(context.Background(), providers.ProviderImage{
+		Bytes: []byte("bytes"), ContentType: "image/png",
+	}); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	hasModel := strings.Contains(doer.lastBody, "\"model\":\"Matting\"")
+	hasRes := strings.Contains(doer.lastBody, "\"operating_resolution\":\"2048x2048\"")
+	if !hasModel || !hasRes {
+		t.Fatalf("configured weight/resolution did not reach fal: %s", doer.lastBody)
+	}
+}
+
+// fal restricts 2304x2304 to the dynamic weight. Catching it locally turns a
+// mid-pack remote 4xx into a configuration error before any call is made.
+func TestFalBackgroundRemoverRejectsUnsupportedResolutionPairing(t *testing.T) {
+	doer := newBgStubDoer()
+	remover := &FalBackgroundRemover{
+		BaseURL: "https://fal.run", APIKey: "k", Doer: doer,
+		Model:               BirefnetModelMatting,
+		OperatingResolution: "2304x2304",
+	}
+	_, err := remover.Remove(context.Background(), providers.ProviderImage{
+		Bytes: []byte("bytes"), ContentType: "image/png",
+	})
+	if err == nil {
+		t.Fatal("expected 2304x2304 with a non-dynamic weight to be rejected")
+	}
+	if !errors.Is(err, errBackgroundRemoval) {
+		t.Fatalf("must carry the background-removal code, got %v", err)
+	}
+	if doer.calls != 0 {
+		t.Fatalf("must fail before calling fal, got %d calls", doer.calls)
 	}
 }
