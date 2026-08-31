@@ -99,12 +99,22 @@ func main() {
 	// packs need it, and a deployment without it simply fails those jobs closed with their own code.
 	var remover jobs.BackgroundRemover
 	if cfg.FalKey != "" {
-		remover = &jobs.FalBackgroundRemover{
-			BaseURL:             "https://fal.run",
-			APIKey:              cfg.FalKey,
-			Doer:                &http.Client{Timeout: 90 * time.Second},
-			Model:               cfg.BirefnetModel,
-			OperatingResolution: cfg.BirefnetOperatingResolution,
+		httpDoer := &http.Client{Timeout: 90 * time.Second}
+		switch cfg.BackgroundRemover {
+		case "birefnet":
+			remover = &jobs.FalBackgroundRemover{
+				BaseURL:             "https://fal.run",
+				APIKey:              cfg.FalKey,
+				Doer:                httpDoer,
+				Model:               cfg.BirefnetModel,
+				OperatingResolution: cfg.BirefnetOperatingResolution,
+			}
+		default:
+			remover = &jobs.FalIdeogramBackgroundRemover{
+				BaseURL: "https://fal.run",
+				APIKey:  cfg.FalKey,
+				Doer:    httpDoer,
+			}
 		}
 	}
 	if cfg.ChromaKeyBackgroundRemoval {

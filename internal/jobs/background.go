@@ -184,7 +184,7 @@ func (f *FalBackgroundRemover) Remove(ctx context.Context, image providers.Provi
 	if parsed.Image.URL == "" {
 		return providers.ProviderImage{}, fmt.Errorf("birefnet response carried no image")
 	}
-	pngBytes, err := f.fetchResult(ctx, parsed.Image.URL)
+	pngBytes, err := fetchRemovalResult(ctx, f.Doer, parsed.Image.URL)
 	if err != nil {
 		return providers.ProviderImage{}, err
 	}
@@ -193,29 +193,35 @@ func (f *FalBackgroundRemover) Remove(ctx context.Context, image providers.Provi
 
 // fetchResult resolves the result image: sync_mode answers with a data URI, but the contract also
 // permits a hosted URL, so both are handled rather than assumed.
-func (f *FalBackgroundRemover) fetchResult(ctx context.Context, url string) ([]byte, error) {
+// fetchRemovalResult reads a removal result, which fal returns either inline as
+// a data URI (sync_mode) or as a URL to download. Shared by every fal-hosted
+// remover because the answer shape is the same regardless of which model
+// produced it.
+func fetchRemovalResult(ctx context.Context, doer interface {
+	Do(*http.Request) (*http.Response, error)
+}, url string) ([]byte, error) {
 	if strings.HasPrefix(url, "data:") {
 		_, b64, ok := strings.Cut(url, ",")
 		if !ok {
-			return nil, fmt.Errorf("malformed data URI in birefnet response")
+			return nil, fmt.Errorf("malformed data URI in removal response")
 		}
 		decoded, err := base64.StdEncoding.DecodeString(b64)
 		if err != nil {
-			return nil, fmt.Errorf("decode birefnet data URI: %w", err)
+			return nil, fmt.Errorf("decode removal data URI: %w", err)
 		}
 		return decoded, nil
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("build birefnet download: %w", err)
+		return nil, fmt.Errorf("build removal download: %w", err)
 	}
-	res, err := f.Doer.Do(req)
+	res, err := doer.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("download birefnet result: %w", err)
+		return nil, fmt.Errorf("download removal result: %w", err)
 	}
 	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return nil, fmt.Errorf("birefnet download status %d", res.StatusCode)
+		return nil, fmt.Errorf("removal download status %d", res.StatusCode)
 	}
 	return io.ReadAll(io.LimitReader(res.Body, 64<<20))
 }
@@ -367,4 +373,95 @@ func composeChromaBackdrop(prompt string) string {
 func (w *Worker) chromaKeyEnabled() bool {
 	_, ok := w.Background.(*ChromaKeyRemover)
 	return ok
+}
+
+// falIdeogramRemoveBGPath is Ideogram's background removal on fal.
+//
+// Chosen over BiRefNet for one reason: it has a PRICE. fal publishes $0.01 per
+// request for this endpoint and publishes nothing at all for BiRefNet, which
+// renders "$0 per compute seconds" on its model card and is absent from the
+// pricing page. An unpriced call cannot be reserved against a budget, cannot be
+// reconciled, and cannot appear honestly in cost-per-usable-image - so the
+// cheaper-looking option was the one we could not actually account for.
+const falIdeogramRemoveBGPath = "/fal-ai/ideogram/remove-background"
+
+// IdeogramRemoveBackgroundUSD is the published per-request price.
+const IdeogramRemoveBackgroundUSD = "0.0100"
+
+// FalIdeogramBackgroundRemover strips the background through Ideogram on fal at
+// a known $0.01 per request. It speaks the same data-URI-in, image.url-out shape
+// as the BiRefNet remover, so it is a drop-in swap.
+type FalIdeogramBackgroundRemover struct {
+	// BaseURL is the sync host, e.g. "https://fal.run". Required.
+	BaseURL string
+	// APIKey authorizes as `Authorization: Key <APIKey>`. Required.
+	APIKey string
+	// Doer is the minimal HTTP surface; *http.Client satisfies it. Required.
+	Doer interface {
+		Do(*http.Request) (*http.Response, error)
+	}
+	// Timeout bounds one removal call. Zero falls back to a built-in default.
+	Timeout time.Duration
+}
+
+func (f *FalIdeogramBackgroundRemover) Remove(ctx context.Context, image providers.ProviderImage) (providers.ProviderImage, error) {
+	timeout := f.Timeout
+	if timeout <= 0 {
+		timeout = falRemovalDefaultTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	contentType := image.ContentType
+	if contentType == "" {
+		contentType = "image/png"
+	}
+	body, err := json.Marshal(map[string]any{
+		"image_url": "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(image.Bytes),
+		"sync_mode": true,
+	})
+	if err != nil {
+		return providers.ProviderImage{}, fmt.Errorf("marshal ideogram request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		strings.TrimRight(f.BaseURL, "/")+falIdeogramRemoveBGPath, bytes.NewReader(body))
+	if err != nil {
+		return providers.ProviderImage{}, fmt.Errorf("build ideogram request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Key "+f.APIKey)
+
+	res, err := f.Doer.Do(req)
+	if err != nil {
+		return providers.ProviderImage{}, fmt.Errorf("ideogram request: %w", err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	raw, err := io.ReadAll(io.LimitReader(res.Body, 64<<20))
+	if err != nil {
+		return providers.ProviderImage{}, fmt.Errorf("read ideogram response: %w", err)
+	}
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		snippet := string(raw)
+		if len(snippet) > 300 {
+			snippet = snippet[:300]
+		}
+		return providers.ProviderImage{}, fmt.Errorf("ideogram status %d: %s", res.StatusCode, snippet)
+	}
+	var parsed struct {
+		Image struct {
+			URL         string `json:"url"`
+			ContentType string `json:"content_type"`
+		} `json:"image"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return providers.ProviderImage{}, fmt.Errorf("parse ideogram response: %w", err)
+	}
+	if parsed.Image.URL == "" {
+		return providers.ProviderImage{}, fmt.Errorf("ideogram response carried no image")
+	}
+	pngBytes, err := fetchRemovalResult(ctx, f.Doer, parsed.Image.URL)
+	if err != nil {
+		return providers.ProviderImage{}, err
+	}
+	return providers.ProviderImage{Bytes: pngBytes, ContentType: "image/png"}, nil
 }

@@ -277,3 +277,55 @@ func TestFalBackgroundRemoverRejectsUnsupportedResolutionPairing(t *testing.T) {
 		t.Fatalf("must fail before calling fal, got %d calls", doer.calls)
 	}
 }
+
+// The Ideogram remover is the default because it has a published price. Its
+// wire shape is pinned for the same reason the BiRefNet one is: a wrong field
+// name degrades to a remote default instead of erroring.
+func TestFalIdeogramRemoverRoundTripsADataURI(t *testing.T) {
+	cleaned := tinyPNGBytes()
+	doer := &bgStubDoer{responseBody: `{"image":{"url":"data:image/png;base64,` +
+		base64.StdEncoding.EncodeToString(cleaned) + `","content_type":"image/png"}}`}
+	r := &FalIdeogramBackgroundRemover{BaseURL: "https://fal.run", APIKey: "key-test", Doer: doer}
+
+	out, err := r.Remove(context.Background(), providers.ProviderImage{Bytes: []byte{0x1, 0x2}, ContentType: "image/png"})
+	if err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if string(out.Bytes) != string(cleaned) || out.ContentType != "image/png" {
+		t.Fatalf("output = %d bytes %q, want the decoded data-URI PNG", len(out.Bytes), out.ContentType)
+	}
+	if !strings.Contains(doer.lastURL, "/fal-ai/ideogram/remove-background") {
+		t.Fatalf("URL = %q, want the ideogram endpoint", doer.lastURL)
+	}
+	if doer.lastAuth != "Key key-test" {
+		t.Fatalf("Authorization = %q, want the fal key header", doer.lastAuth)
+	}
+	var sent map[string]any
+	if err := json.Unmarshal([]byte(doer.lastBody), &sent); err != nil {
+		t.Fatalf("request body does not parse: %v", err)
+	}
+	if !strings.HasPrefix(sent["image_url"].(string), "data:image/png;base64,") {
+		t.Fatalf("image must travel as a data URI, got %v", sent["image_url"])
+	}
+	// sync_mode is what makes the result come back inline, with nothing left
+	// on the provider to expire or leak.
+	if sent["sync_mode"] != true {
+		t.Fatalf("sync_mode = %v, want true", sent["sync_mode"])
+	}
+	// BiRefNet-only knobs must not leak into this request.
+	for _, forbidden := range []string{"model", "operating_resolution", "refine_foreground"} {
+		if _, present := sent[forbidden]; present {
+			t.Fatalf("ideogram request must not carry %q: %s", forbidden, doer.lastBody)
+		}
+	}
+}
+
+// A failure has to surface as an error. Returning the untouched input would
+// ship an opaque image under a transparent promise.
+func TestFalIdeogramRemoverFailureIsAnErrorNotAPassthrough(t *testing.T) {
+	doer := &bgStubDoer{status: 500, responseBody: `{"detail":"boom"}`}
+	r := &FalIdeogramBackgroundRemover{BaseURL: "https://fal.run", APIKey: "k", Doer: doer}
+	if _, err := r.Remove(context.Background(), providers.ProviderImage{Bytes: []byte{0x1}, ContentType: "image/png"}); err == nil {
+		t.Fatal("expected an error on a 500")
+	}
+}

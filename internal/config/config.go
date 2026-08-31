@@ -96,6 +96,16 @@ type Config struct {
 	// this on changes the prompt for transparent cells.
 	ChromaKeyBackgroundRemoval bool
 
+	// BackgroundRemover selects the hosted background-removal model
+	// (BACKGROUND_REMOVER): "ideogram" (default) or "birefnet".
+	//
+	// Ideogram is the default because it has a PUBLISHED price - $0.01 per
+	// request - and BiRefNet does not: fal shows "$0 per compute seconds" on the
+	// model card and omits it from the pricing page entirely. An unpriced call
+	// cannot be reserved against a budget, reconciled, or shown honestly in cost
+	// per usable image, so the option we can account for wins by default.
+	BackgroundRemover string
+
 	// BirefnetModel and BirefnetOperatingResolution tune the hosted matting
 	// call (BIREFNET_MODEL / BIREFNET_OPERATING_RESOLUTION). Empty keeps the
 	// long-standing "Portrait" weight at 1024x1024, so behaviour does not move
@@ -165,6 +175,7 @@ func Load() (*Config, error) {
 
 		ChromaKeyBackgroundRemoval: getEnvBool("CHROMA_KEY_BACKGROUND_REMOVAL", false),
 
+		BackgroundRemover:           getEnv("BACKGROUND_REMOVER", "ideogram"),
 		BirefnetModel:               getEnv("BIREFNET_MODEL", ""),
 		BirefnetOperatingResolution: getEnv("BIREFNET_OPERATING_RESOLUTION", ""),
 
