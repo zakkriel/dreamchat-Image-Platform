@@ -253,6 +253,16 @@ type Querier interface {
 	// ListFinalizedBudgetHolds returns all budget rows already terminalized for a
 	// reservation. Late provider billing adjusts spent on each applicable scope.
 	ListFinalizedBudgetHolds(ctx context.Context, reservationID string) ([]ListFinalizedBudgetHoldsRow, error)
+	// ListGenerationCostEventsAdmin is the read side of the cost-event log the
+	// cost-spike runbook queries (docs/runbooks/cost-spike.md). One row per priced
+	// provider call. cost_reservation_id ties the row to the reservation that
+	// priced it (Wave 3), so a retried job's earlier attempts stay attributable to
+	// the reservation that actually paid for them.
+	//
+	// world_id is not a column on generation_cost_events; the runbook groups spend
+	// by world, so it is joined from the owning job. The join is LEFT because a
+	// cost event may exist without a job row (a pre-flight denial).
+	ListGenerationCostEventsAdmin(ctx context.Context, arg ListGenerationCostEventsAdminParams) ([]ListGenerationCostEventsAdminRow, error)
 	ListProviderModelPrices(ctx context.Context) ([]ListProviderModelPricesRow, error)
 	// Provider routing substrate (Phase 7A, internal/providers/routing).
 	//

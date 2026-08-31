@@ -122,3 +122,17 @@ func reservationFromRow(r dbgen.ListCostReservationsAdminRow) ReservationRow {
 		CreatedAt: tsTime(r.CreatedAt), UpdatedAt: tsTime(r.UpdatedAt),
 	}
 }
+
+func costEventFromRow(r dbgen.ListGenerationCostEventsAdminRow) CostEventRow {
+	return CostEventRow{
+		ID: r.ID, TenantID: r.TenantID, JobID: r.JobID, AssetID: r.AssetID,
+		TokenID: r.TokenID, WorldID: r.WorldID,
+		ProviderID: r.ProviderID, ModelID: r.ModelID,
+		ProviderAttemptID: r.ProviderAttemptID, CostReservationID: r.CostReservationID,
+		Operation:        r.Operation,
+		EstimatedCostUSD: numericPtr(r.EstimatedCostUsd),
+		ActualCostUSD:    numericPtr(r.ActualCostUsd),
+		DurationMs:       r.DurationMs, Status: r.Status,
+		CreatedAt: tsTime(r.CreatedAt),
+	}
+}

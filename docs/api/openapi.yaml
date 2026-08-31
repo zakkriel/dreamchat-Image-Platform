@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: DreamChat Image Platform API
-  version: 0.14.2
+  version: 0.15.0
   description: |
     Standalone API for generating, storing, retrieving, and versioning persistent visual assets for DreamChat worlds.
 
@@ -677,11 +677,11 @@ paths:
   #   cost-reservations — Phase 4B), admin job control
   #   (jobs/{id}/cancel|retry — Phase 7C-1), and webhook-endpoint config
   #   (PUT/GET /v1/admin/webhook-endpoint — Phase 7C-4).
-  #   Still planned (NOT served): provider controls, route controls, the
-  #   admin job LIST endpoint, and the cost-event log
-  #   (GET /v1/admin/cost-events — the generation_cost_events table is
-  #   written internally, but no read endpoint is mounted). These keep the
-  #   `**PLANNED**` marker in their description until implemented.
+  #   Also served: the cost-event log (GET /v1/admin/cost-events) and the
+  #   generation-economics scrape (GET /v1/admin/metrics).
+  #   Still planned (NOT served): provider controls, route controls, and the
+  #   admin job LIST endpoint. These keep the `**PLANNED**` marker in their
+  #   description until implemented.
   # There is NO /v1/admin/audit-events endpoint (planned / non-MVP); the
   # audit_events table is written internally by the served admin endpoints.
   #
@@ -1128,8 +1128,6 @@ paths:
       tags: [Admin]
       summary: List cost reservations
       description: |
-        **PLANNED — required admin surface for implementation, not yet served.**
-
         Cost reservations created during the pre-flight estimation pipeline
         (`docs/architecture/cost-control.md` §3 step 7). Useful for the
         cost-spike runbook to inspect what's currently held against budgets
@@ -1166,6 +1164,34 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/CostReservation'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /v1/admin/metrics:
+    get:
+      tags: [Admin]
+      summary: Generation-economics counters (Prometheus exposition)
+      description: |
+        Process-local generation-economics counters in the Prometheus text
+        exposition format, version 0.0.4. Metric names follow
+        `docs/architecture/observability.md`.
+
+        The counters are per process, so every API and worker instance is
+        scraped separately and summed by the query layer. Only raw counters are
+        exposed: derived figures (cache-hit rate, cost per usable image,
+        estimate-vs-actual variance) are ratios that must be computed across
+        instances, and a per-process ratio cannot be summed correctly.
+
+        Money totals are gauges, not counters: late provider reconciliation
+        applies signed deltas, so a cumulative actual can legitimately decrease.
+      security:
+        - BearerAuth: [admin:costs]
+      responses:
+        '200':
+          description: Prometheus text exposition
+          content:
+            text/plain:
+              schema: { type: string }
         default:
           $ref: '#/components/responses/ErrorResponse'
 
@@ -1268,10 +1294,16 @@ paths:
       tags: [Admin]
       summary: Query the cost-event log
       description: |
-        **PLANNED — required admin surface for implementation, not yet served.**
+        The cost-event log: one row per priced provider call, used by the
+        cost-spike runbook for diagnosis (`docs/runbooks/cost-spike.md`).
 
-        Cost events with filters by token, provider, asset_type, world, time
-        range. Used by the cost-spike runbook for diagnosis.
+        `cost_reservation_id` names the reservation that paid for the call, so a
+        retried job's earlier attempts stay attributable to the reservation that
+        priced them instead of inflating the current one.
+
+        `actual_cost_usd` is null when the provider reported no billable
+        amount — the platform never invents an actual. `world_id` is joined
+        from the owning job so spend can be grouped by world.
       security:
         - BearerAuth: [admin:costs]
       parameters:
@@ -1289,6 +1321,12 @@ paths:
           schema: { type: string }
         - in: query
           name: tenant_id
+          schema: { type: string }
+        - in: query
+          name: job_id
+          schema: { type: string }
+        - in: query
+          name: status
           schema: { type: string }
         - in: query
           name: created_after
@@ -2799,18 +2837,35 @@ components:
         updated_at: { type: string, format: date-time }
     CostEvent:
       type: object
-      required: [id, operation, status, created_at]
+      required: [id, tenant_id, operation, status, created_at]
       properties:
         id: { type: string }
-        job_id: { type: string }
-        asset_id: { type: string }
-        token_id: { type: string }
-        provider_id: { type: string }
-        model_id: { type: string }
+        tenant_id: { type: string }
+        job_id: { type: string, nullable: true }
+        asset_id: { type: string, nullable: true }
+        token_id: { type: string, nullable: true }
+        world_id:
+          type: string
+          nullable: true
+          description: Joined from the owning job so spend can be grouped by world.
+        provider_id: { type: string, nullable: true }
+        model_id: { type: string, nullable: true }
+        provider_attempt_id: { type: string, nullable: true }
+        cost_reservation_id:
+          type: string
+          nullable: true
+          description: |
+            The reservation that priced this call. Null only for rows written
+            before the reservation link existed (migration 0019).
         operation: { type: string }
-        estimated_cost_usd: { type: string }
-        actual_cost_usd: { type: string }
-        duration_ms: { type: integer }
+        estimated_cost_usd: { type: string, nullable: true }
+        actual_cost_usd:
+          type: string
+          nullable: true
+          description: |
+            Provider-reported spend. Null when the provider reported no
+            billable amount — the platform never invents an actual.
+        duration_ms: { type: integer, nullable: true }
         status: { type: string }
         created_at: { type: string, format: date-time }
 

@@ -128,6 +128,29 @@ type ReservationRow struct {
 	UpdatedAt       time.Time `json:"updated_at"`
 }
 
+// CostEventRow is one priced provider call. CostReservationID is the Wave 3
+// attribution link: it names the reservation that paid for this call, so a
+// retried job's earlier attempts stay attached to the reservation that priced
+// them instead of inflating the current one.
+type CostEventRow struct {
+	ID                string    `json:"id"`
+	TenantID          string    `json:"tenant_id"`
+	JobID             *string   `json:"job_id"`
+	AssetID           *string   `json:"asset_id"`
+	TokenID           *string   `json:"token_id"`
+	WorldID           *string   `json:"world_id"`
+	ProviderID        *string   `json:"provider_id"`
+	ModelID           *string   `json:"model_id"`
+	ProviderAttemptID *string   `json:"provider_attempt_id"`
+	CostReservationID *string   `json:"cost_reservation_id"`
+	Operation         string    `json:"operation"`
+	EstimatedCostUSD  *string   `json:"estimated_cost_usd"`
+	ActualCostUSD     *string   `json:"actual_cost_usd"`
+	DurationMs        *int32    `json:"duration_ms"`
+	Status            string    `json:"status"`
+	CreatedAt         time.Time `json:"created_at"`
+}
+
 // ---------------------------------------------------------------------------
 // Price book
 // ---------------------------------------------------------------------------
@@ -475,6 +498,57 @@ func (s *Service) ListReservations(ctx context.Context, f ReservationFilter) ([]
 	out := make([]ReservationRow, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, reservationFromRow(r))
+	}
+	return out, nil
+}
+
+type CostEventFilter struct {
+	TenantID      *string
+	TokenID       *string
+	JobID         *string
+	ProviderID    *string
+	ModelID       *string
+	WorldID       *string
+	Status        *string
+	CreatedAfter  *time.Time
+	CreatedBefore *time.Time
+	Limit         int
+}
+
+// ListCostEvents reads the cost-event log. It is the read endpoint the
+// cost-spike runbook assumes: the rows are written on every priced provider
+// call, but until now nothing could read them back out.
+func (s *Service) ListCostEvents(ctx context.Context, f CostEventFilter) ([]CostEventRow, error) {
+	limit := f.Limit
+	if limit <= 0 {
+		limit = defaultReservationRows
+	}
+	if limit > maxReservationRows {
+		limit = maxReservationRows
+	}
+	params := dbgen.ListGenerationCostEventsAdminParams{
+		TenantID:   f.TenantID,
+		TokenID:    f.TokenID,
+		JobID:      f.JobID,
+		ProviderID: f.ProviderID,
+		ModelID:    f.ModelID,
+		WorldID:    f.WorldID,
+		Status:     f.Status,
+		RowLimit:   int32(limit),
+	}
+	if f.CreatedAfter != nil {
+		params.CreatedAfter = pgtype.Timestamptz{Time: *f.CreatedAfter, Valid: true}
+	}
+	if f.CreatedBefore != nil {
+		params.CreatedBefore = pgtype.Timestamptz{Time: *f.CreatedBefore, Valid: true}
+	}
+	rows, err := dbgen.New(s.pool).ListGenerationCostEventsAdmin(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]CostEventRow, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, costEventFromRow(r))
 	}
 	return out, nil
 }

@@ -21,6 +21,7 @@ type stubAdminCostService struct {
 	createBudgetCalls int
 	updateBudgetCalls int
 	lastReservationF  admincost.ReservationFilter
+	lastCostEventF    admincost.CostEventFilter
 	lastCreateBudget  admincost.CreateBudgetInput
 	lastUpdatePrice   admincost.UpdatePriceInput
 }
@@ -57,6 +58,11 @@ func (s *stubAdminCostService) ListReservations(_ context.Context, f admincost.R
 	return []admincost.ReservationRow{{ID: "resv_1"}}, nil
 }
 
+func (s *stubAdminCostService) ListCostEvents(_ context.Context, f admincost.CostEventFilter) ([]admincost.CostEventRow, error) {
+	s.lastCostEventF = f
+	return []admincost.CostEventRow{{ID: "cev_1", Operation: "text_to_image", Status: "completed"}}, nil
+}
+
 func newAdminRouter(svc AdminCostService) chi.Router {
 	h := NewAdminCostHandler(svc)
 	r := chi.NewRouter()
@@ -65,6 +71,8 @@ func newAdminRouter(svc AdminCostService) chi.Router {
 		a.Post("/price-book", h.CreatePrice)
 		a.Get("/price-book", h.ListPrices)
 		a.Get("/price-book/{price_id}", h.GetPrice)
+		a.Get("/cost-events", h.ListCostEvents)
+		a.Get("/metrics", h.Metrics)
 		a.Put("/price-book/{price_id}", h.UpdatePrice)
 		a.Post("/cost-budgets", h.CreateBudget)
 		a.Get("/cost-budgets", h.ListBudgets)

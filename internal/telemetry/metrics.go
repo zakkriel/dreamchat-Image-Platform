@@ -1,6 +1,8 @@
 package telemetry
 
 import (
+	"fmt"
+	"io"
 	"math"
 	"strconv"
 	"sync/atomic"
@@ -135,4 +137,56 @@ func signedMicros(value string) (int64, bool) {
 		return 0, false
 	}
 	return int64(scaled), true
+}
+
+// exposition describes one metric in the Prometheus text exposition format.
+// Cumulative money totals are gauges rather than counters: late provider
+// reconciliation applies signed deltas, so an actual total can legitimately go
+// down, and a counter that decreases is a lie a scraper will misread as a
+// process restart.
+type expositionMetric struct {
+	name  string
+	help  string
+	kind  string
+	value string
+}
+
+// WriteExposition renders the snapshot in the Prometheus text exposition format
+// (version 0.0.4). It is written by hand precisely so the telemetry package
+// stays dependency-free: the format is a handful of lines, and pulling a client
+// library in would make every consumer of this package carry it.
+//
+// Metric names follow docs/architecture/observability.md. Counters are raw;
+// derived figures (cache-hit rate, $/usable image, estimate variance) are
+// deliberately NOT exposed here - they are ratios a query layer computes
+// correctly across instances, whereas a per-process ratio cannot be summed.
+func (s MetricsSnapshot) WriteExposition(w io.Writer) error {
+	for _, m := range []expositionMetric{
+		{"asset_cache_hit_count", "Reuse lookups served from an existing ready asset.", "counter", strconv.FormatInt(s.CacheHits, 10)},
+		{"asset_cache_miss_count", "Reuse lookups that required a fresh generation.", "counter", strconv.FormatInt(s.CacheMisses, 10)},
+		{"generation_usable_image_count", "Images persisted and delivered to a caller.", "counter", strconv.FormatInt(s.UsableImages, 10)},
+		{"provider_call_count", "Provider generate calls attempted.", "counter", strconv.FormatInt(s.ProviderCalls, 10)},
+		{"provider_policy_reject_count", "Provider content-policy rejections, surfaced verbatim.", "counter", strconv.FormatInt(s.PolicyRejects, 10)},
+		{"provider_fallback_attempt_count", "Same-price fallback routes attempted after a primary failure.", "counter", strconv.FormatInt(s.FallbackAttempts, 10)},
+		{"provider_fallback_success_count", "Fallback routes that produced a usable result.", "counter", strconv.FormatInt(s.FallbackSuccesses, 10)},
+		{"estimated_cost_usd", "Cumulative reserved estimate in USD.", "gauge", formatMicrosUSD(s.EstimatedCostMicrosUSD)},
+		{"actual_cost_usd", "Cumulative provider-reported actual in USD, including late reconciliation deltas.", "gauge", formatMicrosUSD(s.ActualCostMicrosUSD)},
+	} {
+		if _, err := fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s %s\n%s %s\n", m.name, m.help, m.name, m.kind, m.name, m.value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// formatMicrosUSD renders a micro-USD integer as plain decimal USD without
+// going through float64, so a large cumulative total cannot lose precision on
+// its way to the scraper.
+func formatMicrosUSD(micros int64) string {
+	sign := ""
+	if micros < 0 {
+		sign = "-"
+		micros = -micros
+	}
+	return fmt.Sprintf("%s%d.%06d", sign, micros/1_000_000, micros%1_000_000)
 }

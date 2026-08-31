@@ -396,6 +396,13 @@ func mountAdminCost(v1 chi.Router, deps Deps) {
 		a.Put("/cost-budgets/{budget_id}", h.UpdateBudget)
 
 		a.Get("/cost-reservations", h.ListReservations)
+		a.Get("/cost-events", h.ListCostEvents)
+
+		// Generation-economics counters in Prometheus exposition format. Served
+		// on the admin surface (not an open /metrics) because every route in
+		// this process is bearer-gated; a scraper authenticates like any other
+		// admin client.
+		a.Get("/metrics", h.Metrics)
 	})
 }
 

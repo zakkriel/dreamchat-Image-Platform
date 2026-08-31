@@ -30,6 +30,7 @@ type AdminCostService interface {
 	ListBudgets(ctx context.Context) ([]admincost.Budget, error)
 	UpdateBudget(ctx context.Context, actor admincost.Actor, id string, in admincost.UpdateBudgetInput) (admincost.Budget, error)
 	ListReservations(ctx context.Context, f admincost.ReservationFilter) ([]admincost.ReservationRow, error)
+	ListCostEvents(ctx context.Context, f admincost.CostEventFilter) ([]admincost.CostEventRow, error)
 }
 
 // AdminCostHandler serves the price-book, cost-budget, and cost-reservation
@@ -278,6 +279,91 @@ func (h *AdminCostHandler) ListReservations(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"reservations": rows})
+}
+
+// ---------------------------------------------------------------------------
+// Cost events
+// ---------------------------------------------------------------------------
+
+// ListCostEvents serves the cost-event log (docs/runbooks/cost-spike.md). The
+// rows have always been written on every priced provider call; this is the read
+// side that makes a cost investigation possible without database access.
+func (h *AdminCostHandler) ListCostEvents(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	var f admincost.CostEventFilter
+	if v := q.Get("tenant_id"); v != "" {
+		f.TenantID = &v
+	}
+	if v := q.Get("token_id"); v != "" {
+		f.TokenID = &v
+	}
+	if v := q.Get("job_id"); v != "" {
+		f.JobID = &v
+	}
+	if v := q.Get("status"); v != "" {
+		f.Status = &v
+	}
+	if v := q.Get("provider_id"); v != "" {
+		f.ProviderID = &v
+	}
+	if v := q.Get("model_id"); v != "" {
+		f.ModelID = &v
+	}
+	if v := q.Get("world_id"); v != "" {
+		f.WorldID = &v
+	}
+	if v := q.Get("created_after"); v != "" {
+		ts, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			httperr.Write(w, r, http.StatusBadRequest, httperr.CodeInvalidRequest, "created_after must be an RFC3339 timestamp")
+			return
+		}
+		f.CreatedAfter = &ts
+	}
+	if v := q.Get("created_before"); v != "" {
+		ts, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			httperr.Write(w, r, http.StatusBadRequest, httperr.CodeInvalidRequest, "created_before must be an RFC3339 timestamp")
+			return
+		}
+		f.CreatedBefore = &ts
+	}
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			httperr.Write(w, r, http.StatusBadRequest, httperr.CodeInvalidRequest, "limit must be a non-negative integer")
+			return
+		}
+		f.Limit = n
+	}
+	rows, err := h.Service.ListCostEvents(r.Context(), f)
+	if err != nil {
+		h.writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"cost_events": rows})
+}
+
+// ---------------------------------------------------------------------------
+// Metrics
+// ---------------------------------------------------------------------------
+
+// Metrics serves the generation-economics counters in the Prometheus text
+// exposition format. Wave 3 built these counters and nothing could read them:
+// they were write-only, which made every cost lever unverifiable in production.
+//
+// The counters are process-local, so each API and worker instance must be
+// scraped separately and summed by the query layer - which is exactly what a
+// Prometheus-style scrape does correctly, and why raw counters are exposed here
+// rather than per-process ratios.
+func (h *AdminCostHandler) Metrics(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	if err := telemetry.DefaultMetrics().Snapshot().WriteExposition(w); err != nil {
+		// The status line is already sent; a scraper sees a truncated body and
+		// retries. Logging is the router's job, so there is nothing else to do.
+		_ = err
+	}
 }
 
 // ---------------------------------------------------------------------------
