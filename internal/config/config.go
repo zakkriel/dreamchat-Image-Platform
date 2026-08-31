@@ -85,6 +85,17 @@ type Config struct {
 	// another real identity-capable provider is configured.
 	FalKey string
 
+	// ChromaKeyBackgroundRemoval (CHROMA_KEY_BACKGROUND_REMOVAL) makes
+	// transparent packs render against a flat magenta backdrop and key it out
+	// locally, spending no provider call, and fall back to the hosted matting
+	// model whenever the key cannot be trusted.
+	//
+	// Default OFF. The keyer itself is proven by unit tests, but whether the
+	// model actually paints a flat keyable backdrop is a per-model empirical
+	// question that has not been measured against a real render yet. Turning
+	// this on changes the prompt for transparent cells.
+	ChromaKeyBackgroundRemoval bool
+
 	APITokenPepper     string
 	OpenAPIDocsEnabled bool
 
@@ -143,6 +154,8 @@ func Load() (*Config, error) {
 		OpenAPIDocsEnabled: getEnvBool("OPENAPI_DOCS_ENABLED", defaultDocsEnabled(env)),
 
 		AllowSyntheticProviders: getEnvBool("ALLOW_SYNTHETIC_PROVIDERS", false),
+
+		ChromaKeyBackgroundRemoval: getEnvBool("CHROMA_KEY_BACKGROUND_REMOVAL", false),
 
 		GovernanceEnforcement:       GovernanceMode(getEnv("GOVERNANCE_ENFORCEMENT", string(GovernanceLogOnly))),
 		GovernanceMaxAge:            getEnvDuration("GOVERNANCE_MAX_AGE", 24*time.Hour),

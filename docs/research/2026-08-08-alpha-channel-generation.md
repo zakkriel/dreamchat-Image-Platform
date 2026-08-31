@@ -368,3 +368,112 @@ Extend the existing benchmark-harness convention at `cmd/sprite-sheet-benchmark`
 - Whether Recraft's `style_references` hold *facial identity* (as opposed to style) at bust crop.
 - Existence of any Flux-family LayerDiffuse port with a hosted endpoint (none found on fal).
 - Severity of CatmullRom overshoot (`C > A`) on our actual sprite content.
+
+
+---
+
+# Addendum — Chroma key (reverse green screen)
+
+*Added 2026-08-08 after the main survey. This option is not a vendor product,
+so it does not appear above; it was evaluated by measurement in this repo.*
+
+## The idea
+
+Ask the model for a strong flat backdrop colour, then remove that colour
+locally. No second provider call, no vendor, deterministic and reproducible —
+none of which is true of a hosted matting call.
+
+Implemented in `internal/imaging/chromakey.go`, wired as a drop-in
+`BackgroundRemover` (`internal/jobs/background.go`) behind
+`CHROMA_KEY_BACKGROUND_REMOVAL`, **default off**.
+
+## The measured limit
+
+Keying is done on **chroma** (Cb/Cr), not RGB distance: a backdrop is rarely
+uniformly lit even when the model cooperates, and shading changes luma while
+leaving hue intact.
+
+Chroma distance from a full-intensity magenta key (`#FF00FF`) to colours that
+appear in real character art:
+
+| Subject colour | Chroma distance from key |
+|---|---|
+| 75% backdrop edge blend | 46 |
+| **purple clothing** | **78.9** |
+| **pink hair** | **81.6** |
+| 50% backdrop edge blend | 93 |
+| red lips | 105 |
+| light/pink skin | 123 |
+| neutral (white/grey/black) | 136 |
+| green subject | 186 |
+
+The problem is visible in the ordering: **a half-covered edge pixel (93) is
+FURTHER from the key than pink hair (82) or purple clothing (79).** Any
+threshold wide enough to give anti-aliased edges a soft matte is also wide
+enough to eat saturated subject colours.
+
+Sweeping every key hue against a realistic character palette does not fix it —
+it only moves which colour is at risk:
+
+| Key | Nearest realistic subject colour | Distance |
+|---|---|---|
+| pure green `#00FF00` | green clothing | 88.1 |
+| chartreuse `#80FF00` | gold trim | 81.4 |
+| **magenta `#FF00FF`** | **purple clothing** | **78.9** |
+| cyan `#00FFFF` | teal accent | 60.7 |
+| blue `#0000FF` | blue clothing | 62.6 |
+
+The best available key (pure green, 88.1) is still nearer to a subject colour
+than a 50/50 edge pixel is. **There is no key colour for which the soft-matte
+band and the subject-safety band do not overlap.** Magenta is close to
+optimal — green is marginally safer on paper but collides with the far more
+common case of green clothing and foliage.
+
+## What that means in practice
+
+Chroma keying is a **cost/quality trade, not a free win**:
+
+- edges come out **harder** than a matting model would give, because the ramp
+  has to stay narrow (inner 28, outer 72) to protect subject colours;
+- hair — the exact case matting models are built for — is where that hurts most.
+
+So it is built as *cheap path, verified, with a fallback*, and refuses rather
+than degrades. Three checks, each guarding a silent failure:
+
+1. **`ErrBackdropNotFound`** — the border ring is not ≥90% key. The model
+   ignored the instruction; keying anyway would erase whatever sat near the key
+   hue.
+2. **`ErrSubjectContainsKey`** — the key mask is flood-filled from the border,
+   and any keyed region *not* reachable from it is interior. Interior regions
+   are **never made transparent**, only reported, so a sprite is never punched
+   through.
+3. **`ErrSubjectNearKey`** — more than 3% of opaque subject pixels sit inside 92
+   chroma units of the key. This is the pink-hair case: no pixel crossed the key
+   threshold, but the silhouette cannot be trusted at the edges.
+
+Any refusal delegates to the hosted matting model with the **original** bytes.
+
+## Why this is now worth trying
+
+The JPEG fix in this same change set matters more here than anywhere: keying
+lossy output puts compression ringing on exactly the edges the key must resolve.
+With PNG requested at the source, keying is being fed clean pixels for the first
+time.
+
+## What is still unverified
+
+**Whether FLUX.1 Kontext actually paints a flat, keyable backdrop when asked.**
+That is a per-model empirical question and it needs `FAL_KEY` and real renders.
+Until it is measured, the flag stays off.
+
+The measurement to run, per cell, over a real pack:
+
+- fraction of cells accepted by the key vs falling back (this is the saving);
+- for accepted cells, a side-by-side against the BiRefNet cutout, judged on hair
+  and edge quality by eye;
+- provider spend with the flag on vs off.
+
+If the acceptance rate is high and edge quality holds, this removes the second
+provider call on most cells — and, incidentally, removes the unpriced BiRefNet
+call from those cells entirely, which is the cost-accounting gap noted in the
+main document.

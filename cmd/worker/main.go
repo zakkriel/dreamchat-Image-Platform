@@ -105,6 +105,12 @@ func main() {
 			Doer:    &http.Client{Timeout: 90 * time.Second},
 		}
 	}
+	if cfg.ChromaKeyBackgroundRemoval {
+		// Key locally first and keep the hosted matter as the fallback, so a
+		// render the key refuses still produces a correct sprite - it just
+		// costs the provider call the key was trying to avoid.
+		remover = &jobs.ChromaKeyRemover{Fallback: remover, Logger: logger}
+	}
 	worker := &jobs.Worker{
 		Jobs:            jobs.NewRepository(pool),
 		Assets:          assets.NewRepository(pool),

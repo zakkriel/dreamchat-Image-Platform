@@ -370,6 +370,13 @@ func (w *Worker) generatePackItem(ctx context.Context, job Job, plan packPlan, r
 	}
 	aspectRatio := plan.aspectRatio
 	prompt := composePromptWithStyle(subject, payloadString(job.InputPayload, "style_positive_prompt"))
+	// A transparent cell keyed locally needs the model to paint the backdrop the
+	// keyer looks for. When the remover is the hosted matting model this must
+	// NOT be added: it would put a magenta backdrop into an image that is about
+	// to be matted, making the matting job harder for no reason.
+	if payloadString(job.InputPayload, "output_background") == "transparent" && w.chromaKeyEnabled() {
+		prompt = composeChromaBackdrop(prompt)
+	}
 	negativePrompt := payloadString(job.InputPayload, "style_negative_prompt")
 
 	// Pack cells use the same persisted primary + same-price fallback chain as

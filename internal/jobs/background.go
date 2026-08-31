@@ -16,11 +16,15 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/png"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/zakkriel/drchat-image-platform/internal/imaging"
 	"github.com/zakkriel/drchat-image-platform/internal/providers"
 )
 
@@ -167,4 +171,112 @@ func (f *FalBackgroundRemover) fetchResult(ctx context.Context, url string) ([]b
 		return nil, fmt.Errorf("birefnet download status %d", res.StatusCode)
 	}
 	return io.ReadAll(io.LimitReader(res.Body, 64<<20))
+}
+
+// ChromaKeyRemover extracts alpha from a render made against a known flat
+// backdrop, with NO provider call. It is the cheap path: the render already
+// happened, and the backdrop is removed locally in microseconds.
+//
+// It is deliberately built as "cheap path, verified, with a fallback" rather
+// than as a replacement. Keying a diffusion render is ambiguous by measurement,
+// not by opinion: across every possible key hue, the nearest realistic subject
+// colour sits 79-88 chroma units away while a half-covered edge pixel sits
+// about 93, so the safe threshold is always narrower than a soft matte wants
+// (see internal/imaging/chromakey.go). When imaging refuses - no flat backdrop,
+// the subject contains the key, or the subject crowds it - this delegates to
+// Fallback, which is the hosted matting model.
+//
+// Fallback is therefore not optional in production: without it a refused key
+// fails the cell rather than costing one provider call.
+type ChromaKeyRemover struct {
+	// Options tunes the key; the zero value uses imaging defaults.
+	Options *imaging.ChromaKeyOptions
+	// Fallback handles renders the key refuses. Nil means a refusal is fatal
+	// for the cell.
+	Fallback BackgroundRemover
+	Logger   *slog.Logger
+}
+
+func (c *ChromaKeyRemover) log() *slog.Logger {
+	if c.Logger == nil {
+		return slog.Default()
+	}
+	return c.Logger
+}
+
+func (c *ChromaKeyRemover) Remove(ctx context.Context, img providers.ProviderImage) (providers.ProviderImage, error) {
+	opts := imaging.DefaultChromaKeyOptions()
+	if c.Options != nil {
+		opts = *c.Options
+	}
+	decoded, _, err := image.Decode(bytes.NewReader(img.Bytes))
+	if err != nil {
+		return c.fallback(ctx, img, "undecodable render", err)
+	}
+	keyed, report, keyErr := imaging.ChromaKey(decoded, opts)
+	if keyErr != nil {
+		return c.fallback(ctx, img, "key refused", keyErr,
+			"border_coverage", report.BorderCoverage,
+			"interior_key_fraction", report.InteriorKeyFraction,
+			"subject_near_key_fraction", report.SubjectNearKeyFraction)
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, keyed); err != nil {
+		return c.fallback(ctx, img, "keyed encode failed", err)
+	}
+	c.log().Info("worker: background removed by chroma key (no provider call)",
+		"transparent_pixels", report.TransparentPixels,
+		"partial_pixels", report.PartialPixels,
+		"border_coverage", report.BorderCoverage)
+	return providers.ProviderImage{
+		Bytes:       buf.Bytes(),
+		ContentType: "image/png",
+		Width:       keyed.Bounds().Dx(),
+		Height:      keyed.Bounds().Dy(),
+	}, nil
+}
+
+// fallback hands the ORIGINAL render to the matting model. The partially keyed
+// result is deliberately discarded: mixing a refused key into the fallback's
+// input would feed it an image the key already damaged.
+func (c *ChromaKeyRemover) fallback(ctx context.Context, img providers.ProviderImage, reason string, cause error, fields ...any) (providers.ProviderImage, error) {
+	if c.Fallback == nil {
+		return providers.ProviderImage{}, fmt.Errorf("%w: chroma key %s and no fallback remover is configured: %v", errBackgroundRemoval, reason, cause)
+	}
+	c.log().Info("worker: chroma key fell back to the matting provider",
+		append([]any{"reason", reason, "cause", cause.Error()}, fields...)...)
+	return c.Fallback.Remove(ctx, img)
+}
+
+// ChromaBackdropInstruction is appended to a transparent pack cell's prompt
+// when chroma keying is enabled. It is a RENDERING instruction, composed the
+// same way the style profile's prose already is - the platform still never
+// inspects or rewrites what the caller wrote about the subject.
+//
+// It is explicit about flatness because the failure mode is a backdrop the
+// model shades or textures: keying needs one hue, evenly applied, with no
+// gradient and no cast shadow. The caller already asked for a transparent
+// result, so the platform owns the backdrop entirely.
+const ChromaBackdropInstruction = "The background must be a completely flat, uniform, solid magenta " +
+	"(hex #FF00FF) chroma-key backdrop: a single even colour with no gradient, " +
+	"no shading, no texture, no vignette, and no shadows cast onto it. The " +
+	"subject must not be magenta and must not touch the edges of the frame."
+
+// composeChromaBackdrop appends the backdrop instruction to an already composed
+// prompt. It goes last so it reads as a trailing directive rather than
+// competing with the subject prose the caller authored.
+func composeChromaBackdrop(prompt string) string {
+	if strings.TrimSpace(prompt) == "" {
+		return ChromaBackdropInstruction
+	}
+	return prompt + "\n\n" + ChromaBackdropInstruction
+}
+
+// chromaKeyEnabled reports whether the configured remover keys locally, which
+// is what makes the backdrop instruction correct to add. Asking the model for a
+// magenta backdrop when the remover is a matting model would actively hurt: it
+// would hand the matter a saturated backdrop it never asked for.
+func (w *Worker) chromaKeyEnabled() bool {
+	_, ok := w.Background.(*ChromaKeyRemover)
+	return ok
 }
