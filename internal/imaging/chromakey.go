@@ -65,14 +65,38 @@ var DefaultChromaKey = color.RGBA{R: 255, G: 0, B: 255, A: 255}
 // DefaultChromaKeyOptions.
 type ChromaKeyOptions struct {
 	Key color.RGBA
-	// InnerTolerance is the chroma distance within which a pixel is pure
-	// backdrop and becomes fully transparent.
-	InnerTolerance float64
-	// OuterTolerance is the chroma distance beyond which a pixel is pure
-	// subject and stays fully opaque. Between the two the alpha ramps, which is
-	// what gives anti-aliased edges and fine hair a soft matte instead of a
-	// staircase.
-	OuterTolerance float64
+	// HueTolerance is the hue difference, in degrees, within which a
+	// sufficiently saturated pixel is confidently backdrop.
+	//
+	// Hue rather than distance-from-the-key-colour, because that is what a real
+	// render produces. Asked for #FF00FF, FLUX.1 Kontext paints the right HUE
+	// at roughly half the saturation (measured chroma magnitude 61-77 against
+	// the key's 136) with a vignette. Euclidean distance from the key is
+	// dominated by that saturation gap and scored the backdrop as 68-82 away -
+	// further than a subject colour - so it keyed nothing at all.
+	HueTolerance float64
+	// WeakHueTolerance is the looser hue difference accepted for pixels that
+	// are CONNECTED to confident backdrop. This is hysteresis, and it is what
+	// absorbs the vignette: the measured corner sits 42 degrees off-hue at a
+	// third of the saturation, which no single threshold can accept without
+	// also accepting real subject colours.
+	WeakHueTolerance float64
+	// MinChroma is the saturation floor for confident backdrop. Below it a
+	// pixel is close to neutral grey and its hue is numerically unstable.
+	MinChroma float64
+	// WeakMinChroma is the saturation floor for connected backdrop.
+	WeakMinChroma float64
+	// WeakMaxChroma is the saturation CEILING for connected backdrop, and it is
+	// what separates a vignette from vivid hair. Measured: the vignetted corner
+	// sits 42 degrees off-hue at chroma magnitude 33, while pink hair sits 28
+	// degrees off at 70. Hue cannot tell them apart - the vignette is further
+	// off-hue than the hair - but saturation can.
+	WeakMaxChroma float64
+	// MaxTransparentFraction refuses a key that removed implausibly much of the
+	// frame. A subject whose own colour matches the key (purple clothing lands
+	// at the same hue offset as the backdrop) would otherwise be keyed away in
+	// silence, leaving nothing to notice.
+	MaxTransparentFraction float64
 	// MinBorderCoverage is the fraction of the outer border ring that must key
 	// before the image is accepted as having a backdrop at all.
 	//
@@ -85,11 +109,10 @@ type ChromaKeyOptions struct {
 	// MaxInteriorKeyFraction is how much of the interior may match the key
 	// before the subject is judged to collide with it.
 	MaxInteriorKeyFraction float64
-	// DangerTolerance is the chroma distance under which an OPAQUE subject
-	// pixel counts as uncomfortably close to the key. Pixels between
-	// OuterTolerance and this stay fully opaque - they are subject - but they
-	// signal that the silhouette may be unreliable.
-	DangerTolerance float64
+	// DangerHueTolerance is the hue difference under which an OPAQUE subject
+	// pixel counts as uncomfortably close to the key. Such pixels stay opaque -
+	// they are subject - but they signal the silhouette may be unreliable.
+	DangerHueTolerance float64
 	// MaxSubjectNearKeyFraction is how much of the subject may sit inside
 	// DangerTolerance before the key is refused.
 	MaxSubjectNearKeyFraction float64
@@ -113,18 +136,25 @@ type ChromaKeyOptions struct {
 // refuse a render and fall back than ship a subject with holes in it.
 func DefaultChromaKeyOptions() ChromaKeyOptions {
 	return ChromaKeyOptions{
-		Key:               DefaultChromaKey,
-		InnerTolerance:    28,
-		OuterTolerance:    72,
+		Key: DefaultChromaKey,
+		// Measured against real renders: the backdrop lands 19-21 degrees off
+		// pure magenta, every subject colour except purple clothing is 50+
+		// degrees away, and pink hair is 28.
+		HueTolerance:      25,
+		WeakHueTolerance:  55,
+		MinChroma:         25,
+		WeakMinChroma:     12,
+		WeakMaxChroma:     45,
 		MinBorderCoverage: 0.50,
 		// A hole punched through the subject is the worst outcome, so the
 		// enclosed-region budget is tiny.
 		MaxInteriorKeyFraction: 0.02,
-		// 92 sits just under the ~93 of a half-covered edge pixel and just
-		// above the 79-88 where real subject colours live, so the danger band
-		// flags a magenta-haired character without flagging its own edges.
-		DangerTolerance:           92,
+		// Purple clothing sits at the SAME 20-degree offset as the backdrop and
+		// pink hair at 28, so a subject wearing either is genuinely ambiguous
+		// and must be refused rather than keyed.
+		DangerHueTolerance:        35,
 		MaxSubjectNearKeyFraction: 0.03,
+		MaxTransparentFraction:    0.85,
 		DespillStrength:           1,
 		EdgeDespillRadius:         2,
 	}
@@ -161,77 +191,63 @@ func ChromaKey(src image.Image, opts ChromaKeyOptions) (*image.NRGBA, ChromaKeyR
 	if w <= 0 || h <= 0 {
 		return nil, report, errors.New("imaging: chroma key on an empty image")
 	}
-	if opts.OuterTolerance <= opts.InnerTolerance {
-		return nil, report, errors.New("imaging: chroma key OuterTolerance must exceed InnerTolerance")
+	if opts.WeakHueTolerance < opts.HueTolerance {
+		return nil, report, errors.New("imaging: chroma key WeakHueTolerance must be >= HueTolerance")
 	}
 
 	keyCb, keyCr := chromaOf(opts.Key.R, opts.Key.G, opts.Key.B)
 	keyDirCb, keyDirCr := normalizeChroma(keyCb, keyCr)
+	keyHue := math.Atan2(keyCr, keyCb) * 180 / math.Pi
 
-	// Pass 1: alpha from chroma distance. Alpha is stored per pixel so pass 2
-	// can reason about connectivity before anything is made transparent.
-	alpha := make([]uint8, w*h)
-	dist := make([]float64, w*h)
+	// Pass 1: classify by hue offset and saturation. strong = confident
+	// backdrop; weak = plausible backdrop, accepted only where it connects to
+	// strong (hysteresis, which is what absorbs a vignette).
+	const (
+		clsSubject = 0
+		clsWeak    = 1
+		clsStrong  = 2
+	)
+	class := make([]uint8, w*h)
+	hueDiff := make([]float64, w*h)
 	for y := range h {
 		for x := range w {
 			r, g, b, _ := src.At(bounds.Min.X+x, bounds.Min.Y+y).RGBA()
 			cb, cr := chromaOf(uint8(r>>8), uint8(g>>8), uint8(b>>8))
-			d := math.Hypot(cb-keyCb, cr-keyCr)
-			dist[y*w+x] = d
+			mag := math.Hypot(cb, cr)
+			hd := math.Abs(math.Mod(math.Atan2(cr, cb)*180/math.Pi-keyHue+540, 360) - 180)
+			i := y*w + x
+			hueDiff[i] = hd
 			switch {
-			case d <= opts.InnerTolerance:
-				alpha[y*w+x] = 0
-			case d >= opts.OuterTolerance:
-				alpha[y*w+x] = 255
-			default:
-				ramp := (d - opts.InnerTolerance) / (opts.OuterTolerance - opts.InnerTolerance)
-				alpha[y*w+x] = uint8(math.Round(ramp * 255))
+			case hd <= opts.HueTolerance && mag >= opts.MinChroma:
+				class[i] = clsStrong
+			case hd <= opts.WeakHueTolerance && mag >= opts.WeakMinChroma &&
+				(opts.WeakMaxChroma <= 0 || mag <= opts.WeakMaxChroma):
+				class[i] = clsWeak
 			}
 		}
 	}
 
-	// Pass 2: only backdrop CONNECTED TO THE BORDER is really backdrop. A keyed
-	// region enclosed by the subject is the subject's own colour, and punching
-	// it out would silently produce a holed sprite.
-	connected := floodFillFromBorder(alpha, w, h)
+	// Pass 2: the backdrop is what is REACHABLE FROM THE BORDER through
+	// backdrop-ish pixels, seeded only from confident ones. A purple shirt in
+	// the middle of the subject is never reached; a vignetted corner is.
+	backdrop := floodBackdrop(class, w, h)
 
 	borderKeyed, borderTotal := 0, 0
 	interiorKeyed, interiorTotal := 0, 0
 	for y := range h {
 		for x := range w {
 			i := y*w + x
-			onBorder := x == 0 || y == 0 || x == w-1 || y == h-1
-			if onBorder {
+			if x == 0 || y == 0 || x == w-1 || y == h-1 {
 				borderTotal++
-				if alpha[i] == 0 {
+				if backdrop[i] {
 					borderKeyed++
 				}
 				continue
 			}
 			interiorTotal++
-			if alpha[i] < 255 && !connected[i] {
+			if class[i] == clsStrong && !backdrop[i] {
 				interiorKeyed++
 			}
-		}
-	}
-
-	// Subject proximity: how much of what stays opaque is chromatically close
-	// to the key. A magenta-haired character trips this even though no pixel
-	// crossed the key threshold, which is the point - the silhouette would be
-	// unreliable at the edges where hair meets backdrop.
-	subjectNear, subjectTotal := 0, 0
-	if opts.DangerTolerance > opts.OuterTolerance {
-		for i := range alpha {
-			if alpha[i] != 255 {
-				continue
-			}
-			subjectTotal++
-			if dist[i] < opts.DangerTolerance {
-				subjectNear++
-			}
-		}
-		if subjectTotal > 0 {
-			report.SubjectNearKeyFraction = float64(subjectNear) / float64(subjectTotal)
 		}
 	}
 	if borderTotal > 0 {
@@ -239,6 +255,53 @@ func ChromaKey(src image.Image, opts ChromaKeyOptions) (*image.NRGBA, ChromaKeyR
 	}
 	if interiorTotal > 0 {
 		report.InteriorKeyFraction = float64(interiorKeyed) / float64(interiorTotal)
+	}
+
+	// Alpha: backdrop is transparent. A pixel that is NOT backdrop but touches
+	// it is the anti-aliased boundary, and gets a soft matte from how far its
+	// hue sits from the key - that is where a blend of subject and backdrop
+	// lands.
+	alpha := make([]uint8, w*h)
+	for i := range alpha {
+		alpha[i] = 255
+	}
+	for y := range h {
+		for x := range w {
+			i := y*w + x
+			if backdrop[i] {
+				alpha[i] = 0
+				continue
+			}
+			if !touchesBackdrop(backdrop, w, h, x, y) {
+				continue
+			}
+			hd := hueDiff[i]
+			if hd >= opts.WeakHueTolerance {
+				continue
+			}
+			ramp := (hd - opts.HueTolerance) / (opts.WeakHueTolerance - opts.HueTolerance)
+			if ramp < 0 {
+				ramp = 0
+			}
+			alpha[i] = uint8(math.Round(ramp * 255))
+		}
+	}
+
+	// Subject proximity: opaque pixels whose hue crowds the key. Purple
+	// clothing lands at the same offset as the backdrop itself, so this is the
+	// check that keeps an ambiguous character out of the cheap path.
+	subjectNear, subjectTotal := 0, 0
+	for i := range alpha {
+		if alpha[i] != 255 {
+			continue
+		}
+		subjectTotal++
+		if hueDiff[i] <= opts.DangerHueTolerance && class[i] != clsSubject {
+			subjectNear++
+		}
+	}
+	if subjectTotal > 0 {
+		report.SubjectNearKeyFraction = float64(subjectNear) / float64(subjectTotal)
 	}
 
 	if report.BorderCoverage < opts.MinBorderCoverage {
@@ -250,9 +313,19 @@ func ChromaKey(src image.Image, opts ChromaKeyOptions) (*image.NRGBA, ChromaKeyR
 	if opts.MaxSubjectNearKeyFraction > 0 && report.SubjectNearKeyFraction > opts.MaxSubjectNearKeyFraction {
 		return nil, report, ErrSubjectNearKey
 	}
+	transparent := 0
+	for _, a := range alpha {
+		if a == 0 {
+			transparent++
+		}
+	}
+	if opts.MaxTransparentFraction > 0 && report.TotalPixels > 0 &&
+		float64(transparent)/float64(report.TotalPixels) > opts.MaxTransparentFraction {
+		report.TransparentPixels = transparent
+		return nil, report, ErrSubjectNearKey
+	}
 
-	// Distance (in pixels, capped at the radius) from each pixel to the nearest
-	// fully transparent one, so despill can fade out across the rim band.
+	connected := backdrop
 	edgeDist := edgeDistance(alpha, connected, w, h, opts.EdgeDespillRadius)
 
 	// Pass 3: compose. Unconnected keyed pixels are restored to opaque so the
@@ -266,9 +339,6 @@ func ChromaKey(src image.Image, opts ChromaKeyOptions) (*image.NRGBA, ChromaKeyR
 			r, g, b := uint8(r16>>8), uint8(g16>>8), uint8(b16>>8)
 
 			a := alpha[i]
-			if a < 255 && !connected[i] {
-				a = 255
-			}
 			if opts.DespillStrength > 0 {
 				// Spill scales with how much backdrop was removed, and for
 				// opaque rim pixels with how close they sit to the cutout edge.
@@ -293,63 +363,6 @@ func ChromaKey(src image.Image, opts ChromaKeyOptions) (*image.NRGBA, ChromaKeyR
 		}
 	}
 	return dst, report, nil
-}
-
-// floodFillFromBorder marks every fully-keyed pixel reachable from the image
-// border through other fully-keyed pixels. 4-connectivity: diagonal leakage
-// through an anti-aliased edge would let the fill escape into an enclosed
-// region and defeat the whole check.
-func floodFillFromBorder(alpha []uint8, w, h int) []bool {
-	connected := make([]bool, w*h)
-	queue := make([]int, 0, w*2+h*2)
-
-	push := func(x, y int) {
-		i := y*w + x
-		if alpha[i] == 0 && !connected[i] {
-			connected[i] = true
-			queue = append(queue, i)
-		}
-	}
-	for x := range w {
-		push(x, 0)
-		push(x, h-1)
-	}
-	for y := range h {
-		push(0, y)
-		push(w-1, y)
-	}
-	for len(queue) > 0 {
-		i := queue[len(queue)-1]
-		queue = queue[:len(queue)-1]
-		x, y := i%w, i/w
-		if x > 0 {
-			push(x-1, y)
-		}
-		if x < w-1 {
-			push(x+1, y)
-		}
-		if y > 0 {
-			push(x, y-1)
-		}
-		if y < h-1 {
-			push(x, y+1)
-		}
-	}
-	// Partially-keyed edge pixels neighbouring connected backdrop are part of
-	// the silhouette, not interior holes.
-	for y := range h {
-		for x := range w {
-			i := y*w + x
-			if alpha[i] == 0 || alpha[i] == 255 || connected[i] {
-				continue
-			}
-			if (x > 0 && connected[i-1]) || (x < w-1 && connected[i+1]) ||
-				(y > 0 && connected[i-w]) || (y < h-1 && connected[i+w]) {
-				connected[i] = true
-			}
-		}
-	}
-	return connected
 }
 
 // chromaOf returns the Cb/Cr chroma of an RGB triple. Luma is discarded on
@@ -441,4 +454,55 @@ func edgeDistance(alpha []uint8, connected []bool, w, h, radius int) []int {
 		}
 	}
 	return dist
+}
+
+// floodBackdrop returns the backdrop mask: pixels reachable from the image
+// border through backdrop-ish pixels, seeded ONLY from confident ones. Seeding
+// from confident pixels is what stops a weak, ambiguous region on the frame
+// edge from dragging the whole subject out.
+func floodBackdrop(class []uint8, w, h int) []bool {
+	const clsWeak, clsStrong = 1, 2
+	out := make([]bool, w*h)
+	queue := make([]int, 0, w*2+h*2)
+	seed := func(x, y int) {
+		i := y*w + x
+		if class[i] == clsStrong && !out[i] {
+			out[i] = true
+			queue = append(queue, i)
+		}
+	}
+	for x := range w {
+		seed(x, 0)
+		seed(x, h-1)
+	}
+	for y := range h {
+		seed(0, y)
+		seed(w-1, y)
+	}
+	for head := 0; head < len(queue); head++ {
+		i := queue[head]
+		x, y := i%w, i/w
+		grow := func(nx, ny int) {
+			if nx < 0 || ny < 0 || nx >= w || ny >= h {
+				return
+			}
+			n := ny*w + nx
+			if out[n] || (class[n] != clsStrong && class[n] != clsWeak) {
+				return
+			}
+			out[n] = true
+			queue = append(queue, n)
+		}
+		grow(x-1, y)
+		grow(x+1, y)
+		grow(x, y-1)
+		grow(x, y+1)
+	}
+	return out
+}
+
+func touchesBackdrop(backdrop []bool, w, h, x, y int) bool {
+	i := y*w + x
+	return (x > 0 && backdrop[i-1]) || (x < w-1 && backdrop[i+1]) ||
+		(y > 0 && backdrop[i-w]) || (y < h-1 && backdrop[i+w])
 }

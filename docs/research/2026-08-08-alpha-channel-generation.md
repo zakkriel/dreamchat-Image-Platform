@@ -541,3 +541,82 @@ They are not competing on the same axis. BiRefNet is the **quality** path and
 costs a provider call. Chroma keying is the **cost** path — $0, but with harder
 edges and a measured subject-colour hazard, which is why it verifies and falls
 back to exactly this remover. Improving the fallback improves the floor for both.
+
+
+---
+
+# Addendum 3 — The real run (measured, not projected)
+
+*Two real FLUX.1 Kontext renders, $0.08 spent, via
+`cmd/chroma-key-benchmark`. This replaces the earlier "could work" with
+numbers.*
+
+## What the model actually paints
+
+Asked, explicitly, for "a completely flat, uniform, solid magenta (hex #FF00FF)
+chroma-key backdrop… no gradient, no shading, no texture, no vignette", FLUX.1
+Kontext paints a **photographic studio backdrop**: right hue, roughly half the
+saturation, with visible texture and a heavy corner vignette.
+
+| Sampled point | RGB | chroma magnitude | hue offset from #FF00FF |
+|---|---|---|---|
+| top-left | (171, 16, 114) | 73 | 20.2° |
+| top-centre | (194, 33, 133) | 76 | 20.8° |
+| left-middle | (173, 10, 115) | 77 | 19.4° |
+| **bottom-right (vignette)** | (96, 28, 47) | **33** | **41.8°** |
+
+Key colour `#FF00FF` has chroma magnitude 136. The backdrop is at ~55% of it.
+
+## That broke the first implementation completely
+
+Keying on Euclidean distance from the key colour scored the backdrop **68–82
+units away** — *further than pink hair* — so border coverage came out **0.000**
+and both renders were refused. The metric was dominated by the saturation gap,
+not by hue.
+
+## Rewritten on the evidence: hue + saturation, with hysteresis
+
+Hue offset separates subject from backdrop far better than distance does:
+
+| | hue offset from key |
+|---|---|
+| real backdrop | 19–21° |
+| **purple clothing** | **20.1°** |
+| pink hair | 28.3° |
+| red lips, skin, blue, gold, green | 50–173° |
+
+So: confident backdrop = hue ≤25° and saturated; everything at 50°+ is safe by a
+wide margin. The vignette (41.8°, magnitude 33) is *further off-hue than pink
+hair* (28.3°, magnitude 70) — no hue threshold separates them, but **saturation
+does**, which is why weak/connected backdrop carries a saturation ceiling.
+Purple clothing at 20.1° is genuinely indistinguishable from the backdrop and is
+caught by refusal, not by keying.
+
+## Result on the real renders
+
+| render | border coverage | outcome |
+|---|---|---|
+| s01 | 0.750 | **keyed** — 45.4% transparent, 3,951 soft-matte pixels |
+| s02 | 0.476 | refused (`ErrBackdropNotFound`), fell back |
+
+**1 of 2 accepted.** The accepted cutout has a correct silhouette with hair
+detail preserved — and **visible magenta residue** where the vignette was too
+dark and too off-hue to key. BiRefNet on the same render is visibly cleaner.
+
+## Verdict
+
+**Keep `CHROMA_KEY_BACKGROUND_REMOVAL` off.** On real Kontext output it accepts
+about half the renders and the accepted ones need touch-up. It is safe — it
+refuses and falls back rather than shipping a bad cutout — but it does not beat
+the matting model today.
+
+What would change the verdict, in order of expected value:
+
+1. **A model that honours "flat backdrop."** This is a prompt/model property, not
+   an algorithm property. Worth testing the same prompt on other identity-capable
+   endpoints before writing the idea off.
+2. **Despill the matting output.** BiRefNet cuts but does not despill: its
+   cutout retains magenta spill in the hair, which our despill removes. The two
+   are complementary — the matte from BiRefNet, the colour correction from here.
+3. Widening the weak band further trades directly against eating purple clothing,
+   which the measurements show is already at the same hue offset as the backdrop.

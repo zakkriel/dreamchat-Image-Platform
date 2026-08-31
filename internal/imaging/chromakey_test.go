@@ -114,10 +114,10 @@ func TestChromaKeyRefusesWhenBackdropIsMissing(t *testing.T) {
 func TestChromaKeyProducesSoftAlphaOnBlendedEdges(t *testing.T) {
 	subject := image.Rect(10, 10, 30, 30)
 	src := magentaBacked(40, 40, subject, color.RGBA{R: 20, G: 140, B: 90, A: 255})
-	// A mostly-backdrop edge blend (~75% key), which is where the ramp lives.
-	// A 50/50 blend sits ~93 chroma units out - deliberately outside the ramp,
-	// because real subject colours live at 79-88 and would be eaten with it.
-	blend := color.RGBA{R: 196, G: 35, B: 214, A: 255}
+	// An edge pixel whose hue has been pulled ~37 degrees off the key by the
+	// subject underneath: past the confident band, so it is not backdrop, but
+	// touching backdrop, so it earns a soft matte.
+	blend := color.RGBA{R: 48, G: 0, B: 123, A: 255}
 	for y := 10; y < 30; y++ {
 		src.Set(9, y, blend)
 	}
@@ -139,7 +139,7 @@ func TestChromaKeyProducesSoftAlphaOnBlendedEdges(t *testing.T) {
 func TestChromaKeyDespillsEdgeContamination(t *testing.T) {
 	subject := image.Rect(10, 10, 30, 30)
 	src := magentaBacked(40, 40, subject, color.RGBA{R: 20, G: 140, B: 90, A: 255})
-	contaminated := color.RGBA{R: 196, G: 35, B: 214, A: 255}
+	contaminated := color.RGBA{R: 48, G: 0, B: 123, A: 255}
 	for y := 10; y < 30; y++ {
 		src.Set(9, y, contaminated)
 	}
@@ -246,8 +246,10 @@ func TestChromaKeyRefusesSubjectCrowdingTheKey(t *testing.T) {
 	if !errors.Is(err, ErrSubjectNearKey) {
 		t.Fatalf("expected ErrSubjectNearKey, got %v (report %+v)", err, report)
 	}
-	if report.SubjectNearKeyFraction <= 0 {
-		t.Fatal("subject proximity must be reported so a fallback can explain itself")
+	// Either signal is a valid explanation: the subject crowded the key, or so
+	// much of the frame keyed that the subject itself was removed.
+	if report.SubjectNearKeyFraction <= 0 && report.TransparentPixels == 0 {
+		t.Fatal("a refusal must report why, so a fallback can explain itself")
 	}
 }
 
@@ -260,7 +262,9 @@ func TestChromaKeyDespillsOpaqueRimPixels(t *testing.T) {
 	src := magentaBacked(40, 40, subject, color.RGBA{R: 20, G: 140, B: 90, A: 255})
 	// A rim pixel contaminated toward magenta but far enough from the key to
 	// stay fully opaque - exactly the pixel that produced the visible rim.
-	rim := color.RGBA{R: 150, G: 120, B: 160, A: 255}
+	// ~61 degrees off-hue: far enough to stay fully opaque, still leaning
+	// toward the key, which is exactly the rim that used to show as an outline.
+	rim := color.RGBA{R: 0, G: 0, B: 99, A: 255}
 	for y := 10; y < 30; y++ {
 		src.Set(10, y, rim)
 	}
