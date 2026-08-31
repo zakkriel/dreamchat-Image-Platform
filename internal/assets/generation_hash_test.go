@@ -59,13 +59,50 @@ func TestGenerationRenderHashFieldBoundaries(t *testing.T) {
 	}
 }
 
-func TestGenerationRenderHashUsesLosslessMegapixelFormatting(t *testing.T) {
-	a := baseGenerationInput()
-	a.MaxMegapixels = 1.0000001
-	b := a
-	b.MaxMegapixels = 1.0000002
-	if GenerationRenderHash(a) == GenerationRenderHash(b) {
+// The key quantizes max_megapixels to what the column stores, NUMERIC(6, 2)
+// (migrations/0013_cost_routing.sql). Two requests the store cannot tell apart
+// must share one key — otherwise the second one pays for an identical render —
+// while a difference the store DOES keep must still split the key.
+func TestGenerationRenderHashQuantizesMegapixelsToStoredPrecision(t *testing.T) {
+	hashFor := func(mp float64) string {
+		in := baseGenerationInput()
+		in.MaxMegapixels = mp
+		return GenerationRenderHash(in)
+	}
+
+	// A float32-widened 2.1 and a literal 2.1 both persist as 2.10.
+	if got, want := hashFor(float64(float32(2.1))), hashFor(2.1); got != want {
+		t.Fatalf("2.0999999046325684 and 2.1 both store as 2.10 and must share one key, got %s vs %s", got, want)
+	}
+	if got, want := hashFor(1.0000001), hashFor(1.0000002); got != want {
+		t.Fatalf("budgets differing past the stored precision must share one key, got %s vs %s", got, want)
+	}
+	// Differences the column keeps still split the key.
+	if hashFor(2.1) == hashFor(2.15) {
+		t.Fatal("2.10 and 2.15 are distinct stored budgets and must not collide")
+	}
+	if hashFor(2.1) == hashFor(4.0) {
 		t.Fatal("distinct megapixel budgets collided in render hash")
+	}
+	// The <= 0 default is unchanged: an unset budget hashes as the handler's 4.0.
+	if hashFor(0) != hashFor(4.0) {
+		t.Fatal("an unset budget must hash as the effective 4.0 default")
+	}
+}
+
+// The key's version namespace is load-bearing: changing what goes into the hash
+// without bumping generationHashVersion would let a pre-change cached asset be
+// served for a post-change request. This pins both together — if you changed the
+// key deliberately, bump the version and update this golden value in the same
+// change, which is the moment to notice the whole cache is invalidated.
+func TestGenerationRenderHashVersionIsPinnedToItsKey(t *testing.T) {
+	if generationHashVersion != "5" {
+		t.Fatalf("generation hash version changed to %q; update the golden hash below", generationHashVersion)
+	}
+	const golden = "9774aa14f31e6c6e87aae25922b111c9924d984ca93e1e848ed6adf0cf749e1e"
+	if got := GenerationRenderHash(baseGenerationInput()); got != golden {
+		t.Fatalf("gv=%s key for the base input changed: got %s, want %s (bump the version if this was deliberate)",
+			generationHashVersion, got, golden)
 	}
 }
 

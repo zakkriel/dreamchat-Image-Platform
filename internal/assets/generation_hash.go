@@ -36,7 +36,12 @@ import (
 // the worker prompt, so the version is bumped from prior definitions. Version 4
 // folds in the identity's CURRENT anchor set, which the worker conditions on but
 // the hash previously ignored - see IdentityAnchorAssetIDs.
-const generationHashVersion = "4"
+//
+// Version 5 (Wave 3.5) quantizes max_megapixels to the two decimals the column
+// stores, so requests the database cannot tell apart stop producing two keys and
+// two paid renders. A bump invalidates every existing cached key, which is free
+// only pre-traffic — that timing is why the correction lands now.
+const generationHashVersion = "5"
 
 // GenerationHashInput is the well-typed set of combined-contract fields that
 // determine a generation render. TenantID comes from the principal; the rest
@@ -67,7 +72,8 @@ type GenerationHashInput struct {
 	DeriveFrom             string
 	Intent                 string
 	// MaxMegapixels is the effective validated pixel budget persisted by the
-	// handler. It is serialized with lossless round-trip formatting before hashing.
+	// handler. It is hashed quantized to the two decimals the max_megapixels
+	// column stores, so two requests the store cannot distinguish share one key.
 	MaxMegapixels float64
 	TransformJSON string
 }
@@ -100,13 +106,14 @@ func GenerationRenderHash(in GenerationHashInput) string {
 		// the HTTP handler, keeping old helper fixtures semantically equivalent.
 		maxMegapixels = 4.0
 	}
-	// 'g'/-1 renders the shortest decimal string that round-trips back to
-	// exactly this float64 (strconv's shortest-round-trip algorithm) — unlike
-	// a fixed 6-decimal format, two distinct max_megapixels values (even ones
-	// that differ only past the 6th decimal, which a validated float32 value
-	// widened to float64 can) can never format to the same string and
-	// collide onto the same reuse cache key.
-	writeHashField(&b, "max_megapixels", strconv.FormatFloat(maxMegapixels, 'g', -1, 64))
+	// Quantized to the two decimals the STORE keeps: max_megapixels is
+	// NUMERIC(6, 2) (migrations/0013_cost_routing.sql). Shortest-round-trip
+	// formatting ('g'/-1) kept apart values the column cannot tell apart — a
+	// client sending a float32-widened 2.0999999046325684 and one sending 2.1
+	// both persist as 2.10 and render identically, yet produced two different
+	// cache keys and a second full-price render. Precision the store discards
+	// cannot be a render difference, so keeping it only forfeits real cache hits.
+	writeHashField(&b, "max_megapixels", strconv.FormatFloat(maxMegapixels, 'f', 2, 64))
 	writeHashField(&b, "transform", NormalizeArtifactDescription(in.TransformJSON))
 
 	sum := sha256.Sum256([]byte(b.String()))

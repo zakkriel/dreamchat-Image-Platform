@@ -3,8 +3,14 @@
 package jobs_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -367,5 +373,102 @@ func TestPreflightTenantAndNarrowerBothPermit(t *testing.T) {
 	tokenHeld := scalar(t, pool, `SELECT reserved_amount::text FROM cost_budgets WHERE id = 'bud_token_both'`)
 	if tenantHeld != "0.0100" || tokenHeld != "0.0100" {
 		t.Fatalf("both budgets should hold 0.0100, got tenant=%s token=%s", tenantHeld, tokenHeld)
+	}
+}
+
+// TestPreflightNoBudgetAdmitsUncappedAndSaysSo pins the fail-open default and
+// the one thing that was missing from it. With zero applicable cost_budgets rows
+// — which is every database no operator has configured, since no migration seeds
+// one — the reservation is ADMITTED and the whole price-book/hold/422 apparatus
+// grants spend it never checked. That default stays (a tenant nobody set a limit
+// for is not blocked), but it must be observable: the warning is the only way an
+// operator learns a tenant is uncapped.
+func TestPreflightNoBudgetAdmitsUncappedAndSaysSo(t *testing.T) {
+	pool := openTestPool(t)
+	defer pool.Close()
+	cleanup(t, pool)
+	defer cleanup(t, pool)
+	seedFixtures(t, pool)
+	// Deliberately NO seedBudget call.
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	enq := newRecordingEnqueuer()
+	svc := jobs.NewService(pool, enq, cost.NewService(logger))
+
+	res, err := svc.CreateAndEnqueue(context.Background(), baseParams())
+	if err != nil {
+		t.Fatalf("zero budgets must still admit the reservation, got %v", err)
+	}
+	rStatus, _, _, _ := reservationStatusForJob(t, pool, res.JobID)
+	if rStatus != "reserved" {
+		t.Fatalf("expected the reservation admitted, got %s", rStatus)
+	}
+	if got := logs.String(); !strings.Contains(got, "cost_budget_absent_uncapped") {
+		t.Fatalf("an uncapped admission must be logged; got %q", got)
+	}
+	if got := logs.String(); !strings.Contains(got, itTenant) {
+		t.Fatalf("the warning must name the uncapped tenant; got %q", got)
+	}
+}
+
+// TestPreflightSeededDevBudgetDeniesOverspend runs the REAL seeder twice and
+// proves what it writes actually caps spend. Copying the seeder's SQL into the
+// test would prove nothing about the seeder; this fails if cmd/seed-token stops
+// writing the row, writes a scope the reservation path does not enforce, or
+// loses its idempotency guard.
+func TestPreflightSeededDevBudgetDeniesOverspend(t *testing.T) {
+	pool := openTestPool(t)
+	defer pool.Close()
+	cleanup(t, pool)
+	defer cleanup(t, pool)
+	// The seeder creates its own api_tokens row for the tenant; cleanup() only
+	// knows the fixture token id.
+	defer func() {
+		_, _ = pool.Exec(context.Background(),
+			`DELETE FROM api_tokens WHERE tenant_id = $1 AND id <> $2`, itTenant, itTokenID)
+	}()
+	seedFixtures(t, pool)
+
+	repoRoot, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatalf("resolve repo root: %v", err)
+	}
+	// 0.0050 is below baseParams' 0.0100 estimate, so the cap must deny.
+	seed := func() {
+		cmd := exec.Command("go", "run", "./cmd/seed-token")
+		cmd.Dir = repoRoot
+		cmd.Env = append(os.Environ(),
+			"API_TOKEN_PEPPER=integration-pepper",
+			"SEED_TENANT_ID="+itTenant,
+			"SEED_DAILY_BUDGET_USD=0.0050",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("cmd/seed-token: %v\n%s", err, out)
+		} else if !strings.Contains(string(out), "Daily cap") {
+			t.Fatalf("the seeder must state the cap it seeded, got:\n%s", out)
+		}
+	}
+	seed()
+	seed() // second run must be a no-op, not a unique violation
+
+	if got := scalar(t, pool,
+		`SELECT count(*)::text FROM cost_budgets WHERE tenant_id = $1 AND scope_type = 'tenant' AND period = 'daily'`,
+		itTenant); got != "1" {
+		t.Fatalf("expected exactly one seeded budget row after two seeder runs, got %s", got)
+	}
+	if got := scalar(t, pool,
+		`SELECT limit_amount::text FROM cost_budgets WHERE tenant_id = $1 AND scope_type = 'tenant' AND period = 'daily'`,
+		itTenant); got != "0.0050" {
+		t.Fatalf("expected the SEED_DAILY_BUDGET_USD limit persisted, got %s", got)
+	}
+
+	enq := newRecordingEnqueuer()
+	svc := newCostService(pool, enq)
+	if _, err := svc.CreateAndEnqueue(context.Background(), baseParams()); !errors.Is(err, cost.ErrBudgetExceeded) {
+		t.Fatalf("the seeded cap must deny an over-limit request, got %v", err)
+	}
+	if got := enq.snapshot(); len(got) != 0 {
+		t.Fatalf("a denied request must not enqueue, got %v", got)
 	}
 }

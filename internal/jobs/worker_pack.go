@@ -242,6 +242,17 @@ func (w *Worker) processPack(ctx context.Context, jobID, expectedReservationID s
 				}
 				return w.failPackTerminal(ctx, job, plan.packID, errorCodeContentRejected, itemErr.Error(), expectedReservationID)
 			}
+			if errors.Is(itemErr, errBillableCapReached) {
+				// The pack has billed every provider call its reservation priced
+				// (MaxBillableCallsPerUnit per missing role). No later cell can
+				// generate anything, so stop the fan-out here instead of walking
+				// the remaining roles to refuse each one: record what was
+				// delivered and fail the pack terminally.
+				if err := w.updatePackCompleteness(ctx, plan.packID, job.ID, deliveredKeys, missingRoles(plan.variantKeys, deliveredKeys)); err != nil {
+					return err
+				}
+				return w.failPackTerminal(ctx, job, plan.packID, errorCodeFor(itemErr), itemErr.Error(), expectedReservationID)
+			}
 			// Per-item failure (provider/storage/persistence): record it and
 			// continue with the next variant — never abort the batch.
 			w.log().Warn("worker: pack item failed",

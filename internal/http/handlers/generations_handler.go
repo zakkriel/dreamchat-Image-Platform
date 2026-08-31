@@ -319,41 +319,64 @@ func (h *GenerationsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// synchronously with zero cost — no route resolution, no reservation, no
 	// provider call. Runs AFTER the governance gate (eligibility is verified
 	// and audited even for reused output) and after idempotency replay.
+	//
+	// A draft request tries one extra key: its own, then the commit-keyed one
+	// (see the lookups below). The reused job records the REQUEST's own hash, so
+	// its lineage still says what was asked for; the served asset carries the key
+	// that produced it.
 	transformJSON := ""
 	if req.Render.Transform != nil {
 		if b, merr := json.Marshal(req.Render.Transform); merr == nil {
 			transformJSON = string(b)
 		}
 	}
-	renderHash := assets.GenerationRenderHash(assets.GenerationHashInput{
-		TenantID:       tenantID,
-		IdentityID:     req.Subject.IdentityId,
-		DisplayName:    identityPrompt,
-		StyleProfileID: identity.StyleProfileID,
-		AnchorAssetID:  deref(req.Subject.AnchorAssetId),
-		// The worker conditions the render on the identity's current anchors, so
-		// they belong in the reuse key: replacing a character's reference images
-		// must not keep serving renders of the previous appearance.
-		IdentityAnchorAssetIDs: identity.AnchorAssetIds,
-		DeriveFrom:             deref(req.Subject.DeriveFrom),
-		Intent:                 string(req.Render.Intent),
-		MaxMegapixels:          maxMegapixels,
-		TransformJSON:          transformJSON,
-	})
+	hashForIntent := func(intent string) string {
+		return assets.GenerationRenderHash(assets.GenerationHashInput{
+			TenantID:       tenantID,
+			IdentityID:     req.Subject.IdentityId,
+			DisplayName:    identityPrompt,
+			StyleProfileID: identity.StyleProfileID,
+			AnchorAssetID:  deref(req.Subject.AnchorAssetId),
+			// The worker conditions the render on the identity's current anchors, so
+			// they belong in the reuse key: replacing a character's reference images
+			// must not keep serving renders of the previous appearance.
+			IdentityAnchorAssetIDs: identity.AnchorAssetIds,
+			DeriveFrom:             deref(req.Subject.DeriveFrom),
+			Intent:                 intent,
+			MaxMegapixels:          maxMegapixels,
+			TransformJSON:          transformJSON,
+		})
+	}
+	renderHash := hashForIntent(string(req.Render.Intent))
 	if h.Reuse != nil {
-		existing, rerr := h.Reuse.FindReadyGenerationByPromptHash(r.Context(), tenantID, renderHash)
-		switch {
-		case rerr == nil:
-			telemetry.DefaultMetrics().RecordCacheHit()
-			h.respondCacheHit(w, r, tenantID, principal.TokenID, identity.ID, identity.WorldID, req, renderHash, existing.ID, idemKey, endpoint, requestHash)
-			return
-		case errors.Is(rerr, assets.ErrNotFound):
-			telemetry.DefaultMetrics().RecordCacheMiss()
-			// miss: fall through to the normal resolve/reserve/enqueue path.
-		default:
-			httperr.Write(w, r, http.StatusInternalServerError, httperr.CodeInternalError, "could not check generation reuse")
-			return
+		lookups := []string{renderHash}
+		if req.Render.Intent == apigen.IntentDraft {
+			// One-way substitution: a DRAFT may be served an existing COMMIT-keyed
+			// render (equal or better quality than it asked for), never the
+			// reverse — serving a draft to a commit request is the silent quality
+			// downgrade docs/architecture/cost-control.md §7 rejects. intent is in
+			// the key because draft and commit rank routes differently, so without
+			// this second lookup an identical subject is rendered twice at full
+			// price whenever a draft follows a commit.
+			lookups = append(lookups, hashForIntent(string(apigen.IntentCommit)))
 		}
+		// One request is one cache decision, however many keys it tries: the miss
+		// is counted once, after every eligible key missed.
+		for _, hash := range lookups {
+			existing, rerr := h.Reuse.FindReadyGenerationByPromptHash(r.Context(), tenantID, hash)
+			switch {
+			case rerr == nil:
+				telemetry.DefaultMetrics().RecordCacheHit()
+				h.respondCacheHit(w, r, tenantID, principal.TokenID, identity.ID, identity.WorldID, req, renderHash, existing.ID, idemKey, endpoint, requestHash)
+				return
+			case errors.Is(rerr, assets.ErrNotFound):
+				// miss: try the next key, then fall through to resolve/reserve/enqueue.
+			default:
+				httperr.Write(w, r, http.StatusInternalServerError, httperr.CodeInternalError, "could not check generation reuse")
+				return
+			}
+		}
+		telemetry.DefaultMetrics().RecordCacheMiss()
 	}
 
 	// Step 9: build ResolveRequest.

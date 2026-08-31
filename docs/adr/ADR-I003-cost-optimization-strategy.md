@@ -13,6 +13,7 @@
 **Date:** 2026-06-25.
 **Repo target:** `docs/adr/` (image-platform repo).
 **Provenance caveat:** the cost figures in this ADR originate from a cost-optimization research synthesis, not from production measurement or a prior ratified doc. They are **provisional** (image-model pricing and break-evens move fast). The *decided* content here is the structural model and the deferral triggers — not the specific numbers.
+**Corrected by [`ADR-I004`](ADR-I004-measured-cost-optimization-findings.md) (2026-08-31) — read that first.** Three premises below were measured against the shipped code and are false: (1) "design for cheapness now, build mechanisms later" held for schema but not for spend — the accounting shipped, the ceiling did not, and the default configuration left spend uncapped; (2) the derive-first structural claim does **not** make the existing ADR-009 four-tier ladder reusable for `/v1/generations` output — `variant_key='default'` scores `invalid_match`, so there is no retrieval path there today; (3) deferred lever #5's draft ranking is **already implemented** and buys nothing, because every seeded production route is priced identically, and preview-first — the nearest thing to a draft flow — *increases* spend. `ADR-I004` also replaces the unfalsifiable deferral triggers for **programmatic transforms (#6)** and **sprite-sheet batching (#4)**. Everything else here stands.
 
 ---
 
