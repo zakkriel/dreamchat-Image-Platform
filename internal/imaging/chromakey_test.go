@@ -348,3 +348,57 @@ func TestDespillMatteCleansEdgeWithoutTouchingInterior(t *testing.T) {
 		t.Fatalf("interior colour altered: %v, want %v", c, interior)
 	}
 }
+
+// Models do not paint the hex they are handed. Asked for #FF00FF, FLUX.1
+// Kontext paints a hot pink measured 28 degrees off - flat, uniform, perfectly
+// keyable, and outside a tolerance centred on the literal key. The key has to
+// follow the backdrop that exists.
+func TestChromaKeyDetectsTheBackdropTheModelActuallyPainted(t *testing.T) {
+	// The measured hot pink from a real render.
+	painted := color.RGBA{R: 246, G: 24, B: 134, A: 255}
+	subject := image.Rect(10, 10, 30, 30)
+	src := image.NewRGBA(image.Rect(0, 0, 40, 40))
+	for y := range 40 {
+		for x := range 40 {
+			c := painted
+			if image.Pt(x, y).In(subject) {
+				c = color.RGBA{R: 20, G: 140, B: 90, A: 255}
+			}
+			src.Set(x, y, c)
+		}
+	}
+
+	out, report, err := ChromaKey(src, DefaultChromaKeyOptions())
+	if err != nil {
+		t.Fatalf("a flat backdrop 28 degrees off the key must still key: %v (%+v)", err, report)
+	}
+	if report.DetectedKeyHueDrift < 20 {
+		t.Fatalf("expected the key to re-centre by ~28 degrees, got %.1f", report.DetectedKeyHueDrift)
+	}
+	if _, _, _, a := out.At(1, 1).RGBA(); a != 0 {
+		t.Fatalf("backdrop must be transparent after re-centring, got alpha %d", a>>8)
+	}
+	if _, _, _, a := out.At(20, 20).RGBA(); a>>8 != 255 {
+		t.Fatalf("subject must stay opaque, got alpha %d", a>>8)
+	}
+}
+
+// Re-centring must not become "key whatever is at the edges". A blue backdrop
+// is not a magenta key that drifted, and following it would erase a legitimate
+// background the caller never asked to remove.
+func TestChromaKeyDoesNotFollowAnUnrelatedBackground(t *testing.T) {
+	subject := image.Rect(10, 10, 30, 30)
+	src := image.NewRGBA(image.Rect(0, 0, 40, 40))
+	for y := range 40 {
+		for x := range 40 {
+			c := color.RGBA{R: 40, G: 70, B: 200, A: 255} // blue, ~72 degrees off
+			if image.Pt(x, y).In(subject) {
+				c = color.RGBA{R: 230, G: 190, B: 160, A: 255}
+			}
+			src.Set(x, y, c)
+		}
+	}
+	if _, report, err := ChromaKey(src, DefaultChromaKeyOptions()); !errors.Is(err, ErrBackdropNotFound) {
+		t.Fatalf("expected ErrBackdropNotFound for an unrelated background, got %v (%+v)", err, report)
+	}
+}

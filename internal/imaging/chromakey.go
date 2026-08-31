@@ -28,6 +28,7 @@ import (
 	"image"
 	"image/color"
 	"math"
+	"sort"
 )
 
 var (
@@ -92,6 +93,16 @@ type ChromaKeyOptions struct {
 	// degrees off at 70. Hue cannot tell them apart - the vignette is further
 	// off-hue than the hair - but saturation can.
 	WeakMaxChroma float64
+	// MaxKeyHueDrift lets the key re-centre on the hue the model actually
+	// painted, up to this many degrees away from Key.
+	//
+	// Models do not paint the hex they are handed. Asked for #FF00FF, FLUX.1
+	// Kontext produces a hot pink measured 28 degrees off - flat, uniform and
+	// perfectly keyable, but outside a tolerance centred on the literal key.
+	// The border's median hue is the backdrop that exists, so the key follows
+	// it; the drift cap keeps that from wandering onto an arbitrary background.
+	// Zero disables detection and keys the literal Key colour.
+	MaxKeyHueDrift float64
 	// MaxTransparentFraction refuses a key that removed implausibly much of the
 	// frame. A subject whose own colour matches the key (purple clothing lands
 	// at the same hue offset as the backdrop) would otherwise be keyed away in
@@ -155,6 +166,7 @@ func DefaultChromaKeyOptions() ChromaKeyOptions {
 		DangerHueTolerance:        35,
 		MaxSubjectNearKeyFraction: 0.03,
 		MaxTransparentFraction:    0.85,
+		MaxKeyHueDrift:            45,
 		DespillStrength:           1,
 		EdgeDespillRadius:         2,
 	}
@@ -175,7 +187,10 @@ type ChromaKeyReport struct {
 	// SubjectNearKeyFraction is the fraction of opaque subject pixels sitting
 	// inside DangerTolerance - the silhouette-reliability signal.
 	SubjectNearKeyFraction float64
-	TotalPixels            int
+	// DetectedKeyHueDrift is how far, in degrees, the keyed hue was re-centred
+	// from the requested key.
+	DetectedKeyHueDrift float64
+	TotalPixels         int
 }
 
 // ChromaKey removes a flat backdrop, returning a non-premultiplied RGBA image.
@@ -196,8 +211,22 @@ func ChromaKey(src image.Image, opts ChromaKeyOptions) (*image.NRGBA, ChromaKeyR
 	}
 
 	keyCb, keyCr := chromaOf(opts.Key.R, opts.Key.G, opts.Key.B)
-	keyDirCb, keyDirCr := normalizeChroma(keyCb, keyCr)
 	keyHue := math.Atan2(keyCr, keyCb) * 180 / math.Pi
+
+	// Re-centre on the backdrop the model actually painted. The median over
+	// saturated border pixels is deliberate: a bust's shoulders and hair reach
+	// the frame edge, so a mean would be dragged toward the subject while a
+	// median ignores it as long as the backdrop is the majority.
+	if opts.MaxKeyHueDrift > 0 {
+		if detected, ok := detectBorderHue(src, keyHue, opts.MinChroma); ok {
+			drift := math.Abs(math.Mod(detected-keyHue+540, 360) - 180)
+			if drift <= opts.MaxKeyHueDrift {
+				keyHue = detected
+				report.DetectedKeyHueDrift = drift
+			}
+		}
+	}
+	keyDirCb, keyDirCr := normalizeChroma(math.Cos(keyHue*math.Pi/180), math.Sin(keyHue*math.Pi/180))
 
 	// Pass 1: classify by hue offset and saturation. strong = confident
 	// backdrop; weak = plausible backdrop, accepted only where it connects to
@@ -564,4 +593,35 @@ func DespillMatte(src image.Image, opts ChromaKeyOptions) (*image.NRGBA, error) 
 		}
 	}
 	return dst, nil
+}
+
+// detectBorderHue returns the median hue of saturated pixels on the image
+// border, which is the backdrop the model actually painted. It reports false
+// when too little of the border is saturated to be a backdrop at all.
+func detectBorderHue(src image.Image, keyHue, minChroma float64) (float64, bool) {
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+	offsets := make([]float64, 0, 2*(w+h))
+	sample := func(x, y int) {
+		r, g, bl, _ := src.At(b.Min.X+x, b.Min.Y+y).RGBA()
+		cb, cr := chromaOf(uint8(r>>8), uint8(g>>8), uint8(bl>>8))
+		if math.Hypot(cb, cr) < minChroma {
+			return // near-neutral: hue is numerically meaningless here
+		}
+		hue := math.Atan2(cr, cb) * 180 / math.Pi
+		offsets = append(offsets, math.Mod(hue-keyHue+540, 360)-180)
+	}
+	for x := range w {
+		sample(x, 0)
+		sample(x, h-1)
+	}
+	for y := range h {
+		sample(0, y)
+		sample(w-1, y)
+	}
+	if len(offsets) < (w+h)/2 {
+		return 0, false
+	}
+	sort.Float64s(offsets)
+	return keyHue + offsets[len(offsets)/2], true
 }

@@ -620,3 +620,65 @@ What would change the verdict, in order of expected value:
    are complementary — the matte from BiRefNet, the colour correction from here.
 3. Widening the weak band further trades directly against eating purple clothing,
    which the measurements show is already at the same hue offset as the backdrop.
+
+
+---
+
+# Addendum 4 — Stylised art, and the bug that was hiding the result
+
+*Three more renders ($0.12). One timed out; two returned.*
+
+## The model paints magenta in its own dialect
+
+The anime/manhwa renders came back with a **near-perfect** backdrop — no
+vignette, no texture, corner-to-corner uniform:
+
+| corner | RGB | chroma magnitude | hue offset from #FF00FF |
+|---|---|---|---|
+| top-left | (244, 25, 136) | 102 | 27.9° |
+| top-right | (246, 24, 134) | 104 | 28.6° |
+| bottom-left | (246, 27, 137) | 102 | 28.2° |
+| bottom-right | (243, 26, 136) | 101 | 27.9° |
+
+Both refused, at border coverage **0.001**. Not because the backdrop was bad —
+because it is hot pink, **28° off pure magenta**, and the tolerance was 25° and
+centred on the literal `#FF00FF` we asked for. The model had done its job
+better than on any photoreal render, and the keyer was measuring against the
+wrong reference point.
+
+## Fix: key the backdrop that exists
+
+The border's **median** hue is now used to re-centre the key, bounded by
+`MaxKeyHueDrift` (45°). Median rather than mean because a bust's shoulders and
+hair reach the frame edge; a mean gets dragged toward the subject, a median
+ignores it while the backdrop is still the majority. The drift cap is what keeps
+re-centring from turning into "key whatever is at the edges" — a blue background
+is not a drifted magenta key, and is still refused.
+
+## Result: 4 of 4, including the two that previously failed
+
+| render | border | hue drift | transparent | outcome |
+|---|---|---|---|---|
+| anime | 0.831 | 27.6° | 49.2% | keyed |
+| manhwa/comic | 0.835 | 27.2° | 46.7% | keyed |
+| photoreal s01 | 0.767 | 20.6° | 47.0% | keyed |
+| photoreal s02 | 0.833 | 24.9° | 59.0% | keyed (was refused) |
+
+## Quality, by style
+
+- **Bold-lineart styles (manhwa, comic): essentially perfect.** Clean silhouette,
+  hair intact, no residue. This is the case chroma keying was made for — flat
+  fills, hard outlines, no semi-transparent detail.
+- **Anime: good, with a real defect.** Fine hair strands with backdrop visible
+  between them come out moth-eaten: those pixels are genuinely part backdrop, so
+  the flood fill reaches them.
+- **Photoreal: keys now, but the vignette still leaves residue.**
+
+## Where that leaves it
+
+For **stylised character sprites — which is what the packs are** — the
+programmatic path now looks genuinely viable, and it costs nothing. It is still
+off by default: what has been measured is 4 renders and one identity, and the
+anime hair defect needs a fix or a quality gate before it can be trusted
+unattended. The next measurement is a real pack across several identities,
+counting acceptance rate and eyeballing hair.
