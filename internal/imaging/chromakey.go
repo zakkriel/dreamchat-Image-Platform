@@ -506,3 +506,62 @@ func touchesBackdrop(backdrop []bool, w, h, x, y int) bool {
 	return (x > 0 && backdrop[i-1]) || (x < w-1 && backdrop[i+1]) ||
 		(y > 0 && backdrop[i-w]) || (y < h-1 && backdrop[i+w])
 }
+
+// DespillMatte removes key-colour contamination from an image that ALREADY has
+// an alpha channel — a cutout returned by a matting model.
+//
+// A matting model solves the silhouette and stops there. It decides which
+// pixels are subject; it does not correct their colour. So a subject rendered
+// against a magenta backdrop comes back correctly cut out and still tinted
+// magenta through the hair, because those pixels genuinely are part magenta.
+// That is the complement of what chroma keying does well, and it applies to the
+// matted result whatever produced it.
+//
+// Spill lives at the boundary and in translucent hair, so the correction is
+// scaled by transparency and by distance from the cutout edge — the same band
+// used when keying, for the same reason: a global pass would desaturate skin,
+// which leans toward magenta more than intuition suggests.
+func DespillMatte(src image.Image, opts ChromaKeyOptions) (*image.NRGBA, error) {
+	bounds := src.Bounds()
+	w, h := bounds.Dx(), bounds.Dy()
+	if w <= 0 || h <= 0 {
+		return nil, errors.New("imaging: despill on an empty image")
+	}
+	keyCb, keyCr := chromaOf(opts.Key.R, opts.Key.G, opts.Key.B)
+	keyDirCb, keyDirCr := normalizeChroma(keyCb, keyCr)
+
+	alpha := make([]uint8, w*h)
+	transparent := make([]bool, w*h)
+	for y := range h {
+		for x := range w {
+			_, _, _, a := src.At(bounds.Min.X+x, bounds.Min.Y+y).RGBA()
+			i := y*w + x
+			alpha[i] = uint8(a >> 8)
+			transparent[i] = alpha[i] == 0
+		}
+	}
+	edgeDist := edgeDistance(alpha, transparent, w, h, opts.EdgeDespillRadius)
+
+	dst := image.NewNRGBA(image.Rect(0, 0, w, h))
+	for y := range h {
+		for x := range w {
+			i := y*w + x
+			c := color.NRGBAModel.Convert(src.At(bounds.Min.X+x, bounds.Min.Y+y)).(color.NRGBA)
+			r, g, b := c.R, c.G, c.B
+			if opts.DespillStrength > 0 && c.A > 0 {
+				strength := 0.0
+				if c.A < 255 {
+					strength = 1 - float64(c.A)/255
+				} else if d := edgeDist[i]; d > 0 {
+					strength = 1 - float64(d-1)/float64(max(opts.EdgeDespillRadius, 1))
+				}
+				if strength > 0 {
+					r, g, b = despill(r, g, b, keyDirCb, keyDirCr, opts.DespillStrength*strength)
+				}
+			}
+			o := dst.PixOffset(x, y)
+			dst.Pix[o], dst.Pix[o+1], dst.Pix[o+2], dst.Pix[o+3] = r, g, b, c.A
+		}
+	}
+	return dst, nil
+}

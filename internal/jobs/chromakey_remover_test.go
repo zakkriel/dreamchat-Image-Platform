@@ -184,3 +184,51 @@ func TestComposeChromaBackdropPreservesCallerPrompt(t *testing.T) {
 		t.Fatalf("an empty prompt must yield just the instruction, got %q", got)
 	}
 }
+
+// The fallback must despill what the matting model returns: the render was made
+// against a magenta backdrop, and a matting model corrects the silhouette but
+// not the colour bleeding through the hair.
+func TestChromaKeyRemoverDespillsTheFallbackResult(t *testing.T) {
+	// A render with no keyable backdrop, so the key refuses and falls back.
+	src := pngImage(t, 30, 30, func(int, int) color.RGBA {
+		return color.RGBA{R: 90, G: 110, B: 130, A: 255}
+	})
+
+	// The matting model returns a cutout whose translucent edge is magenta-
+	// contaminated - exactly what BiRefNet does on a magenta-backdrop render.
+	matted := image.NewNRGBA(image.Rect(0, 0, 20, 20))
+	for y := range 20 {
+		for x := range 20 {
+			switch {
+			case x >= 6 && x < 14 && y >= 6 && y < 14:
+				matted.SetNRGBA(x, y, color.NRGBA{R: 40, G: 120, B: 80, A: 255})
+			case x >= 5 && x < 15 && y >= 5 && y < 15:
+				matted.SetNRGBA(x, y, color.NRGBA{R: 200, G: 90, B: 210, A: 120})
+			}
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, matted); err != nil {
+		t.Fatal(err)
+	}
+	fallback := &recordingRemover{out: providers.ProviderImage{Bytes: buf.Bytes(), ContentType: "image/png"}}
+	remover := &ChromaKeyRemover{Fallback: fallback}
+
+	out, err := remover.Remove(context.Background(), src)
+	if err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	decoded, err := png.Decode(bytes.NewReader(out.Bytes))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got := color.NRGBAModel.Convert(decoded.At(5, 10)).(color.NRGBA)
+	if got.A != 120 {
+		t.Fatalf("the matting model's alpha must survive despill, got %d", got.A)
+	}
+	before := 200 + 210 - 2*90
+	after := int(got.R) + int(got.B) - 2*int(got.G)
+	if after >= before {
+		t.Fatalf("fallback result was not despilled: %d vs %d", after, before)
+	}
+}

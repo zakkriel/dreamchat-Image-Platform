@@ -299,3 +299,52 @@ func TestChromaKeyDespillsOpaqueRimPixels(t *testing.T) {
 		t.Fatalf("despill leaked into the subject interior: %v vs %v", di, ri)
 	}
 }
+
+// A matting model cuts the silhouette but leaves the subject's colour alone, so
+// a cutout made against a magenta backdrop comes back correctly shaped and
+// still tinted through the hair. DespillMatte is the correction, and it must
+// act on the translucent edge without touching the interior.
+func TestDespillMatteCleansEdgeWithoutTouchingInterior(t *testing.T) {
+	const w, h = 40, 40
+	src := image.NewNRGBA(image.Rect(0, 0, w, h))
+	interior := color.NRGBA{R: 150, G: 60, B: 200, A: 255} // a genuinely purple garment
+	edge := color.NRGBA{R: 200, G: 90, B: 210, A: 128}     // translucent, magenta-contaminated
+	for y := range h {
+		for x := range w {
+			switch {
+			case x >= 12 && x < 28 && y >= 12 && y < 28:
+				src.SetNRGBA(x, y, interior)
+			case x >= 11 && x < 29 && y >= 11 && y < 29:
+				src.SetNRGBA(x, y, edge)
+			default:
+				src.SetNRGBA(x, y, color.NRGBA{})
+			}
+		}
+	}
+
+	out, err := DespillMatte(src, DefaultChromaKeyOptions())
+	if err != nil {
+		t.Fatalf("despill: %v", err)
+	}
+
+	// Alpha is the matting model's answer and must survive untouched.
+	if got := out.NRGBAAt(11, 20).A; got != 128 {
+		t.Fatalf("edge alpha must be preserved, got %d", got)
+	}
+	if got := out.NRGBAAt(20, 20).A; got != 255 {
+		t.Fatalf("interior alpha must be preserved, got %d", got)
+	}
+
+	before := int(edge.R) + int(edge.B) - 2*int(edge.G)
+	got := out.NRGBAAt(11, 20)
+	after := int(got.R) + int(got.B) - 2*int(got.G)
+	if after >= before {
+		t.Fatalf("edge spill not reduced: %d vs %d", after, before)
+	}
+
+	// The purple garment is the subject's own colour, not spill: away from the
+	// edge it must be left exactly as the matting model returned it.
+	if c := out.NRGBAAt(20, 20); c.R != interior.R || c.G != interior.G || c.B != interior.B {
+		t.Fatalf("interior colour altered: %v, want %v", c, interior)
+	}
+}
