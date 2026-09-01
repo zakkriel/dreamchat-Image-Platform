@@ -1366,15 +1366,18 @@ func (w *Worker) uploadImages(ctx context.Context, assetID string, images []prov
 	if err != nil {
 		return uploadedURLs{}, fmt.Errorf("%w: encode tiers: %v", errStorageFailure, err)
 	}
-	high, err := w.Storage.Put(ctx, storage.ObjectKey(assetID, storage.VariantHigh, "png"), tiers.Final, "image/png")
+	// Key extension and Content-Type both come from the imaging package so the
+	// stored format is declared in exactly one place.
+	ext, ctype := imaging.TierFileExtension, imaging.TierContentType
+	high, err := w.Storage.Put(ctx, storage.ObjectKey(assetID, storage.VariantHigh, ext), tiers.Final, ctype)
 	if err != nil {
 		return uploadedURLs{}, err
 	}
-	low, err := w.Storage.Put(ctx, storage.ObjectKey(assetID, storage.VariantLow, "png"), tiers.Preview, "image/png")
+	low, err := w.Storage.Put(ctx, storage.ObjectKey(assetID, storage.VariantLow, ext), tiers.Preview, ctype)
 	if err != nil {
 		return uploadedURLs{}, err
 	}
-	thumb, err := w.Storage.Put(ctx, storage.ObjectKey(assetID, storage.VariantThumb, "png"), tiers.Thumb, "image/png")
+	thumb, err := w.Storage.Put(ctx, storage.ObjectKey(assetID, storage.VariantThumb, ext), tiers.Thumb, ctype)
 	if err != nil {
 		return uploadedURLs{}, err
 	}

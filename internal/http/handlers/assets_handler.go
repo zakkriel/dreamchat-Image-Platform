@@ -12,6 +12,7 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/auth"
 	"github.com/zakkriel/drchat-image-platform/internal/http/apigen"
 	"github.com/zakkriel/drchat-image-platform/internal/httperr"
+	"github.com/zakkriel/drchat-image-platform/internal/imaging"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
 	"github.com/zakkriel/drchat-image-platform/internal/storage"
 )
@@ -323,11 +324,20 @@ func (h *AssetsHandler) toAssetSearchResponse(ctx context.Context, result assets
 }
 
 // toAssetAPI shapes the API view of an asset and, when a presign signer is
-// wired, adds the Phase 6B per-tier download URLs + their shared expiry. The
-// object keys are DERIVED from the asset id and variant via
-// storage.ObjectKey — never from a client-supplied path — so the read surface
-// can't be coerced into signing an arbitrary object. Presigning is a local
-// (no-network) signing operation, so it does not slow the read.
+// wired, adds the Phase 6B per-tier download URLs + their shared expiry.
+//
+// The object key comes from the asset's OWN stored s3:// URL, which is the
+// durable provenance for where the bytes actually are, and falls back to the
+// derived storage.ObjectKey convention for rows written before that column was
+// populated. Both paths key off the asset id and a fixed variant — never a
+// client-supplied path — so the read surface still cannot be coerced into
+// signing an arbitrary object.
+//
+// Reading the stored URL is what lets the tier FORMAT change without breaking
+// history: assets written as PNG keep resolving to their .png objects while new
+// ones resolve to .avif, with no migration and no dual-write. Hardcoding the
+// extension here (as this did) would have 404'd every asset written after the
+// format changed. Presigning is a local, no-network signing operation.
 func (h *AssetsHandler) toAssetAPI(ctx context.Context, a assets.VisualAsset) apigen.VisualAsset {
 	out := toVisualAssetAPI(a)
 	if h.Signer == nil {
@@ -337,15 +347,22 @@ func (h *AssetsHandler) toAssetAPI(ctx context.Context, a assets.VisualAsset) ap
 	if ttl <= 0 {
 		ttl = defaultDeliveryTTL
 	}
-	if u, err := h.Signer.Presign(ctx, storage.ObjectKey(a.ID, storage.VariantThumb, "png"), ttl); err == nil {
-		out.ThumbnailDownloadUrl = &u
+	presign := func(stored *string, variant storage.AssetVariant) *string {
+		key := storage.ObjectKey(a.ID, variant, imaging.TierFileExtension)
+		if stored != nil {
+			if k, ok := storage.KeyFromCanonicalURL(*stored); ok {
+				key = k
+			}
+		}
+		u, err := h.Signer.Presign(ctx, key, ttl)
+		if err != nil {
+			return nil
+		}
+		return &u
 	}
-	if u, err := h.Signer.Presign(ctx, storage.ObjectKey(a.ID, storage.VariantLow, "png"), ttl); err == nil {
-		out.PreviewDownloadUrl = &u
-	}
-	if u, err := h.Signer.Presign(ctx, storage.ObjectKey(a.ID, storage.VariantHigh, "png"), ttl); err == nil {
-		out.FinalDownloadUrl = &u
-	}
+	out.ThumbnailDownloadUrl = presign(a.ThumbnailUrl, storage.VariantThumb)
+	out.PreviewDownloadUrl = presign(a.LowResUrl, storage.VariantLow)
+	out.FinalDownloadUrl = presign(a.HighResUrl, storage.VariantHigh)
 	expires := time.Now().Add(ttl).UTC()
 	out.UrlExpiresAt = &expires
 	return out
