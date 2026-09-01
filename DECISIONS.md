@@ -109,6 +109,14 @@ GOVERNANCE_AUTHORIZED_ISSUERS # comma-separated authorized_by allowlist
 
 API_TOKEN_PEPPER             # for hashed token storage (ADR-005)
 OPENAPI_DOCS_ENABLED         # true in dev/test; gated in live
+
+SEED_DAILY_BUDGET_USD        # cmd/seed-token only: the tenant-scope DAILY
+                             # cost_budgets limit seeded with the dev token
+                             # (default 25.00). It exists because zero budget
+                             # rows means the reservation path admits every
+                             # request uncapped, and no migration seeds one — so
+                             # without it a dev database has no spend ceiling.
+                             # A dev guardrail, not a measured figure
 ```
 
 **Provider switch is `IMAGE_PROVIDER` only.** No `PROVIDER_DEFAULT`, no

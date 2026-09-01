@@ -139,3 +139,105 @@ func TestGenerationsReuseMissGenerates(t *testing.T) {
 		t.Fatalf("miss must resolve + create (resolver=%d, creates=%d)", resolver.calls, len(creator.calls))
 	}
 }
+
+// genHashForIntent is the render hash for the minimal test request at a given
+// intent — the same key the handler computes.
+func genHashForIntent(intent string) string {
+	return assets.GenerationRenderHash(assets.GenerationHashInput{
+		TenantID:       tenantA,
+		IdentityID:     testIdentityID,
+		DisplayName:    testIdentityDisplay,
+		StyleProfileID: "sty_ok",
+		Intent:         intent,
+	})
+}
+
+// genBodyWithIntent is minimalGenBody at an explicit intent.
+func genBodyWithIntent(intent, idempKey string) map[string]any {
+	body := minimalGenBody(testIdentityID, idempKey)
+	body["render"] = map[string]any{"intent": intent}
+	return body
+}
+
+// A DRAFT request may be served an existing COMMIT-keyed render: it asked for
+// the cheaper tier and gets equal-or-better quality for free instead of paying
+// for a second full-price render of the identical subject. intent is part of the
+// reuse key (draft and commit rank routes differently), so without the second
+// lookup this request generates.
+func TestGenerationsDraftReusesCommitKeyedAsset(t *testing.T) {
+	creator := newStubCreator()
+	resolver := genTierResolver("standard")
+	reuse := newStubAssetsRepo()
+	commitHash := genHashForIntent("commit")
+	reuse.seed(assets.VisualAsset{
+		ID:         "va_commit_ready",
+		TenantID:   tenantA,
+		AssetType:  "artifact",
+		VariantKey: "default",
+		Status:     "ready",
+		PromptHash: &commitHash,
+	})
+	router := newReuseGenerationsRouter(creator, resolver, reuse)
+
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/generations", tenantA,
+		[]string{"images:write"}, genBodyWithIntent("draft", "draft-reuses-commit"), nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(creator.cacheHitCalls) != 1 {
+		t.Fatalf("a draft must reuse the ready commit render, got %d cache-hit jobs and %d generate calls",
+			len(creator.cacheHitCalls), len(creator.calls))
+	}
+	hit := creator.cacheHitCalls[0]
+	if hit.FinalAssetID != "va_commit_ready" {
+		t.Fatalf("expected the commit-keyed asset served, got %q", hit.FinalAssetID)
+	}
+	// The reused job records the REQUEST's own key and intent; the asset carries
+	// the key that produced it.
+	if got := hit.InputPayload["prompt_hash"]; got != genHashForIntent("draft") {
+		t.Fatalf("expected the draft request's own prompt_hash recorded, got %v", got)
+	}
+	if got := hit.InputPayload["intent"]; got != "draft" {
+		t.Fatalf("expected intent draft recorded on the reused job, got %v", got)
+	}
+	if resolver.calls != 0 || len(creator.calls) != 0 {
+		t.Fatalf("a hit must not resolve or reserve (resolver=%d, creates=%d)", resolver.calls, len(creator.calls))
+	}
+	body := decode[map[string]any](t, rec)
+	if body["estimated_cost_usd"] != "0.0000" {
+		t.Fatalf("expected free reuse estimate 0.0000, got %v", body["estimated_cost_usd"])
+	}
+}
+
+// The banned direction: a COMMIT request must never be served a draft-keyed
+// asset. That is the silent quality downgrade docs/architecture/cost-control.md
+// §7 rejects — the caller asked for the committed tier and would get whatever a
+// draft route produced, with nothing in the response saying so. It must MISS and
+// generate.
+func TestGenerationsCommitNeverReusesDraftKeyedAsset(t *testing.T) {
+	creator := newStubCreator()
+	resolver := genTierResolver("standard")
+	reuse := newStubAssetsRepo()
+	draftHash := genHashForIntent("draft")
+	reuse.seed(assets.VisualAsset{
+		ID:         "va_draft_ready",
+		TenantID:   tenantA,
+		AssetType:  "artifact",
+		VariantKey: "default",
+		Status:     "ready",
+		PromptHash: &draftHash,
+	})
+	router := newReuseGenerationsRouter(creator, resolver, reuse)
+
+	rec := sendJSONWithHeaders(t, router, http.MethodPost, "/v1/generations", tenantA,
+		[]string{"images:write"}, genBodyWithIntent("commit", "commit-never-reuses-draft"), nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(creator.cacheHitCalls) != 0 {
+		t.Fatalf("a commit request must never be served a draft render, got %+v", creator.cacheHitCalls)
+	}
+	if len(creator.calls) != 1 || resolver.calls != 1 {
+		t.Fatalf("a commit request must resolve + generate (resolver=%d, creates=%d)", resolver.calls, len(creator.calls))
+	}
+}

@@ -241,6 +241,16 @@ func (s *Service) reserveBudgets(ctx context.Context, tx pgx.Tx, in ReserveInput
 	}
 	toEnforce := selectBudgets(all)
 	if len(toEnforce) == 0 {
+		// No applicable budget row admits the reservation UNCAPPED. That is the
+		// intended multi-tenant default — a tenant nobody set a limit for is not
+		// blocked — but it means the whole price-book/reservation apparatus grants
+		// spend it never checked, and until now it did so silently. Say it out
+		// loud, matching the cost_unsupported_unit_type precedent above, so an
+		// operator can see an uncapped tenant instead of inferring it.
+		s.logger.LogAttrs(ctx, slog.LevelWarn, "cost_budget_absent_uncapped",
+			slog.String("tenant_id", in.TenantID),
+			slog.String("reservation_id", reservationID),
+		)
 		return true, nil
 	}
 

@@ -22,6 +22,9 @@
 //	SEED_TOKEN_ENVIRONMENT  optional  token environment (dev|test|live); defaults
 //	                                  to ENVIRONMENT, else "dev". MUST match the
 //	                                  API's ENVIRONMENT or auth rejects the token.
+//	SEED_DAILY_BUDGET_USD   optional  default "25.00"; the tenant-scope daily
+//	                                  cost_budgets limit seeded alongside the
+//	                                  token, so a dev database is not uncapped
 package main
 
 import (
@@ -105,6 +108,25 @@ VALUES ($1, $2, $3, $4, $5, 'tenant', $6, $7, 'active')`
 		return fmt.Errorf("inserting token: %w", err)
 	}
 
+	// Dev spend cap. With no cost_budgets row the reservation path admits every
+	// request UNCAPPED (internal/cost reserveBudgets: zero applicable budgets ⇒
+	// admitted), and no migration creates one — so a dev database is a database
+	// with no ceiling on paid provider calls. Seed the tenant's daily budget here,
+	// idempotently on the table's UNIQUE (tenant_id, scope_type, scope_id, period),
+	// so re-running the seeder is safe.
+	//
+	// The default is a dev guardrail, not a measured figure: 25.00 USD is ~625
+	// images at the seeded 0.0400/image. Override with SEED_DAILY_BUDGET_USD.
+	budgetID := "bud_" + randAlnum(16)
+	dailyBudget := envOr("SEED_DAILY_BUDGET_USD", "25.00")
+	const budgetQ = `
+INSERT INTO cost_budgets (id, tenant_id, scope_type, scope_id, period, limit_amount, status)
+VALUES ($1, $2, 'tenant', $2, 'daily', $3, 'active')
+ON CONFLICT (tenant_id, scope_type, scope_id, period) DO NOTHING`
+	if _, err := conn.Exec(ctx, budgetQ, budgetID, tenantID, dailyBudget); err != nil {
+		return fmt.Errorf("inserting daily cost budget: %w", err)
+	}
+
 	// The raw value is printed exactly once — it is NEVER stored.
 	fmt.Println("================================================================")
 	fmt.Println("Staging API token created. Raw value printed ONCE — save it now.")
@@ -113,6 +135,7 @@ VALUES ($1, $2, $3, $4, $5, 'tenant', $6, $7, 'active')`
 	fmt.Println("  Prefix      : " + prefix)
 	fmt.Println("  Scopes      : " + strings.Join(scopes, ", "))
 	fmt.Println("  Environment : " + environment)
+	fmt.Println("  Daily cap   : " + dailyBudget + " USD (tenant scope; SEED_DAILY_BUDGET_USD)")
 	fmt.Println()
 	fmt.Println("  Authorization: Bearer " + rawToken)
 	fmt.Println("================================================================")

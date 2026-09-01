@@ -21,6 +21,22 @@ const (
 	// callers rely on it to know when to set retryable=false on the final
 	// failure.
 	MaxAttempts = 3
+
+	// MaxBillableCallsPerUnit bounds the lifetime provider calls a job may bill
+	// per billable unit its cost reservation priced. Without a cap a job bills
+	// MaxAttempts x (1 + fallback routes) full-price calls against a reservation
+	// priced for the planned unit count: generateWithFallback walks the primary
+	// plus every persisted same-price fallback, and asynq re-runs the whole walk
+	// on every attempt. With bfl and fal both seeded at $0.0400 the single-image
+	// worst case is 6 billable calls, $0.24, against a $0.04 reservation.
+	//
+	// It is per UNIT, not per job, because the reservation itself is
+	// cells x phases units (service.go worstCaseBillableUnits): a six-role pack
+	// legitimately needs six provider calls, so a flat per-job cap would deliver
+	// half a pack the caller already paid for. The count is read from the
+	// persisted provider_attempts rows, so it spans asynq attempts rather than
+	// resetting with each one.
+	MaxBillableCallsPerUnit = 3
 )
 
 // TaskPayload is the on-the-wire payload for every generation task. The worker

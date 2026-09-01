@@ -78,6 +78,37 @@ suite against Postgres 15 (migrations v17). OpenAPI mirrors untouched.
    fallbacks like the single-image path (they are currently persisted but
    unused), with the same content-policy stop rule.
 
+## Wave 3.5 — Measured cost repairs (DONE)
+
+> Findings, decisions and the falsified `ADR-I003` premises:
+> `docs/adr/ADR-I004-measured-cost-optimization-findings.md`. No migration, no OpenAPI
+> change, no new SQL — the table count stays 18.
+>
+> The framing this wave establishes: **Waves 1–3 built cost *accounting*; almost no cost
+> *reduction* had shipped, and the default configuration left spend uncapped.**
+
+1. ~~Billable-call ceiling~~ DONE: `MaxBillableCallsPerUnit = 3`, counted from the
+   persisted `provider_attempts` rows so it spans asynq attempts, and terminal once spent.
+   Wave 3 item 2 deliberately refused to *pre-charge* the retry cap onto the hold — that
+   still holds; this bounds the *count* of billable calls instead, which nothing did. The
+   single-image worst case drops from 6 calls (`$0.24` against a `$0.04` reservation) to 3.
+   Per *unit*, not per job, because a reservation is `cells × phases`.
+2. ~~Reuse-key quantization~~ DONE: `max_megapixels` is hashed at the two decimals the
+   `NUMERIC(6, 2)` column stores, so two requests the database cannot tell apart stop
+   producing two keys and two paid renders. `GenerationRenderHash` version `4 → 5`.
+3. ~~One-way draft→commit reuse~~ DONE: a draft may be served a ready commit-keyed asset;
+   a commit is never served a draft-keyed one. One version bump covers items 2 and 3,
+   because a bump invalidates the whole cache and that is free only pre-traffic.
+4. ~~Fail-open budget~~ DONE: zero applicable budgets still admits (a legitimate
+   multi-tenant default), but the admission logs `cost_budget_absent_uncapped` with the
+   tenant, and `cmd/seed-token` seeds a tenant-scope daily cap
+   (`SEED_DAILY_BUDGET_USD`, default `25.00` — a dev guardrail, not a measured figure).
+5. **Not built, deliberately.** Wiring the ADR-009 four-tier ladder into `/v1/generations`
+   is a verified no-op (`variant_key='default'` scores `invalid_match`); a cheaper
+   draft-tier route needs no code but no honest cheaper model has been found; in-flight
+   coalescing is a feature, not a repair. All three are recorded in `ADR-I004` with
+   triggers.
+
 ## Wave 4 — Amortization (SPEC ONLY — NOT IMPLEMENTED)
 
 > Specification + release gates:
@@ -116,7 +147,13 @@ suite against Postgres 15 (migrations v17). OpenAPI mirrors untouched.
 ## Known-open items NOT addressed by any wave yet
 
 - Ready-slot uniqueness race for concurrent non-forced inserts (no unique
-  index; forced path locks, ordinary inserts don't).
+  index; forced path locks, ordinary inserts don't). **Measured in Wave 3.5
+  (`ADR-I004` V10): a unique index would fix duplicate ROWS but not duplicate
+  SPEND.** No query looks up a pending job by `prompt_hash`, `generation_jobs`
+  does not carry one, and the asset row is inserted by the worker *after* the
+  provider call — so both racers pay in full before either row exists. The
+  actual spend fix is **request-time coalescing**, which is unbuilt and is a
+  feature, not a repair.
 - Replay-after-validation ordering (identity/style deletion can change a
   retry's response).
 - Anchor updates don't bump identity versions; packs don't snapshot
