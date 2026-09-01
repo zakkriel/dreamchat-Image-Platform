@@ -65,6 +65,19 @@ const (
 	// modelPath is the fal queue endpoint path for the model.
 	modelPath = "fal-ai/flux-pro/kontext/multi"
 
+	// ProviderIDKontextDev, ModelNameKontextDev and modelPathKontextDev are the
+	// FLUX.1 Kontext [dev] endpoint: same model family, open weights, billed per
+	// compute-second instead of per image. Seeded in migration 0020.
+	ProviderIDKontextDev = "fal_dev"
+	ModelNameKontextDev  = "flux-kontext-dev"
+	modelPathKontextDev  = "fal-ai/flux-kontext/dev"
+
+	// resolutionModeMatchInput makes the dev endpoint render at the reference
+	// image's resolution. That is what turns a cheap small reference into a
+	// cheap small render: the compute-second meter scales with pixels
+	// (measured 8.45s at 1024 against 2.64s at 512).
+	resolutionModeMatchInput = "match_input"
+
 	defaultBaseURL      = "https://queue.fal.run"
 	defaultPollInterval = 1 * time.Second
 	defaultTimeout      = 120 * time.Second
@@ -97,6 +110,14 @@ type Provider struct {
 	pollInterval time.Duration
 	timeout      time.Duration
 	logger       *slog.Logger
+
+	// kontextDev selects the [dev] endpoint's request shape: a SINGLE image_url
+	// instead of the [pro] image_urls array, plus resolution_mode and the
+	// safety-checker switch.
+	kontextDev bool
+	// safetyChecker is the [dev] endpoint's enable_safety_checker. Default
+	// false — see WithSafetyChecker.
+	safetyChecker bool
 }
 
 // Option configures a Provider (used to inject the HTTP client, base URL, and
@@ -142,6 +163,42 @@ func New(apiKey string, opts ...Option) *Provider {
 	return p
 }
 
+// NewKontextDev builds the FLUX.1 Kontext [dev] adapter: the same
+// reference-conditioned model family as [pro], on the open-weight endpoint.
+//
+// Why it exists: measured on this platform's own renders, dev holds a recurring
+// character as well as pro on the drawn styles at roughly a quarter of the
+// price, and its output size follows the reference image, so a small reference
+// buys a small (cheap) render that the imaging package enlarges for delivery.
+//
+// It is registered under a DISTINCT provider id rather than overloading "fal".
+// Capability and price are per (provider, model) in the route table, and the
+// two endpoints differ in both — dev is billed per compute-second, pro at a
+// flat per-image rate — so one id per endpoint keeps the route table honest
+// (image:ADR-016, and the same reasoning image:ADR-017 used to keep fal off the
+// bfl id).
+func NewKontextDev(apiKey string, opts ...Option) *Provider {
+	p := New(apiKey, opts...)
+	p.kontextDev = true
+	if p.modelPath == modelPath {
+		p.modelPath = modelPathKontextDev
+	}
+	return p
+}
+
+// WithSafetyChecker enables or disables the dev endpoint's safety checker.
+//
+// This is the whole reason the platform is on fal. The provider research
+// (docs/research/2026-08-08-alpha-channel-generation.md §1.5) records the
+// selection criterion verbatim: a permissiveness dial plus prompt-rewriting off
+// by default is "why we are on fal, and it is worth protecting", and OpenAI was
+// rejected outright for having moderation with no off switch. The [pro]
+// endpoint exposes a 1-6 dial; [dev] exposes a boolean, which is a cleaner fit
+// for the same goal. Default OFF, matching the stated no-censorship posture.
+func WithSafetyChecker(enabled bool) Option {
+	return func(p *Provider) { p.safetyChecker = enabled }
+}
+
 // Capabilities advertises a reference-conditioned, identity/pack-capable real
 // provider. It is intentionally NOT production_capable: that tier is claimed only
 // after an acceptance/quality benchmark pass demonstrates recurring-character
@@ -149,9 +206,18 @@ func New(apiKey string, opts ...Option) *Provider {
 // the identity's anchor assets into ReferenceURLs and fails closed when none
 // exist. The capability set matches the model row seeded in migration 0011.
 func (p *Provider) Capabilities() providers.ProviderCapabilities {
+	id, model := ProviderID, ModelName
+	if p.kontextDev {
+		// Report the endpoint this adapter actually calls. Capability
+		// reconciliation compares these against the seeded route (image:ADR-016,
+		// fail closed), so a variant that reported the [pro] identity would
+		// disable its own route at boot — or worse, pass reconciliation while
+		// calling a different model.
+		id, model = ProviderIDKontextDev, ModelNameKontextDev
+	}
 	return providers.ProviderCapabilities{
-		ProviderID: ProviderID,
-		ModelName:  ModelName,
+		ProviderID: id,
+		ModelName:  model,
 		Capabilities: []providers.Capability{
 			providers.CapabilitySceneCapable,
 			providers.CapabilityIdentityCapable,
@@ -306,16 +372,36 @@ func (p *Provider) cancel(submitted submitResponse) {
 func (p *Provider) submit(ctx context.Context, req providers.ProviderGenerateRequest) (submitResponse, error) {
 	body := map[string]any{
 		"prompt":     req.Prompt,
-		"image_urls": req.ReferenceURLs,
 		"num_images": 1,
-		// fal defaults this endpoint's output_format to "jpeg". Every tier we
-		// store is PNG, so the default made each render a lossy round trip for
-		// nothing. It also actively hurt transparent packs: the background
-		// remover has to resolve alpha on hair, and JPEG ringing lands on
-		// exactly those high-frequency edges. Ask for PNG at the source.
+		// fal defaults this endpoint's output_format to "jpeg". The bytes go
+		// straight into matting and tier encoding, so the default made each
+		// render a lossy round trip for nothing. It also actively hurt
+		// transparent packs: the background remover has to resolve alpha on
+		// hair, and JPEG ringing lands on exactly those high-frequency edges.
+		// Ask for PNG at the source.
 		"output_format": "png",
 	}
-	if req.AspectRatio != "" {
+	if p.kontextDev {
+		// [dev] takes ONE reference (image_url), not [pro]'s image_urls array.
+		// An identity with several anchors therefore conditions on its FIRST
+		// anchor only — a real difference between the two endpoints, and the
+		// reason the [pro] route stays seeded as the multi-anchor path.
+		if len(req.ReferenceURLs) > 0 {
+			body["image_url"] = req.ReferenceURLs[0]
+		}
+		// Output follows the reference resolution: a 512 reference renders 512,
+		// which is what makes the compute-second meter cheap.
+		body["resolution_mode"] = resolutionModeMatchInput
+		// Explicit rather than defaulted: the endpoint defaults this to true,
+		// and the platform's whole reason for being on fal is that the
+		// permissiveness is ours to set.
+		body["enable_safety_checker"] = p.safetyChecker
+	} else {
+		body["image_urls"] = req.ReferenceURLs
+	}
+	if req.AspectRatio != "" && !p.kontextDev {
+		// [dev] has no aspect_ratio; resolution_mode owns output geometry and
+		// sending both would be an invented contract.
 		body["aspect_ratio"] = req.AspectRatio
 	}
 	if req.Seed != "" {
