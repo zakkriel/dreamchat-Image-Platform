@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -19,9 +20,18 @@ type bgStubDoer struct {
 	lastBody     string
 	lastAuth     string
 	lastURL      string
+	calls        int
+}
+
+// newBgStubDoer returns a stub that answers with a valid one-pixel PNG data URI,
+// so a test can focus on the request it produced.
+func newBgStubDoer() *bgStubDoer {
+	return &bgStubDoer{responseBody: `{"image":{"url":"data:image/png;base64,` +
+		base64.StdEncoding.EncodeToString(tinyPNGBytes()) + `","content_type":"image/png"}}`}
 }
 
 func (d *bgStubDoer) Do(req *http.Request) (*http.Response, error) {
+	d.calls++
 	if req.Body != nil {
 		raw, _ := io.ReadAll(req.Body)
 		d.lastBody = string(raw)
@@ -195,5 +205,127 @@ func TestProcessPackOpaqueSkipsTheRemover(t *testing.T) {
 	}
 	if len(repo.packAssets) != 1 {
 		t.Fatalf("assets = %d, want the one variant", len(repo.packAssets))
+	}
+}
+
+// The v2 request shape is a contract with fal: a wrong field name degrades
+// silently to their default rather than erroring, so it is asserted explicitly.
+func TestFalBackgroundRemoverSendsV2Parameters(t *testing.T) {
+	doer := newBgStubDoer()
+	remover := &FalBackgroundRemover{BaseURL: "https://fal.run", APIKey: "k", Doer: doer}
+
+	if _, err := remover.Remove(context.Background(), providers.ProviderImage{
+		Bytes: []byte("bytes"), ContentType: "image/png",
+	}); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if !strings.Contains(doer.lastURL, "/fal-ai/birefnet/v2") {
+		t.Fatalf("must call the v2 endpoint, got %q", doer.lastURL)
+	}
+	for _, want := range []string{
+		`"model":"Portrait"`,
+		`"operating_resolution":"1024x1024"`,
+		// The foreground refiner is what removes the colour halo around hair.
+		`"refine_foreground":true`,
+		`"output_format":"png"`,
+	} {
+		if !strings.Contains(doer.lastBody, want) {
+			t.Fatalf("request body missing %s: %s", want, doer.lastBody)
+		}
+	}
+}
+
+// The weight and resolution are the A/B knobs; they have to actually reach fal.
+func TestFalBackgroundRemoverHonoursConfiguredWeight(t *testing.T) {
+	doer := newBgStubDoer()
+	remover := &FalBackgroundRemover{
+		BaseURL: "https://fal.run", APIKey: "k", Doer: doer,
+		Model:               BirefnetModelMatting,
+		OperatingResolution: "2048x2048",
+	}
+	if _, err := remover.Remove(context.Background(), providers.ProviderImage{
+		Bytes: []byte("bytes"), ContentType: "image/png",
+	}); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	hasModel := strings.Contains(doer.lastBody, "\"model\":\"Matting\"")
+	hasRes := strings.Contains(doer.lastBody, "\"operating_resolution\":\"2048x2048\"")
+	if !hasModel || !hasRes {
+		t.Fatalf("configured weight/resolution did not reach fal: %s", doer.lastBody)
+	}
+}
+
+// fal restricts 2304x2304 to the dynamic weight. Catching it locally turns a
+// mid-pack remote 4xx into a configuration error before any call is made.
+func TestFalBackgroundRemoverRejectsUnsupportedResolutionPairing(t *testing.T) {
+	doer := newBgStubDoer()
+	remover := &FalBackgroundRemover{
+		BaseURL: "https://fal.run", APIKey: "k", Doer: doer,
+		Model:               BirefnetModelMatting,
+		OperatingResolution: "2304x2304",
+	}
+	_, err := remover.Remove(context.Background(), providers.ProviderImage{
+		Bytes: []byte("bytes"), ContentType: "image/png",
+	})
+	if err == nil {
+		t.Fatal("expected 2304x2304 with a non-dynamic weight to be rejected")
+	}
+	if !errors.Is(err, errBackgroundRemoval) {
+		t.Fatalf("must carry the background-removal code, got %v", err)
+	}
+	if doer.calls != 0 {
+		t.Fatalf("must fail before calling fal, got %d calls", doer.calls)
+	}
+}
+
+// The Ideogram remover is the default because it has a published price. Its
+// wire shape is pinned for the same reason the BiRefNet one is: a wrong field
+// name degrades to a remote default instead of erroring.
+func TestFalIdeogramRemoverRoundTripsADataURI(t *testing.T) {
+	cleaned := tinyPNGBytes()
+	doer := &bgStubDoer{responseBody: `{"image":{"url":"data:image/png;base64,` +
+		base64.StdEncoding.EncodeToString(cleaned) + `","content_type":"image/png"}}`}
+	r := &FalIdeogramBackgroundRemover{BaseURL: "https://fal.run", APIKey: "key-test", Doer: doer}
+
+	out, err := r.Remove(context.Background(), providers.ProviderImage{Bytes: []byte{0x1, 0x2}, ContentType: "image/png"})
+	if err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if string(out.Bytes) != string(cleaned) || out.ContentType != "image/png" {
+		t.Fatalf("output = %d bytes %q, want the decoded data-URI PNG", len(out.Bytes), out.ContentType)
+	}
+	if !strings.Contains(doer.lastURL, "/fal-ai/ideogram/remove-background") {
+		t.Fatalf("URL = %q, want the ideogram endpoint", doer.lastURL)
+	}
+	if doer.lastAuth != "Key key-test" {
+		t.Fatalf("Authorization = %q, want the fal key header", doer.lastAuth)
+	}
+	var sent map[string]any
+	if err := json.Unmarshal([]byte(doer.lastBody), &sent); err != nil {
+		t.Fatalf("request body does not parse: %v", err)
+	}
+	if !strings.HasPrefix(sent["image_url"].(string), "data:image/png;base64,") {
+		t.Fatalf("image must travel as a data URI, got %v", sent["image_url"])
+	}
+	// sync_mode is what makes the result come back inline, with nothing left
+	// on the provider to expire or leak.
+	if sent["sync_mode"] != true {
+		t.Fatalf("sync_mode = %v, want true", sent["sync_mode"])
+	}
+	// BiRefNet-only knobs must not leak into this request.
+	for _, forbidden := range []string{"model", "operating_resolution", "refine_foreground"} {
+		if _, present := sent[forbidden]; present {
+			t.Fatalf("ideogram request must not carry %q: %s", forbidden, doer.lastBody)
+		}
+	}
+}
+
+// A failure has to surface as an error. Returning the untouched input would
+// ship an opaque image under a transparent promise.
+func TestFalIdeogramRemoverFailureIsAnErrorNotAPassthrough(t *testing.T) {
+	doer := &bgStubDoer{status: 500, responseBody: `{"detail":"boom"}`}
+	r := &FalIdeogramBackgroundRemover{BaseURL: "https://fal.run", APIKey: "k", Doer: doer}
+	if _, err := r.Remove(context.Background(), providers.ProviderImage{Bytes: []byte{0x1}, ContentType: "image/png"}); err == nil {
+		t.Fatal("expected an error on a 500")
 	}
 }

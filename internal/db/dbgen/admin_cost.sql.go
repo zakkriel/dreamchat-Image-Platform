@@ -442,6 +442,117 @@ func (q *Queries) ListCostReservationsAdmin(ctx context.Context, arg ListCostRes
 	return items, nil
 }
 
+const listGenerationCostEventsAdmin = `-- name: ListGenerationCostEventsAdmin :many
+SELECT gce.id, gce.tenant_id, gce.job_id, gce.asset_id, gce.token_id,
+       gce.provider_id, gce.model_id, gce.provider_attempt_id,
+       gce.cost_reservation_id, gce.operation,
+       gce.estimated_cost_usd, gce.actual_cost_usd,
+       gce.duration_ms, gce.status, gce.created_at,
+       j.world_id
+FROM generation_cost_events gce
+LEFT JOIN generation_jobs j ON j.id = gce.job_id
+WHERE ($1::text IS NULL OR gce.tenant_id = $1)
+  AND ($2::text IS NULL OR gce.token_id = $2)
+  AND ($3::text IS NULL OR gce.job_id = $3)
+  AND ($4::text IS NULL OR gce.provider_id = $4)
+  AND ($5::text IS NULL OR gce.model_id = $5)
+  AND ($6::text IS NULL OR j.world_id = $6)
+  AND ($7::text IS NULL OR gce.status = $7)
+  AND ($8::timestamptz IS NULL OR gce.created_at >= $8)
+  AND ($9::timestamptz IS NULL OR gce.created_at <= $9)
+ORDER BY gce.created_at DESC
+LIMIT $10
+`
+
+type ListGenerationCostEventsAdminParams struct {
+	TenantID      *string            `json:"tenant_id"`
+	TokenID       *string            `json:"token_id"`
+	JobID         *string            `json:"job_id"`
+	ProviderID    *string            `json:"provider_id"`
+	ModelID       *string            `json:"model_id"`
+	WorldID       *string            `json:"world_id"`
+	Status        *string            `json:"status"`
+	CreatedAfter  pgtype.Timestamptz `json:"created_after"`
+	CreatedBefore pgtype.Timestamptz `json:"created_before"`
+	RowLimit      int32              `json:"row_limit"`
+}
+
+type ListGenerationCostEventsAdminRow struct {
+	ID                string             `json:"id"`
+	TenantID          string             `json:"tenant_id"`
+	JobID             *string            `json:"job_id"`
+	AssetID           *string            `json:"asset_id"`
+	TokenID           *string            `json:"token_id"`
+	ProviderID        *string            `json:"provider_id"`
+	ModelID           *string            `json:"model_id"`
+	ProviderAttemptID *string            `json:"provider_attempt_id"`
+	CostReservationID *string            `json:"cost_reservation_id"`
+	Operation         string             `json:"operation"`
+	EstimatedCostUsd  pgtype.Numeric     `json:"estimated_cost_usd"`
+	ActualCostUsd     pgtype.Numeric     `json:"actual_cost_usd"`
+	DurationMs        *int32             `json:"duration_ms"`
+	Status            string             `json:"status"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	WorldID           *string            `json:"world_id"`
+}
+
+// ListGenerationCostEventsAdmin is the read side of the cost-event log the
+// cost-spike runbook queries (docs/runbooks/cost-spike.md). One row per priced
+// provider call. cost_reservation_id ties the row to the reservation that
+// priced it (Wave 3), so a retried job's earlier attempts stay attributable to
+// the reservation that actually paid for them.
+//
+// world_id is not a column on generation_cost_events; the runbook groups spend
+// by world, so it is joined from the owning job. The join is LEFT because a
+// cost event may exist without a job row (a pre-flight denial).
+func (q *Queries) ListGenerationCostEventsAdmin(ctx context.Context, arg ListGenerationCostEventsAdminParams) ([]ListGenerationCostEventsAdminRow, error) {
+	rows, err := q.db.Query(ctx, listGenerationCostEventsAdmin,
+		arg.TenantID,
+		arg.TokenID,
+		arg.JobID,
+		arg.ProviderID,
+		arg.ModelID,
+		arg.WorldID,
+		arg.Status,
+		arg.CreatedAfter,
+		arg.CreatedBefore,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListGenerationCostEventsAdminRow
+	for rows.Next() {
+		var i ListGenerationCostEventsAdminRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.JobID,
+			&i.AssetID,
+			&i.TokenID,
+			&i.ProviderID,
+			&i.ModelID,
+			&i.ProviderAttemptID,
+			&i.CostReservationID,
+			&i.Operation,
+			&i.EstimatedCostUsd,
+			&i.ActualCostUsd,
+			&i.DurationMs,
+			&i.Status,
+			&i.CreatedAt,
+			&i.WorldID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listProviderModelPrices = `-- name: ListProviderModelPrices :many
 SELECT id, provider_id, model_id, operation_type, unit_type,
        price_per_unit::text AS price_per_unit, currency,

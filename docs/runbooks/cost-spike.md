@@ -1,7 +1,8 @@
 # Runbook — Cost Spike
 
-> **Some controls referenced below are PLANNED — required admin surface for
-> implementation, not yet served.** See
+> The cost surface referenced below (price book, budgets, reservations, the
+> cost-event log, and the metrics scrape) is **served**. Provider and route
+> controls are still **PLANNED** and are marked as such inline. See
 > `docs/architecture/admin-control-surface.md`.
 
 ## 1. Symptoms
@@ -28,7 +29,7 @@ Aggregate client-side by `token_id` (or use the planned
 
 | Endpoint | Scope | Status |
 |---|---|---|
-| `GET /v1/admin/cost-events` | `admin:costs` | **PLANNED** |
+| `GET /v1/admin/cost-events` | `admin:costs` | served |
 | Future CLI: `dci-admin costs events --since 1h --group-by token` | — | planned |
 | **MANUAL** fallback: `SELECT token_id, SUM(actual_cost_usd::numeric) FROM generation_cost_events WHERE created_at > now() - interval '1 hour' GROUP BY token_id ORDER BY 2 DESC LIMIT 20;` — record in audit log. | — | manual |
 
@@ -63,7 +64,7 @@ Authorization: Bearer <admin-token>   # scope: admin:costs
 
 | Endpoint | Scope | Status |
 |---|---|---|
-| `GET /v1/admin/cost-budgets` | `admin:costs` | **PLANNED** |
+| `GET /v1/admin/cost-budgets` | `admin:costs` | served |
 | Future CLI: `dci-admin costs budgets list` | — | planned |
 
 Identify the budget(s) at the affected scope (tenant, world, token, or global)
@@ -100,7 +101,7 @@ cheaper alternative.
 
 | Endpoint | Scope | Status |
 |---|---|---|
-| `PUT /v1/admin/cost-budgets/{id}` | `admin:costs` | **PLANNED** |
+| `PUT /v1/admin/cost-budgets/{id}` | `admin:costs` | served |
 | Future CLI: `dci-admin costs budget set <id> --limit-usd 50` | — | planned |
 | **MANUAL** fallback: `UPDATE cost_budgets SET limit_amount = '50.00', status = 'active' WHERE id = '<budget_id>';` — write audit event by hand. | — | manual |
 
@@ -153,8 +154,8 @@ Content-Type: application/json
 
 | Endpoint | Scope | Status |
 |---|---|---|
-| `POST /v1/admin/cost-budgets` | `admin:costs` | **PLANNED** |
-| `PUT /v1/admin/cost-budgets/{id}` | `admin:costs` | **PLANNED** |
+| `POST /v1/admin/cost-budgets` | `admin:costs` | served |
+| `PUT /v1/admin/cost-budgets/{id}` | `admin:costs` | served |
 
 ## 5. Confirm mitigation
 
@@ -204,14 +205,14 @@ After the incident:
     "source": "incident_review_2026-06-05"
   }
   ```
-  Scope `admin:costs` — **PLANNED**.
+  Scope `admin:costs` — served.
 
 - **Inspect live reservations** to see what's currently held against
   the budget:
   ```http
   GET /v1/admin/cost-reservations?status=reserved&tenant_id=<t>&limit=200
   ```
-  Scope `admin:costs` — **PLANNED**. Useful when a budget reads as full
+  Scope `admin:costs` — served. Useful when a budget reads as full
   but actual spend looks low (lots of in-flight work that hasn't
   reconciled).
 

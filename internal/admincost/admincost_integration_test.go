@@ -49,6 +49,7 @@ func cleanup(t *testing.T, pool *pgxpool.Pool) {
 	}
 	exec(`DELETE FROM audit_events WHERE tenant_id = $1`, itTenant)
 	exec(`DELETE FROM cost_reservation_budget_holds WHERE cost_reservation_id IN (SELECT id FROM cost_reservations WHERE tenant_id = $1)`, itTenant)
+	exec(`DELETE FROM generation_cost_events WHERE tenant_id = $1`, itTenant)
 	exec(`UPDATE generation_jobs SET cost_reservation_id = NULL WHERE tenant_id = $1`, itTenant)
 	exec(`DELETE FROM cost_reservations WHERE tenant_id = $1`, itTenant)
 	exec(`DELETE FROM generation_jobs WHERE tenant_id = $1`, itTenant)
@@ -301,3 +302,100 @@ type noopEnqueuer struct{}
 func (noopEnqueuer) EnqueueGenerateArtifact(context.Context, string) error { return nil }
 func (noopEnqueuer) EnqueueGeneratePack(context.Context, string) error     { return nil }
 func (noopEnqueuer) Close() error                                          { return nil }
+
+// The cost-event read path is what the cost-spike runbook actually calls. It
+// joins generation_jobs for world_id, so it can only be proven against a real
+// database - a broken join is invisible to unit tests.
+func TestListCostEventsFiltersAndJoinsWorld(t *testing.T) {
+	pool := openPool(t)
+	defer pool.Close()
+	cleanup(t, pool)
+	defer cleanup(t, pool)
+	seed(t, pool)
+	ctx := context.Background()
+
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO generation_jobs (id, tenant_id, world_id, job_type, status)
+		 VALUES ('job_ce1', $1, 'world_alpha', 'artifact', 'completed')`, itTenant); err != nil {
+		t.Fatalf("seed job: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO cost_reservations (id, generation_job_id, tenant_id, estimated_amount, reserved_amount, status)
+		 VALUES ('resv_ce1', 'job_ce1', $1, 0.0100, 0.0100, 'committed')`, itTenant); err != nil {
+		t.Fatalf("seed reservation: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO generation_cost_events (id, tenant_id, job_id, token_id, provider_id, cost_reservation_id, operation, actual_cost_usd, status)
+		 VALUES ('gce_ce1', $1, 'job_ce1', $2, 'mock', 'resv_ce1', 'text_to_image', 0.0100, 'completed')`,
+		itTenant, itToken); err != nil {
+		t.Fatalf("seed cost event: %v", err)
+	}
+	// A pre-flight denial has no job row at all: the LEFT JOIN must still
+	// return it rather than dropping the most cost-relevant row on the floor.
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO generation_cost_events (id, tenant_id, provider_id, operation, status)
+		 VALUES ('gce_ce2', $1, 'bfl', 'text_to_image', 'failed')`, itTenant); err != nil {
+		t.Fatalf("seed jobless cost event: %v", err)
+	}
+
+	svc := admincost.NewService(pool, nil)
+	tenant := itTenant
+	all, err := svc.ListCostEvents(ctx, admincost.CostEventFilter{TenantID: &tenant})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected both events (including the jobless one), got %d", len(all))
+	}
+
+	world := "world_alpha"
+	byWorld, err := svc.ListCostEvents(ctx, admincost.CostEventFilter{TenantID: &tenant, WorldID: &world})
+	if err != nil {
+		t.Fatalf("list by world: %v", err)
+	}
+	if len(byWorld) != 1 || byWorld[0].ID != "gce_ce1" {
+		t.Fatalf("expected the world-scoped event, got %+v", byWorld)
+	}
+	if byWorld[0].WorldID == nil || *byWorld[0].WorldID != "world_alpha" {
+		t.Fatalf("world_id must be joined onto the row, got %+v", byWorld[0].WorldID)
+	}
+	// Reservation attribution is the Wave 3 invariant this log exists to expose.
+	if byWorld[0].CostReservationID == nil || *byWorld[0].CostReservationID != "resv_ce1" {
+		t.Fatalf("expected the priced reservation on the row, got %+v", byWorld[0].CostReservationID)
+	}
+	if byWorld[0].ActualCostUSD == nil || *byWorld[0].ActualCostUSD != "0.0100" {
+		t.Fatalf("expected the provider actual, got %+v", byWorld[0].ActualCostUSD)
+	}
+
+	// A cost event that never reached a provider has no actual - it must stay
+	// null rather than being reported as free.
+	failed := "failed"
+	byStatus, err := svc.ListCostEvents(ctx, admincost.CostEventFilter{TenantID: &tenant, Status: &failed})
+	if err != nil {
+		t.Fatalf("list by status: %v", err)
+	}
+	if len(byStatus) != 1 || byStatus[0].ID != "gce_ce2" {
+		t.Fatalf("expected the failed event, got %+v", byStatus)
+	}
+	if byStatus[0].ActualCostUSD != nil {
+		t.Fatalf("expected null actual on an unbilled event, got %q", *byStatus[0].ActualCostUSD)
+	}
+
+	token := itToken
+	byToken, err := svc.ListCostEvents(ctx, admincost.CostEventFilter{TenantID: &tenant, TokenID: &token})
+	if err != nil {
+		t.Fatalf("list by token: %v", err)
+	}
+	if len(byToken) != 1 || byToken[0].ID != "gce_ce1" {
+		t.Fatalf("expected the token-scoped event, got %+v", byToken)
+	}
+
+	other := "tenant_other"
+	none, err := svc.ListCostEvents(ctx, admincost.CostEventFilter{TenantID: &other})
+	if err != nil {
+		t.Fatalf("list other tenant: %v", err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("expected no cross-tenant rows, got %d", len(none))
+	}
+}

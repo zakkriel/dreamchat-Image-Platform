@@ -331,10 +331,14 @@ func (h *GenerationsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		DisplayName:    identityPrompt,
 		StyleProfileID: identity.StyleProfileID,
 		AnchorAssetID:  deref(req.Subject.AnchorAssetId),
-		DeriveFrom:     deref(req.Subject.DeriveFrom),
-		Intent:         string(req.Render.Intent),
-		MaxMegapixels:  maxMegapixels,
-		TransformJSON:  transformJSON,
+		// The worker conditions the render on the identity's current anchors, so
+		// they belong in the reuse key: replacing a character's reference images
+		// must not keep serving renders of the previous appearance.
+		IdentityAnchorAssetIDs: identity.AnchorAssetIds,
+		DeriveFrom:             deref(req.Subject.DeriveFrom),
+		Intent:                 string(req.Render.Intent),
+		MaxMegapixels:          maxMegapixels,
+		TransformJSON:          transformJSON,
 	})
 	if h.Reuse != nil {
 		existing, rerr := h.Reuse.FindReadyGenerationByPromptHash(r.Context(), tenantID, renderHash)

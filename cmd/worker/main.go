@@ -99,11 +99,29 @@ func main() {
 	// packs need it, and a deployment without it simply fails those jobs closed with their own code.
 	var remover jobs.BackgroundRemover
 	if cfg.FalKey != "" {
-		remover = &jobs.FalBackgroundRemover{
-			BaseURL: "https://fal.run",
-			APIKey:  cfg.FalKey,
-			Doer:    &http.Client{Timeout: 90 * time.Second},
+		httpDoer := &http.Client{Timeout: 90 * time.Second}
+		switch cfg.BackgroundRemover {
+		case "birefnet":
+			remover = &jobs.FalBackgroundRemover{
+				BaseURL:             "https://fal.run",
+				APIKey:              cfg.FalKey,
+				Doer:                httpDoer,
+				Model:               cfg.BirefnetModel,
+				OperatingResolution: cfg.BirefnetOperatingResolution,
+			}
+		default:
+			remover = &jobs.FalIdeogramBackgroundRemover{
+				BaseURL: "https://fal.run",
+				APIKey:  cfg.FalKey,
+				Doer:    httpDoer,
+			}
 		}
+	}
+	if cfg.ChromaKeyBackgroundRemoval {
+		// Key locally first and keep the hosted matter as the fallback, so a
+		// render the key refuses still produces a correct sprite - it just
+		// costs the provider call the key was trying to avoid.
+		remover = &jobs.ChromaKeyRemover{Fallback: remover, Logger: logger}
 	}
 	worker := &jobs.Worker{
 		Jobs:            jobs.NewRepository(pool),

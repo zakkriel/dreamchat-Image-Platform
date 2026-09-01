@@ -126,6 +126,12 @@ func TestGenerateSubmitShapeAndSuccess(t *testing.T) {
 			if !strings.Contains(s, `"prompt"`) {
 				t.Errorf("submit body missing prompt: %s", s)
 			}
+			// fal defaults this endpoint to jpeg. We store PNG tiers and matte
+			// transparent packs off this render, so a lossy default would put
+			// compression ringing on the hair edges the matter must resolve.
+			if !strings.Contains(s, `"output_format":"png"`) {
+				t.Errorf("submit body must request png explicitly: %s", s)
+			}
 			return jsonResp(200, `{"request_id":"req_1","status_url":"https://fal.test/status/req_1","response_url":"https://fal.test/result/req_1"}`), nil
 		},
 		// poll: still in progress

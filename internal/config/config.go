@@ -85,6 +85,35 @@ type Config struct {
 	// another real identity-capable provider is configured.
 	FalKey string
 
+	// ChromaKeyBackgroundRemoval (CHROMA_KEY_BACKGROUND_REMOVAL) makes
+	// transparent packs render against a flat magenta backdrop and key it out
+	// locally, spending no provider call, and fall back to the hosted matting
+	// model whenever the key cannot be trusted.
+	//
+	// Default OFF. The keyer itself is proven by unit tests, but whether the
+	// model actually paints a flat keyable backdrop is a per-model empirical
+	// question that has not been measured against a real render yet. Turning
+	// this on changes the prompt for transparent cells.
+	ChromaKeyBackgroundRemoval bool
+
+	// BackgroundRemover selects the hosted background-removal model
+	// (BACKGROUND_REMOVER): "ideogram" (default) or "birefnet".
+	//
+	// Ideogram is the default because it has a PUBLISHED price - $0.01 per
+	// request - and BiRefNet does not: fal shows "$0 per compute seconds" on the
+	// model card and omits it from the pricing page entirely. An unpriced call
+	// cannot be reserved against a budget, reconciled, or shown honestly in cost
+	// per usable image, so the option we can account for wins by default.
+	BackgroundRemover string
+
+	// BirefnetModel and BirefnetOperatingResolution tune the hosted matting
+	// call (BIREFNET_MODEL / BIREFNET_OPERATING_RESOLUTION). Empty keeps the
+	// long-standing "Portrait" weight at 1024x1024, so behaviour does not move
+	// on upgrade; they exist so the Portrait-vs-Matting and 1024-vs-2048
+	// comparisons are a config change rather than a deploy.
+	BirefnetModel               string
+	BirefnetOperatingResolution string
+
 	APITokenPepper     string
 	OpenAPIDocsEnabled bool
 
@@ -143,6 +172,12 @@ func Load() (*Config, error) {
 		OpenAPIDocsEnabled: getEnvBool("OPENAPI_DOCS_ENABLED", defaultDocsEnabled(env)),
 
 		AllowSyntheticProviders: getEnvBool("ALLOW_SYNTHETIC_PROVIDERS", false),
+
+		ChromaKeyBackgroundRemoval: getEnvBool("CHROMA_KEY_BACKGROUND_REMOVAL", false),
+
+		BackgroundRemover:           getEnv("BACKGROUND_REMOVER", "ideogram"),
+		BirefnetModel:               getEnv("BIREFNET_MODEL", ""),
+		BirefnetOperatingResolution: getEnv("BIREFNET_OPERATING_RESOLUTION", ""),
 
 		GovernanceEnforcement:       GovernanceMode(getEnv("GOVERNANCE_ENFORCEMENT", string(GovernanceLogOnly))),
 		GovernanceMaxAge:            getEnvDuration("GOVERNANCE_MAX_AGE", 24*time.Hour),

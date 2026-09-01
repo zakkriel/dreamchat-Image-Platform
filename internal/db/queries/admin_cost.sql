@@ -140,6 +140,36 @@ WHERE (sqlc.narg(tenant_id)::text IS NULL OR tenant_id = sqlc.narg(tenant_id))
 ORDER BY created_at DESC
 LIMIT sqlc.arg(row_limit);
 
+-- ListGenerationCostEventsAdmin is the read side of the cost-event log the
+-- cost-spike runbook queries (docs/runbooks/cost-spike.md). One row per priced
+-- provider call. cost_reservation_id ties the row to the reservation that
+-- priced it (Wave 3), so a retried job's earlier attempts stay attributable to
+-- the reservation that actually paid for them.
+--
+-- world_id is not a column on generation_cost_events; the runbook groups spend
+-- by world, so it is joined from the owning job. The join is LEFT because a
+-- cost event may exist without a job row (a pre-flight denial).
+-- name: ListGenerationCostEventsAdmin :many
+SELECT gce.id, gce.tenant_id, gce.job_id, gce.asset_id, gce.token_id,
+       gce.provider_id, gce.model_id, gce.provider_attempt_id,
+       gce.cost_reservation_id, gce.operation,
+       gce.estimated_cost_usd, gce.actual_cost_usd,
+       gce.duration_ms, gce.status, gce.created_at,
+       j.world_id
+FROM generation_cost_events gce
+LEFT JOIN generation_jobs j ON j.id = gce.job_id
+WHERE (sqlc.narg(tenant_id)::text IS NULL OR gce.tenant_id = sqlc.narg(tenant_id))
+  AND (sqlc.narg(token_id)::text IS NULL OR gce.token_id = sqlc.narg(token_id))
+  AND (sqlc.narg(job_id)::text IS NULL OR gce.job_id = sqlc.narg(job_id))
+  AND (sqlc.narg(provider_id)::text IS NULL OR gce.provider_id = sqlc.narg(provider_id))
+  AND (sqlc.narg(model_id)::text IS NULL OR gce.model_id = sqlc.narg(model_id))
+  AND (sqlc.narg(world_id)::text IS NULL OR j.world_id = sqlc.narg(world_id))
+  AND (sqlc.narg(status)::text IS NULL OR gce.status = sqlc.narg(status))
+  AND (sqlc.narg(created_after)::timestamptz IS NULL OR gce.created_at >= sqlc.narg(created_after))
+  AND (sqlc.narg(created_before)::timestamptz IS NULL OR gce.created_at <= sqlc.narg(created_before))
+ORDER BY gce.created_at DESC
+LIMIT sqlc.arg(row_limit);
+
 -- ---------------------------------------------------------------------------
 -- Audit events
 -- ---------------------------------------------------------------------------

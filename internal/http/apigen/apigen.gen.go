@@ -548,18 +548,29 @@ type CostBudgetWrite struct {
 
 // CostEvent defines model for CostEvent.
 type CostEvent struct {
-	ActualCostUsd    *string   `json:"actual_cost_usd,omitempty"`
-	AssetId          *string   `json:"asset_id,omitempty"`
-	CreatedAt        time.Time `json:"created_at"`
-	DurationMs       *int      `json:"duration_ms,omitempty"`
-	EstimatedCostUsd *string   `json:"estimated_cost_usd,omitempty"`
-	Id               string    `json:"id"`
-	JobId            *string   `json:"job_id,omitempty"`
-	ModelId          *string   `json:"model_id,omitempty"`
-	Operation        string    `json:"operation"`
-	ProviderId       *string   `json:"provider_id,omitempty"`
-	Status           string    `json:"status"`
-	TokenId          *string   `json:"token_id,omitempty"`
+	// ActualCostUsd Provider-reported spend. Null when the provider reported no
+	// billable amount — the platform never invents an actual.
+	ActualCostUsd *string `json:"actual_cost_usd"`
+	AssetId       *string `json:"asset_id"`
+
+	// CostReservationId The reservation that priced this call. Null only for rows written
+	// before the reservation link existed (migration 0019).
+	CostReservationId *string   `json:"cost_reservation_id"`
+	CreatedAt         time.Time `json:"created_at"`
+	DurationMs        *int      `json:"duration_ms"`
+	EstimatedCostUsd  *string   `json:"estimated_cost_usd"`
+	Id                string    `json:"id"`
+	JobId             *string   `json:"job_id"`
+	ModelId           *string   `json:"model_id"`
+	Operation         string    `json:"operation"`
+	ProviderAttemptId *string   `json:"provider_attempt_id"`
+	ProviderId        *string   `json:"provider_id"`
+	Status            string    `json:"status"`
+	TenantId          string    `json:"tenant_id"`
+	TokenId           *string   `json:"token_id"`
+
+	// WorldId Joined from the owning job so spend can be grouped by world.
+	WorldId *string `json:"world_id"`
 }
 
 // CostReservation defines model for CostReservation.
@@ -1468,6 +1479,8 @@ type GetV1AdminCostEventsParams struct {
 	ModelId       *string    `form:"model_id,omitempty" json:"model_id,omitempty"`
 	WorldId       *string    `form:"world_id,omitempty" json:"world_id,omitempty"`
 	TenantId      *string    `form:"tenant_id,omitempty" json:"tenant_id,omitempty"`
+	JobId         *string    `form:"job_id,omitempty" json:"job_id,omitempty"`
+	Status        *string    `form:"status,omitempty" json:"status,omitempty"`
 	CreatedAfter  *time.Time `form:"created_after,omitempty" json:"created_after,omitempty"`
 	CreatedBefore *time.Time `form:"created_before,omitempty" json:"created_before,omitempty"`
 	Limit         *int       `form:"limit,omitempty" json:"limit,omitempty"`
