@@ -212,7 +212,7 @@ func TestEncodeTiersLadderIsDistinct(t *testing.T) {
 		return cfg.Width
 	}
 	final, preview, thumb := dim(tiers.Final), dim(tiers.Preview), dim(tiers.Thumb)
-	if !(final > preview && preview > thumb) {
+	if final <= preview || preview <= thumb {
 		t.Fatalf("expected final > preview > thumb, got %d / %d / %d", final, preview, thumb)
 	}
 	if preview != PreviewShortEdge || thumb != ThumbnailShortEdge {
