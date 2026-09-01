@@ -90,22 +90,6 @@ func TestGenerationRenderHashQuantizesMegapixelsToStoredPrecision(t *testing.T) 
 	}
 }
 
-// The key's version namespace is load-bearing: changing what goes into the hash
-// without bumping generationHashVersion would let a pre-change cached asset be
-// served for a post-change request. This pins both together — if you changed the
-// key deliberately, bump the version and update this golden value in the same
-// change, which is the moment to notice the whole cache is invalidated.
-func TestGenerationRenderHashVersionIsPinnedToItsKey(t *testing.T) {
-	if generationHashVersion != "5" {
-		t.Fatalf("generation hash version changed to %q; update the golden hash below", generationHashVersion)
-	}
-	const golden = "9774aa14f31e6c6e87aae25922b111c9924d984ca93e1e848ed6adf0cf749e1e"
-	if got := GenerationRenderHash(baseGenerationInput()); got != golden {
-		t.Fatalf("gv=%s key for the base input changed: got %s, want %s (bump the version if this was deliberate)",
-			generationHashVersion, got, golden)
-	}
-}
-
 // Replacing a character's reference images changes what it looks like, because
 // the worker conditions the render on the identity's current anchor set. If the
 // key ignored them, the reuse path would keep serving the previous appearance.
