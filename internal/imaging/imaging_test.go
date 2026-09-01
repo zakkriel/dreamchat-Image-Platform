@@ -24,11 +24,14 @@ func pngOf(t *testing.T, w, h int) []byte {
 	return buf.Bytes()
 }
 
+// dimsOf reads tier dimensions without assuming a container format: the tiers
+// are AVIF now, and a test that hardcodes the codec would have to be rewritten
+// again the next time the delivery format changes.
 func dimsOf(t *testing.T, b []byte) (int, int) {
 	t.Helper()
-	cfg, err := png.DecodeConfig(bytes.NewReader(b))
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(b))
 	if err != nil {
-		t.Fatalf("decode tier png: %v", err)
+		t.Fatalf("decode tier: %v", err)
 	}
 	return cfg.Width, cfg.Height
 }
@@ -80,19 +83,29 @@ func TestEncodeTiersPreservesAspect(t *testing.T) {
 	}
 }
 
-// A source smaller than every tier target is never upscaled: all three tiers
-// equal the source dimensions.
-func TestEncodeTiersNeverUpscales(t *testing.T) {
+// The REDUCTION tiers are never upscaled: a source smaller than a tier target
+// is left at its own size, so preview and thumb can never be an inflated
+// version of something smaller.
+//
+// The FINAL tier is the deliberate exception — it is the delivery image and is
+// enlarged from a small render on purpose (see upscale.go), because buying
+// pixels from a provider costs money and enlarging them here does not.
+func TestEncodeTiersNeverUpscalesReductionTiers(t *testing.T) {
 	src := pngOf(t, 200, 200)
 	tiers, err := EncodeTiers(src)
 	if err != nil {
 		t.Fatalf("EncodeTiers: %v", err)
 	}
-	for name, b := range map[string][]byte{"final": tiers.Final, "preview": tiers.Preview, "thumb": tiers.Thumb} {
+	for name, b := range map[string][]byte{"preview": tiers.Preview, "thumb": tiers.Thumb} {
 		w, h := dimsOf(t, b)
 		if w != 200 || h != 200 {
 			t.Fatalf("%s must not upscale a 200x200 source, got %dx%d", name, w, h)
 		}
+	}
+	w, h := dimsOf(t, tiers.Final)
+	if w != 200*FinalUpscaleFactor || h != 200*FinalUpscaleFactor {
+		t.Fatalf("final must be enlarged %dx to %d, got %dx%d",
+			FinalUpscaleFactor, 200*FinalUpscaleFactor, w, h)
 	}
 }
 

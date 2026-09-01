@@ -32,6 +32,11 @@ func Registry(cfg *config.Config) *providers.Registry {
 	}
 	if cfg.FalKey != "" {
 		reg.Register(fal.ProviderID, fal.New(cfg.FalKey))
+		// Same key, second endpoint. FLUX.1 Kontext [dev] is registered under
+		// its own provider id because capability reconciliation and pricing are
+		// per adapter, and it is the cheaper identity path (migration 0020).
+		reg.Register(fal.ProviderIDKontextDev, fal.NewKontextDev(cfg.FalKey,
+			fal.WithSafetyChecker(cfg.FalSafetyChecker)))
 	}
 	return reg
 }

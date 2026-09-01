@@ -97,8 +97,18 @@ S3_PRESIGN_TTL               # presigned read-URL lifetime (default 15m)
 
 IMAGE_PROVIDER               # mock | bfl | fal — the single provider switch
 BFL_API_KEY                  # only required when IMAGE_PROVIDER=bfl
-FAL_KEY                      # registers the fal reference-conditioned adapter
-                             # (identity/pack routes) when set
+FAL_KEY                      # registers the fal reference-conditioned adapters
+                             # (identity/pack routes) when set: BOTH FLUX.1
+                             # Kontext [pro] (provider id `fal`) and [dev]
+                             # (provider id `fal_dev`, cheaper, preferred at
+                             # route priority 150)
+FAL_SAFETY_CHECKER           # default false. Sends enable_safety_checker on the
+                             # Kontext [dev] endpoint, which defaults it TRUE.
+                             # The permissiveness being OURS to set is the
+                             # documented reason this platform is on fal at all
+                             # (docs/research/2026-08-08-alpha-channel-
+                             # generation.md §1.5); leaving it unset would adopt
+                             # the vendor's policy as the product boundary
 ALLOW_SYNTHETIC_PROVIDERS    # default false EVERYWHERE: mock may back
                              # identity/pack routes only when explicitly true
 

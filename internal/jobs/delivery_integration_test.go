@@ -6,7 +6,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"image/png"
+	"image"
+	_ "image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -21,6 +22,7 @@ import (
 	"github.com/zakkriel/drchat-image-platform/internal/auth"
 	"github.com/zakkriel/drchat-image-platform/internal/cost"
 	"github.com/zakkriel/drchat-image-platform/internal/http/handlers"
+	"github.com/zakkriel/drchat-image-platform/internal/imaging"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
 	"github.com/zakkriel/drchat-image-platform/internal/providers/mock"
 	"github.com/zakkriel/drchat-image-platform/internal/styles"
@@ -62,9 +64,11 @@ func deliveryReq(t *testing.T, r http.Handler, method, path string, scopes []str
 	return rec
 }
 
-// fetchPNGDims GETs a presigned URL from MinIO and returns the image
-// dimensions, asserting a 200.
-func fetchPNGDims(t *testing.T, presignedURL string) (int, int) {
+// fetchTierDims fetches a presigned tier and reads its dimensions without
+// assuming a container format — tiers are AVIF, and the point of this test is
+// that the bytes are retrievable and the ladder is distinct, not which codec
+// wrote them.
+func fetchTierDims(t *testing.T, presignedURL string) (int, int) {
 	t.Helper()
 	if !strings.HasPrefix(presignedURL, "http") {
 		t.Fatalf("expected an http(s) presigned URL, got %q", presignedURL)
@@ -82,9 +86,12 @@ func fetchPNGDims(t *testing.T, presignedURL string) (int, int) {
 	if err != nil {
 		t.Fatalf("read presigned body: %v", err)
 	}
-	cfg, err := png.DecodeConfig(bytes.NewReader(raw))
+	cfg, format, err := image.DecodeConfig(bytes.NewReader(raw))
 	if err != nil {
-		t.Fatalf("decode fetched png: %v", err)
+		t.Fatalf("decode fetched tier (%d bytes): %v", len(raw), err)
+	}
+	if format != imaging.TierFileExtension {
+		t.Fatalf("expected %s bytes from storage, got %q", imaging.TierFileExtension, format)
 	}
 	return cfg.Width, cfg.Height
 }
@@ -162,9 +169,9 @@ func TestEndToEndDeliveryPresignedTiers(t *testing.T) {
 
 	// The presigned URLs must actually fetch from MinIO, and the three tiers
 	// must be genuinely distinct sizes (PRD 06 §4).
-	fw, fh := fetchPNGDims(t, finalURL)
-	pw, ph := fetchPNGDims(t, previewURL)
-	tw, th := fetchPNGDims(t, thumbURL)
+	fw, fh := fetchTierDims(t, finalURL)
+	pw, ph := fetchTierDims(t, previewURL)
+	tw, th := fetchTierDims(t, thumbURL)
 
 	if tw >= pw || pw >= fw {
 		t.Fatalf("expected distinct tier widths thumb(%d) < preview(%d) < final(%d)", tw, pw, fw)
@@ -220,7 +227,7 @@ func TestEndToEndStylePreviewDelivery(t *testing.T) {
 		t.Fatal("preview asset must carry a presigned final URL")
 	}
 	// The preview sample is genuinely retrievable through the presigned read.
-	if w, h := fetchPNGDims(t, finalURL); w == 0 || h == 0 {
+	if w, h := fetchTierDims(t, finalURL); w == 0 || h == 0 {
 		t.Fatalf("preview image must be fetchable, got %dx%d", w, h)
 	}
 }

@@ -85,6 +85,18 @@ type Config struct {
 	// another real identity-capable provider is configured.
 	FalKey string
 
+	// FalSafetyChecker (FAL_SAFETY_CHECKER) turns the FLUX.1 Kontext [dev]
+	// endpoint's safety checker on. Default FALSE.
+	//
+	// This is the criterion the provider was chosen on. The provider research
+	// (docs/research/2026-08-08-alpha-channel-generation.md §1.5) records it
+	// verbatim — a permissiveness dial plus prompt-rewriting off by default is
+	// "why we are on fal, and it is worth protecting" — and OpenAI was rejected
+	// outright for having moderation with no off switch. The [dev] endpoint
+	// defaults this to true, so leaving it unset would silently import the
+	// vendor's policy as the product boundary.
+	FalSafetyChecker bool
+
 	// ChromaKeyBackgroundRemoval (CHROMA_KEY_BACKGROUND_REMOVAL) makes
 	// transparent packs render against a flat magenta backdrop and key it out
 	// locally, spending no provider call, and fall back to the hosted matting
@@ -164,9 +176,10 @@ func Load() (*Config, error) {
 		S3UsePathStyle:      getEnvBool("S3_USE_PATH_STYLE", false),
 		S3PresignTTL:        getEnvDuration("S3_PRESIGN_TTL", 15*time.Minute),
 
-		ImageProvider: Provider(getEnv("IMAGE_PROVIDER", string(ProviderMock))),
-		BFLAPIKey:     getEnv("BFL_API_KEY", ""),
-		FalKey:        getEnv("FAL_KEY", ""),
+		ImageProvider:    Provider(getEnv("IMAGE_PROVIDER", string(ProviderMock))),
+		BFLAPIKey:        getEnv("BFL_API_KEY", ""),
+		FalKey:           getEnv("FAL_KEY", ""),
+		FalSafetyChecker: getEnvBool("FAL_SAFETY_CHECKER", false),
 
 		APITokenPepper:     getEnv("API_TOKEN_PEPPER", ""),
 		OpenAPIDocsEnabled: getEnvBool("OPENAPI_DOCS_ENABLED", defaultDocsEnabled(env)),

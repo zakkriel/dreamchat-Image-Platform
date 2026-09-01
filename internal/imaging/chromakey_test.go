@@ -186,7 +186,7 @@ func TestChromaKeyOutputSurvivesEncodeTiers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("key: %v", err)
 	}
-	png, err := encodePNG(keyed)
+	png, err := encodePNGForTest(keyed)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}

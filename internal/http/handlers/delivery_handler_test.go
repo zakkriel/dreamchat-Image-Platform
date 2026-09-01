@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/zakkriel/drchat-image-platform/internal/assets"
+	"github.com/zakkriel/drchat-image-platform/internal/imaging"
 	"github.com/zakkriel/drchat-image-platform/internal/jobs"
 	"github.com/zakkriel/drchat-image-platform/internal/storage"
 )
@@ -97,11 +98,14 @@ func TestAssetGetReturnsPresignedTierURLs(t *testing.T) {
 	if resp["low_res_url"] != "s3://b/assets/asset_1/low.png" {
 		t.Fatalf("provenance low_res_url must be unchanged, got %v", resp["low_res_url"])
 	}
-	// Keys signed must be the DERIVED object keys, never a client path.
+	// Keys signed are never a client path. A tier with durable s3:// provenance
+	// is signed at THAT key — which is what lets assets written as PNG keep
+	// resolving after the delivery format changed — and a tier without one
+	// falls back to the derived key in the current format.
 	wantKeys := map[string]bool{
-		storage.ObjectKey("asset_1", storage.VariantThumb, "png"): true,
-		storage.ObjectKey("asset_1", storage.VariantLow, "png"):   true,
-		storage.ObjectKey("asset_1", storage.VariantHigh, "png"):  true,
+		"assets/asset_1/low.png": true, // from the stored LowResUrl
+		storage.ObjectKey("asset_1", storage.VariantThumb, imaging.TierFileExtension): true,
+		storage.ObjectKey("asset_1", storage.VariantHigh, imaging.TierFileExtension):  true,
 	}
 	if len(signer.calls) != 3 {
 		t.Fatalf("expected exactly 3 presign calls (one per tier), got %d: %v", len(signer.calls), signer.calls)

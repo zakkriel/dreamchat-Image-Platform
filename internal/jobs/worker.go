@@ -1329,12 +1329,30 @@ func (w *Worker) referenceURLsForIdentity(ctx context.Context, identityID, tenan
 		if asset.Status != assetStatusReady {
 			return nil, fmt.Errorf("%w: anchor %q is not ready (status %q)", errInvalidReference, anchorID, asset.Status)
 		}
-		if asset.HighResUrl == nil || *asset.HighResUrl == "" {
-			return nil, fmt.Errorf("%w: anchor %q has no high-res object", errInvalidReference, anchorID)
+		// Prefer the PREVIEW tier as the reference, falling back to high-res.
+		//
+		// Two reasons, both measured. The reference-conditioned [dev] endpoint
+		// renders at the reference's resolution (resolution_mode=match_input),
+		// and its meter is compute-seconds, so a 512 reference costs $0.0033
+		// against $0.0106 for a 1024 one — same character, a third of the price,
+		// with the delivery resolution rebuilt by imaging.Upscale afterwards.
+		// And a smaller reference is a smaller upload for the provider to fetch,
+		// which is billable time on a per-second meter.
+		//
+		// High-res remains the fallback so an asset without a preview tier (or
+		// written before tiers existed) still conditions rather than failing.
+		refURL := ""
+		if asset.LowResUrl != nil && *asset.LowResUrl != "" {
+			refURL = *asset.LowResUrl
+		} else if asset.HighResUrl != nil && *asset.HighResUrl != "" {
+			refURL = *asset.HighResUrl
 		}
-		key, ok := storage.KeyFromCanonicalURL(*asset.HighResUrl)
+		if refURL == "" {
+			return nil, fmt.Errorf("%w: anchor %q has no usable reference object", errInvalidReference, anchorID)
+		}
+		key, ok := storage.KeyFromCanonicalURL(refURL)
 		if !ok {
-			return nil, fmt.Errorf("%w: anchor %q has an unparseable high-res url", errInvalidReference, anchorID)
+			return nil, fmt.Errorf("%w: anchor %q has an unparseable reference url", errInvalidReference, anchorID)
 		}
 		// Provider-facing origin: fal downloads this URL from ITS servers, so it
 		// must be publicly reachable — not the caller-facing delivery origin,
@@ -1366,15 +1384,18 @@ func (w *Worker) uploadImages(ctx context.Context, assetID string, images []prov
 	if err != nil {
 		return uploadedURLs{}, fmt.Errorf("%w: encode tiers: %v", errStorageFailure, err)
 	}
-	high, err := w.Storage.Put(ctx, storage.ObjectKey(assetID, storage.VariantHigh, "png"), tiers.Final, "image/png")
+	// Key extension and Content-Type both come from the imaging package so the
+	// stored format is declared in exactly one place.
+	ext, ctype := imaging.TierFileExtension, imaging.TierContentType
+	high, err := w.Storage.Put(ctx, storage.ObjectKey(assetID, storage.VariantHigh, ext), tiers.Final, ctype)
 	if err != nil {
 		return uploadedURLs{}, err
 	}
-	low, err := w.Storage.Put(ctx, storage.ObjectKey(assetID, storage.VariantLow, "png"), tiers.Preview, "image/png")
+	low, err := w.Storage.Put(ctx, storage.ObjectKey(assetID, storage.VariantLow, ext), tiers.Preview, ctype)
 	if err != nil {
 		return uploadedURLs{}, err
 	}
-	thumb, err := w.Storage.Put(ctx, storage.ObjectKey(assetID, storage.VariantThumb, "png"), tiers.Thumb, "image/png")
+	thumb, err := w.Storage.Put(ctx, storage.ObjectKey(assetID, storage.VariantThumb, ext), tiers.Thumb, ctype)
 	if err != nil {
 		return uploadedURLs{}, err
 	}
