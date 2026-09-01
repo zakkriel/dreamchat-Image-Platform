@@ -588,11 +588,10 @@ func (w *Worker) process(ctx context.Context, jobID, expectedReservationID strin
 		},
 	}, attemptNumber)
 	if gerr != nil {
-		if errors.Is(gerr, providers.ErrContentPolicyRejected) {
-			// Content-policy rejection is terminal regardless of remaining asynq
-			// attempts: retrying identical content re-bills a deterministic
-			// rejection. Fail the job now (provider_content_rejected) and return
-			// nil so asynq does not retry.
+		if terminalGenerationError(gerr) {
+			// Terminal regardless of remaining asynq attempts (see
+			// terminalGenerationError): fail the job now and return nil so asynq
+			// does not retry a deterministic outcome.
 			w.failJobOnFinalAttempt(ctx, job, gerr, true, expectedReservationID)
 			return nil
 		}
@@ -905,8 +904,9 @@ func (w *Worker) processPreviewFirst(ctx context.Context, job Job, resolved reso
 			// Preview-phase chain exhausted: no preview asset is created. On the
 			// terminal attempt fail the job + release the reservation. Per-route
 			// failures were already recorded inside the walk. A content-policy
-			// rejection is terminal immediately (see the single-phase path).
-			if errors.Is(gerr, providers.ErrContentPolicyRejected) {
+			// rejection or a billable-cap refusal is terminal immediately (see the
+			// single-phase path).
+			if terminalGenerationError(gerr) {
 				w.failJobOnFinalAttempt(ctx, job, gerr, true, expectedReservationID)
 				return nil
 			}
@@ -1033,8 +1033,9 @@ func (w *Worker) processPreviewFirst(ctx context.Context, job Job, resolved reso
 		// Final-phase chain exhausted AFTER the preview was delivered: on the
 		// terminal attempt the job is marked failed and the reservation released.
 		// The preview asset stays preview_ready and final_asset_ids stays empty.
-		// A content-policy rejection is terminal immediately.
-		if errors.Is(gerr, providers.ErrContentPolicyRejected) {
+		// A content-policy rejection or a billable-cap refusal is terminal
+		// immediately.
+		if terminalGenerationError(gerr) {
 			w.failJobOnFinalAttempt(ctx, job, gerr, true, expectedReservationID)
 			return nil
 		}
@@ -1412,6 +1413,28 @@ func (w *Worker) generateWithFallback(ctx context.Context, job Job, primary reso
 		}
 		anyAdapter = true
 
+		// Wave 3.5 billable-call cap: the lifetime billable provider calls this
+		// job may make are bounded against what its ONE cost reservation priced,
+		// rather than being unbounded across asynq attempts x fallback routes. The
+		// count comes from the persisted provider_attempts rows
+		// (idx_provider_attempts_job) — the only counter that survives a retry.
+		// Checked AFTER the adapter-missing skip above (a skipped route bills
+		// nothing and must not consume the cap) and BEFORE the attempt row +
+		// adapter.Generate below, which is where the money is spent.
+		callCap := w.billableCallCap(job)
+		billed, err := w.Jobs.CountProviderAttempts(ctx, job.ID)
+		if err != nil {
+			return genResult{}, err
+		}
+		if int(billed) >= callCap {
+			w.log().Warn("worker: billable call cap reached; refusing further provider calls",
+				"job_id", job.ID, "billed", billed, "cap", callCap)
+			if lastErr != nil {
+				return genResult{}, lastErr
+			}
+			return genResult{}, errBillableCapReached
+		}
+
 		attempt, err := w.Jobs.InsertProviderAttempt(ctx, ProviderAttemptInsertParams{
 			ID:              ids.NewProviderAttemptID(),
 			GenerationJobID: job.ID,
@@ -1460,6 +1483,44 @@ func (w *Worker) generateWithFallback(ctx context.Context, job Job, primary reso
 		return genResult{}, fmt.Errorf("%w: no adapter registered for any route in the resolved chain (primary provider %q)", errProviderUnavailable, primary.providerID)
 	}
 	return genResult{}, lastErr
+}
+
+// billableCallCap is the lifetime billable provider calls this job may make:
+// MaxBillableCallsPerUnit for every unit its cost reservation priced. The unit
+// count is the one the handler persisted on the payload when it reserved
+// (service.go worstCaseBillableUnits → withCostContextPayload), so the cap and
+// the reservation describe the same job: one image is 1 unit (cap 3), a
+// preview-first render is 2 (cap 6), and a six-role pack is 6 (cap 18, against
+// today's unbounded worst case of 36).
+//
+// The payload's own shape is the floor for jobs written before units were
+// persisted (and for any future writer that forgets): a pack must be allowed at
+// least one call per role or the cap would deliver half a pack, and a
+// preview-first job renders a preview and a final on the same reservation. A
+// job with neither marker is one unit.
+func (w *Worker) billableCallCap(job Job) int {
+	units := int(payloadFloat64(job.InputPayload, "units"))
+	if cells, _ := job.InputPayload["variant_keys"].([]any); len(cells) > units {
+		units = len(cells)
+	}
+	if w.isPreviewFirst(job) && units < 2 {
+		units = 2
+	}
+	if units < 1 {
+		units = 1
+	}
+	return units * MaxBillableCallsPerUnit
+}
+
+// terminalGenerationError reports whether a generateWithFallback error must fail
+// the job now regardless of remaining asynq attempts, because retrying cannot
+// change the outcome. Two errors qualify: a content-policy rejection (retrying
+// identical content re-bills a deterministic refusal, and walking to another
+// route would circumvent the rejecting provider's decision) and a billable-call
+// cap refusal (the count is persisted, so a retry trips the same cap without
+// ever billing again — it would only burn attempts).
+func terminalGenerationError(err error) bool {
+	return errors.Is(err, providers.ErrContentPolicyRejected) || errors.Is(err, errBillableCapReached)
 }
 
 // updateProviderAttemptCost is best-effort because billing metadata must not
@@ -1764,6 +1825,11 @@ var (
 	errPersistence           = errors.New("persistence_error")
 	errMaxMegapixelsExceeded = errors.New("max_megapixels_exceeded")
 	errProviderUnavailable   = errors.New("provider_unavailable")
+	// errBillableCapReached is returned when a job has already billed
+	// MaxBillableCallsPerJob provider calls, so the walk refuses to make another
+	// one. It is terminal at the call sites: the count is persisted, so a retry
+	// would re-enter the walk and trip the same cap without ever billing again.
+	errBillableCapReached = errors.New("billable provider call cap reached for job")
 )
 
 func (w *Worker) log() *slog.Logger {
