@@ -28,7 +28,8 @@ func Registry(cfg *config.Config) *providers.Registry {
 	reg := providers.NewRegistry()
 	reg.Register(mock.ProviderID, mock.New())
 	if cfg.BFLAPIKey != "" {
-		reg.Register(bfl.ProviderID, bfl.New(cfg.BFLAPIKey))
+		reg.Register(bfl.ProviderID, bfl.New(cfg.BFLAPIKey,
+			bfl.WithSafetyTolerance(cfg.BFLSafetyTolerance)))
 	}
 	if cfg.FalKey != "" {
 		reg.Register(fal.ProviderID, fal.New(cfg.FalKey))

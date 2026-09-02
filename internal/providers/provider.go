@@ -23,6 +23,24 @@ var (
 	// caller verbatim as provider_content_rejected (docs/api/errors.md), never
 	// sanitized or hidden.
 	ErrContentPolicyRejected = errors.New("provider: content policy rejected")
+	// ErrProviderUnpaid marks a BILLING refusal - the provider account has no
+	// credit (BFL answers 402 on submit). Like a content rejection it is terminal
+	// for the job: an unpaid account is still unpaid on the next sweep, so every
+	// retry is a request spent to be told the same thing.
+	//
+	// WHY THIS IS ITS OWN CLASS. Measured 2026-09-01: 875 artifact jobs failed in
+	// 24h, all `submit returned status 402`, each re-submitted by the world
+	// backend's 2-minute reconciler. Those doomed submits consumed the whole
+	// 1000-requests/hour token budget, and the asset READ path shares that budget -
+	// so a billing problem on ONE provider blacked out every already-rendered
+	// picture in the product, including those made by the other, fully-paid
+	// provider. A refusal that cannot change must never be retried on a shared
+	// budget.
+	//
+	// It stays distinct from ErrContentPolicyRejected because the remedy differs:
+	// content needs a different prompt, this needs a payment. Collapsing them would
+	// report "content rejected" for an unpaid invoice.
+	ErrProviderUnpaid = errors.New("provider: account unpaid")
 )
 
 type PreviewCapability string

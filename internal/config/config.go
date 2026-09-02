@@ -97,6 +97,15 @@ type Config struct {
 	// vendor's policy as the product boundary.
 	FalSafetyChecker bool
 
+	// BFLSafetyTolerance (BFL_SAFETY_TOLERANCE) is BFL's permissiveness dial, 1..6,
+	// 1 strictest and 6 most permissive. BFL's own default is 2, so an adapter that
+	// sends nothing renders every background under a near-strict vendor policy - which
+	// is exactly the failure the FalSafetyChecker comment above describes, and it went
+	// unnoticed on this provider for the whole life of the scene path. Default 6: the
+	// dial is the criterion this platform chose its provider on, and it is worth
+	// protecting on every provider rather than only the one it was noticed on.
+	BFLSafetyTolerance int
+
 	// ChromaKeyBackgroundRemoval (CHROMA_KEY_BACKGROUND_REMOVAL) makes
 	// transparent packs render against a flat magenta backdrop and key it out
 	// locally, spending no provider call, and fall back to the hosted matting
@@ -176,10 +185,11 @@ func Load() (*Config, error) {
 		S3UsePathStyle:      getEnvBool("S3_USE_PATH_STYLE", false),
 		S3PresignTTL:        getEnvDuration("S3_PRESIGN_TTL", 15*time.Minute),
 
-		ImageProvider:    Provider(getEnv("IMAGE_PROVIDER", string(ProviderMock))),
-		BFLAPIKey:        getEnv("BFL_API_KEY", ""),
-		FalKey:           getEnv("FAL_KEY", ""),
-		FalSafetyChecker: getEnvBool("FAL_SAFETY_CHECKER", false),
+		ImageProvider:      Provider(getEnv("IMAGE_PROVIDER", string(ProviderMock))),
+		BFLAPIKey:          getEnv("BFL_API_KEY", ""),
+		FalKey:             getEnv("FAL_KEY", ""),
+		FalSafetyChecker:   getEnvBool("FAL_SAFETY_CHECKER", false),
+		BFLSafetyTolerance: getEnvInt("BFL_SAFETY_TOLERANCE", 6),
 
 		APITokenPepper:     getEnv("API_TOKEN_PEPPER", ""),
 		OpenAPIDocsEnabled: getEnvBool("OPENAPI_DOCS_ENABLED", defaultDocsEnabled(env)),

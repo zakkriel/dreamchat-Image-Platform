@@ -67,11 +67,19 @@ Provider errors should be normalized:
 provider_timeout
 provider_rate_limited
 provider_content_rejected
+provider_unpaid
 provider_auth_failed
 provider_capacity_error
 provider_invalid_request
 provider_unknown_error
 ```
+
+`provider_content_rejected` and `provider_unpaid` are **terminal**: the same request will
+fail the same way until a human changes something (different content, or a paid invoice).
+A consumer that re-submits them on a timer spends its request budget to be told the same
+thing — and since the asset READ path shares that budget, doing so blacks out pictures
+that already exist. Retry `provider_timeout`, `provider_rate_limited` and
+`provider_capacity_error`; never these two.
 
 ---
 
