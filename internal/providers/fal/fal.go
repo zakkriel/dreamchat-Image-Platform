@@ -72,6 +72,34 @@ const (
 	ModelNameKontextDev  = "flux-kontext-dev"
 	modelPathKontextDev  = "fal-ai/flux-kontext/dev"
 
+	// ProviderIDFluxPro11, ModelNameFluxPro11 and modelPathFluxPro11 are fal's
+	// PROMPT-ONLY endpoint: FLUX1.1 [pro] text-to-image, no reference image.
+	//
+	// WHY IT EXISTS. Kontext is reference-conditioned and fails closed without a
+	// reference, correctly, so a recurring character never drifts. But a place or a
+	// world cover has nothing to condition on, so scene work could never resolve to
+	// fal at all - bfl held the only real scene_capable route, and when its account
+	// ran dry on 2026-09-01, 875 scene jobs failed in 24h with nothing to fall back
+	// to. This endpoint is the second scene route, on the provider this platform
+	// already pays for and already selected for its permissiveness dial.
+	//
+	// Distinct provider id rather than a second model under "fal", for the reason
+	// migration 0020 and image:ADR-016/017 give: capability reconciliation is per
+	// adapter and fails closed on adapter-reported capabilities, and this endpoint's
+	// capability set is deliberately narrower than kontext's.
+	ProviderIDFluxPro11 = "fal_t2i"
+	ModelNameFluxPro11  = "flux-pro-1.1"
+	modelPathFluxPro11  = "fal-ai/flux-pro/v1.1"
+
+	// fluxPro11SafetyTolerance is the permissiveness asked of the prompt-only
+	// endpoint. fal documents 1..5 for it (1 strictest, 5 most permissive) with
+	// default 2, and enable_safety_checker defaulting TRUE - so sending neither
+	// imports the vendor's policy as the product boundary, which is the failure
+	// config.go names for the kontext-dev switch. 5, not 6: 6 is BFL's ceiling,
+	// not fal's, and inventing a value outside the documented range would be a
+	// fabricated contract.
+	fluxPro11SafetyTolerance = 5
+
 	// resolutionModeMatchInput makes the dev endpoint render at the reference
 	// image's resolution. That is what turns a cheap small reference into a
 	// cheap small render: the compute-second meter scales with pixels
@@ -118,6 +146,10 @@ type Provider struct {
 	// safetyChecker is the [dev] endpoint's enable_safety_checker. Default
 	// false — see WithSafetyChecker.
 	safetyChecker bool
+
+	// promptOnly selects the FLUX1.1 [pro] text-to-image request shape: a prompt
+	// and an image_size preset, no reference image of any kind.
+	promptOnly bool
 }
 
 // Option configures a Provider (used to inject the HTTP client, base URL, and
@@ -186,6 +218,46 @@ func NewKontextDev(apiKey string, opts ...Option) *Provider {
 	return p
 }
 
+// NewFluxPro11 builds the PROMPT-ONLY fal adapter (FLUX1.1 [pro] text-to-image).
+//
+// It is the second real scene_capable route. Kontext cannot take scene work - it
+// requires a reference image and fails closed without one - so before this existed
+// every background in the product depended on a single provider's account being in
+// credit. It is registered under its own provider id for the reason image:ADR-016
+// gives: capability reconciliation compares ADAPTER-REPORTED capabilities against
+// the seeded route and disables the route on a mismatch, and this adapter's set is
+// narrower than kontext's on purpose.
+func NewFluxPro11(apiKey string, opts ...Option) *Provider {
+	p := New(apiKey, opts...)
+	p.promptOnly = true
+	if p.modelPath == modelPath {
+		p.modelPath = modelPathFluxPro11
+	}
+	return p
+}
+
+// falImageSize maps this platform's aspect vocabulary to fal's image_size presets.
+//
+// v1.1 has no aspect_ratio parameter: geometry is a named preset. Sending
+// aspect_ratio would be an invented contract - the same mistake the kontext-dev
+// branch avoids by refusing to send both. An unknown aspect falls back to the
+// endpoint's own documented default rather than guessing a preset.
+func falImageSize(aspect string) string {
+	switch aspect {
+	case "1:1":
+		return "square_hd"
+	case "16:9":
+		return "landscape_16_9"
+	case "9:16":
+		return "portrait_16_9"
+	case "4:3":
+		return "landscape_4_3"
+	case "3:4":
+		return "portrait_4_3"
+	}
+	return ""
+}
+
 // WithSafetyChecker enables or disables the dev endpoint's safety checker.
 //
 // This is the whole reason the platform is on fal. The provider research
@@ -207,6 +279,24 @@ func WithSafetyChecker(enabled bool) Option {
 // exist. The capability set matches the model row seeded in migration 0011.
 func (p *Provider) Capabilities() providers.ProviderCapabilities {
 	id, model := ProviderID, ModelName
+	if p.promptOnly {
+		// Scene work only. Claiming identity/pack here would let recurring-character
+		// work resolve to a prompt-only endpoint, which is exactly the drift the
+		// kontext fail-closed guard exists to prevent.
+		return providers.ProviderCapabilities{
+			ProviderID: ProviderIDFluxPro11,
+			ModelName:  ModelNameFluxPro11,
+			Capabilities: []providers.Capability{
+				providers.CapabilitySceneCapable,
+			},
+			PreviewCapability:      providers.PreviewCapabilityNone,
+			SupportsHighRes:        false,
+			MaxBatchSize:           1,
+			SupportedAspects:       []string{"1:1", "16:9", "9:16", "4:3", "3:4"},
+			Synthetic:              false,
+			RequiresReferenceImage: false,
+		}
+	}
 	if p.kontextDev {
 		// Report the endpoint this adapter actually calls. Capability
 		// reconciliation compares these against the seeded route (image:ADR-016,
@@ -265,9 +355,15 @@ func (p *Provider) Generate(ctx context.Context, req providers.ProviderGenerateR
 	if p.apiKey == "" {
 		return providers.ProviderGenerateResult{}, fmt.Errorf("%w: missing API key", ErrProvider)
 	}
-	if len(req.ReferenceURLs) == 0 {
+	if !p.promptOnly && len(req.ReferenceURLs) == 0 {
 		// Fail closed: FLUX.1 Kontext is reference-conditioned. With no reference we
 		// would produce an arbitrary subject, not the recurring character.
+		//
+		// The prompt-only endpoint is exempt because it is the opposite contract: a
+		// place has no reference to condition on, and refusing here is precisely what
+		// left scene work with a single provider. The exemption is narrow on purpose -
+		// promptOnly also declines identity/pack capability, so identity work can
+		// never resolve to it and quietly render a different character each call.
 		return providers.ProviderGenerateResult{}, providers.ErrReferenceRequired
 	}
 	if err := ctx.Err(); err != nil {
@@ -381,7 +477,16 @@ func (p *Provider) submit(ctx context.Context, req providers.ProviderGenerateReq
 		// Ask for PNG at the source.
 		"output_format": "png",
 	}
-	if p.kontextDev {
+	if p.promptOnly {
+		// Prompt and geometry only: no image_url, no image_urls. Permissiveness is
+		// sent explicitly because fal defaults enable_safety_checker TRUE and
+		// safety_tolerance to 2 of 5 on this endpoint.
+		if size := falImageSize(req.AspectRatio); size != "" {
+			body["image_size"] = size
+		}
+		body["enable_safety_checker"] = p.safetyChecker
+		body["safety_tolerance"] = fluxPro11SafetyTolerance
+	} else if p.kontextDev {
 		// [dev] takes ONE reference (image_url), not [pro]'s image_urls array.
 		// An identity with several anchors therefore conditions on its FIRST
 		// anchor only — a real difference between the two endpoints, and the
@@ -399,7 +504,7 @@ func (p *Provider) submit(ctx context.Context, req providers.ProviderGenerateReq
 	} else {
 		body["image_urls"] = req.ReferenceURLs
 	}
-	if req.AspectRatio != "" && !p.kontextDev {
+	if req.AspectRatio != "" && !p.kontextDev && !p.promptOnly {
 		// [dev] has no aspect_ratio; resolution_mode owns output geometry and
 		// sending both would be an invented contract.
 		body["aspect_ratio"] = req.AspectRatio

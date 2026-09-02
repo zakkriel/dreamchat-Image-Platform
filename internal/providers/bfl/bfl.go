@@ -76,6 +76,8 @@ type Provider struct {
 	httpClient   Doer
 	pollInterval time.Duration
 	timeout      time.Duration
+	// safetyTolerance is BFL's permissiveness dial, 1..6. Always sent.
+	safetyTolerance int
 }
 
 // Option configures a Provider (used to inject the HTTP client, base URL, and
@@ -99,6 +101,29 @@ func WithTimeout(d time.Duration) Option { return func(p *Provider) { p.timeout 
 
 // New builds a BFL adapter. apiKey is the BFL_API_KEY; opts inject the HTTP
 // client / endpoints / timing for tests.
+// defaultSafetyTolerance is the permissiveness this product asks BFL for.
+//
+// BFL accepts safety_tolerance 1..6, 1 strictest, 6 most permissive, DEFAULT 2
+// (docs.bfl.ml/flux_models/flux_1_1_pro). Sending nothing therefore renders every
+// background under a near-strict vendor policy - which is what happened until now,
+// and it contradicts the world's own latitude block that ships byte-identically in
+// every seat prompt (world backend ADR-P022).
+//
+// The platform takes no content stance of its own; it declines to let a vendor take
+// one silently on the caller's behalf. This mirrors FAL_SAFETY_CHECKER, whose comment
+// in internal/config/config.go states the rule: "leaving it unset would silently
+// import the vendor's policy as the product boundary." The dial is what the provider
+// research named as the reason this platform is on fal at all - it is worth protecting
+// on every provider, not just the one it was noticed on.
+//
+// 6 is the most permissive the API offers. A rejection is still possible and still
+// terminal (providers.ErrContentPolicyRejected): asking is not overriding.
+const defaultSafetyTolerance = 6
+
+// WithSafetyTolerance overrides the permissiveness sent to BFL (1..6). Deployment
+// config, never a code edit, because it is a product boundary.
+func WithSafetyTolerance(v int) Option { return func(p *Provider) { p.safetyTolerance = v } }
+
 func New(apiKey string, opts ...Option) *Provider {
 	p := &Provider{
 		apiKey:       apiKey,
@@ -107,6 +132,8 @@ func New(apiKey string, opts ...Option) *Provider {
 		httpClient:   &http.Client{},
 		pollInterval: defaultPollInterval,
 		timeout:      defaultTimeout,
+
+		safetyTolerance: defaultSafetyTolerance,
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -194,7 +221,9 @@ func (p *Provider) Generate(ctx context.Context, req providers.ProviderGenerateR
 }
 
 func (p *Provider) submit(ctx context.Context, req providers.ProviderGenerateRequest) (submitResponse, error) {
-	body := map[string]any{"prompt": req.Prompt}
+	// safety_tolerance is always sent: an omitted dial is the vendor's default, and the
+	// product boundary is not the vendor's to choose (see defaultSafetyTolerance).
+	body := map[string]any{"prompt": req.Prompt, "safety_tolerance": p.safetyTolerance}
 	if req.Width > 0 {
 		body["width"] = req.Width
 	}
@@ -227,6 +256,15 @@ func (p *Provider) submit(ctx context.Context, req providers.ProviderGenerateReq
 	defer drainClose(resp.Body)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// 402 is a BILLING refusal, not a bad minute: the account has no credit and
+		// will not have any on the next attempt. Tagging it terminal is what stops
+		// the reconciler re-submitting it every two minutes and spending the shared
+		// request budget the asset read path needs (see providers.ErrProviderUnpaid).
+		// Every other status stays as it was - a plain provider error the worker may
+		// retry, because a 429 or a 5xx genuinely can succeed next time.
+		if resp.StatusCode == http.StatusPaymentRequired {
+			return submitResponse{}, fmt.Errorf("%w: %w: submit returned status %d", ErrProvider, providers.ErrProviderUnpaid, resp.StatusCode)
+		}
 		return submitResponse{}, fmt.Errorf("%w: submit returned status %d", ErrProvider, resp.StatusCode)
 	}
 

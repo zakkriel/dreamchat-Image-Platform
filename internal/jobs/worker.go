@@ -59,6 +59,15 @@ const (
 	// content stance: the rejection is surfaced, never sanitized, and never
 	// walked around via fallback routes or asynq retries.
 	errorCodeContentRejected = "provider_content_rejected"
+	// errorCodeProviderUnpaid is the terminal failure code when the provider
+	// ACCOUNT has no credit (BFL answers 402 on submit). It is deliberately
+	// distinct from provider_failure: a consumer must retry a transient failure on
+	// its next sweep and must NOT retry this one, and it cannot tell the two apart
+	// from a single generic code. The world backend's art reconciler keys on it to
+	// leave a slot alone until someone pays, instead of re-submitting it every two
+	// minutes (which is what drained the shared request budget on 2026-09-01 and
+	// blacked out every picture in the product).
+	errorCodeProviderUnpaid = "provider_unpaid"
 
 	// deliveryRenderEdge is the square edge (px) the worker asks the provider
 	// to produce so the "final" tier is genuinely higher resolution than the
@@ -1541,7 +1550,12 @@ func (w *Worker) billableCallCap(job Job) int {
 // cap refusal (the count is persisted, so a retry trips the same cap without
 // ever billing again — it would only burn attempts).
 func terminalGenerationError(err error) bool {
-	return errors.Is(err, providers.ErrContentPolicyRejected) || errors.Is(err, errBillableCapReached)
+	return errors.Is(err, providers.ErrContentPolicyRejected) ||
+		errors.Is(err, errBillableCapReached) ||
+		// An unpaid account is the same shape of certainty: the invoice will not be
+		// settled between two asynq attempts, so every retry spends a request from
+		// a budget the asset read path needs to share.
+		errors.Is(err, providers.ErrProviderUnpaid)
 }
 
 // updateProviderAttemptCost is best-effort because billing metadata must not
@@ -1834,6 +1848,9 @@ func errorCodeFor(err error) string {
 	}
 	if errors.Is(err, providers.ErrContentPolicyRejected) {
 		return errorCodeContentRejected
+	}
+	if errors.Is(err, providers.ErrProviderUnpaid) {
+		return errorCodeProviderUnpaid
 	}
 	if errors.Is(err, providers.ErrReferenceRequired) {
 		return errorCodeMissingReference

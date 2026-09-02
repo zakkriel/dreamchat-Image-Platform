@@ -162,9 +162,11 @@ jobs:
           echo "goose version: $v"
           # Chunk 1 added 0012-0017; Wave 2 added the 0018 fal identity route
           # seed; Wave 3 added the 0019 cost-event reservation link; Wave 4
-          # added the 0020 Kontext [dev] provider/price/route seed.
-          # Head is now 20.
-          test "$v" = "20"
+          # added the 0020 Kontext [dev] provider/price/route seed; 0021 seeds
+          # the prompt-only fal scene route, so scene_capable stops depending on
+          # a single provider's account being in credit.
+          # Head is now 21.
+          test "$v" = "21"
 
       - name: assert migrations round-trip above baseline (up -> down-to 11 -> up)
         env:
@@ -187,7 +189,7 @@ jobs:
           go run ./cmd/migrate up
           v=$(psql -h localhost -U image_platform -d image_platform -tAc \
             "SELECT max(version_id) FROM goose_db_version WHERE is_applied")
-          test "$v" = "20" || { echo "ERROR: after re-up, version=$v (want 20)"; exit 1; }
+          test "$v" = "21" || { echo "ERROR: after re-up, version=$v (want 21)"; exit 1; }
           count=$(psql -h localhost -U image_platform -d image_platform -tAc \
             "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'")
           test "$count" = "24" || { echo "ERROR: after re-up, table count=$count (want 24)"; exit 1; }

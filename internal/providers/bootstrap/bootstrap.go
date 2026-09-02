@@ -28,7 +28,8 @@ func Registry(cfg *config.Config) *providers.Registry {
 	reg := providers.NewRegistry()
 	reg.Register(mock.ProviderID, mock.New())
 	if cfg.BFLAPIKey != "" {
-		reg.Register(bfl.ProviderID, bfl.New(cfg.BFLAPIKey))
+		reg.Register(bfl.ProviderID, bfl.New(cfg.BFLAPIKey,
+			bfl.WithSafetyTolerance(cfg.BFLSafetyTolerance)))
 	}
 	if cfg.FalKey != "" {
 		reg.Register(fal.ProviderID, fal.New(cfg.FalKey))
@@ -36,6 +37,13 @@ func Registry(cfg *config.Config) *providers.Registry {
 		// its own provider id because capability reconciliation and pricing are
 		// per adapter, and it is the cheaper identity path (migration 0020).
 		reg.Register(fal.ProviderIDKontextDev, fal.NewKontextDev(cfg.FalKey,
+			fal.WithSafetyChecker(cfg.FalSafetyChecker)))
+		// Same key, third endpoint: the PROMPT-ONLY scene route. Kontext cannot take
+		// scene work (it fails closed without a reference), so before this the only
+		// real scene_capable route was bfl - a single provider whose account running
+		// dry took every background in the product with it. Registered under its own
+		// id because capability reconciliation is per adapter (image:ADR-016).
+		reg.Register(fal.ProviderIDFluxPro11, fal.NewFluxPro11(cfg.FalKey,
 			fal.WithSafetyChecker(cfg.FalSafetyChecker)))
 	}
 	return reg
