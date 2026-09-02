@@ -107,7 +107,10 @@ func main() {
 
 	// Phase 7A: data-driven provider route resolver. It reads provider_routes /
 	// provider_models and only selects routes to providers configured in this
-	// process (cfg.AvailableProviders): mock always; bfl only with a key.
+	// process. Availability comes from the REGISTRY (bootstrap.AvailableProviders),
+	// the same source as the capability index below: a hand-written second list can
+	// disagree with it, and then a route reconciles "valid" at boot and is silently
+	// unselectable forever.
 	// Route resolution reads global reference tables (provider_routes /
 	// provider_models), which carry no tenant_id and are NOT RLS-protected, so it
 	// runs on the system pool.
@@ -117,7 +120,7 @@ func main() {
 	// real capabilities) as defense-in-depth behind the boot-time reconciler.
 	routeSource := routing.NewDBRouteSource(systemDB.Pool())
 	capabilityIndex := bootstrap.CapabilityIndex(cfg)
-	resolver := routing.NewResolver(routeSource, cfg.AvailableProviders()).
+	resolver := routing.NewResolver(routeSource, bootstrap.AvailableProviders(cfg)).
 		WithProviderCapabilities(capabilityIndex).
 		WithSyntheticIdentityAllowed(cfg.AllowSyntheticProviders)
 
