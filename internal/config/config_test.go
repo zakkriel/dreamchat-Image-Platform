@@ -209,14 +209,6 @@ func TestFalProviderRequiresAPIKey(t *testing.T) {
 
 // TestFalAvailableOnlyWithKey proves fal joins the available-provider set (so its
 // routes become resolvable) only when FAL_KEY is configured.
-func TestFalAvailableOnlyWithKey(t *testing.T) {
-	if (&Config{}).AvailableProviders()[string(ProviderFal)] {
-		t.Fatal("fal must not be available without FAL_KEY")
-	}
-	if !(&Config{FalKey: "k"}).AvailableProviders()[string(ProviderFal)] {
-		t.Fatal("fal must be available when FAL_KEY is set")
-	}
-}
 
 func TestGovernanceConfigDefaults(t *testing.T) {
 	t.Setenv("POSTGRES_DSN", "x")

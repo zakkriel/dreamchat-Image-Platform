@@ -220,22 +220,6 @@ func defaultDocsEnabled(env Environment) bool {
 	return env != EnvLive
 }
 
-// AvailableProviders returns the set of provider ids configured/usable in this
-// process (Phase 7A). mock is always available; bfl is available only when a
-// BFL_API_KEY is set. The route resolver consults this so it never selects a
-// route to a provider this process cannot invoke, and the worker registry
-// registers exactly these providers.
-func (c *Config) AvailableProviders() map[string]bool {
-	available := map[string]bool{string(ProviderMock): true}
-	if c.BFLAPIKey != "" {
-		available[string(ProviderBFL)] = true
-	}
-	if c.FalKey != "" {
-		available[string(ProviderFal)] = true
-	}
-	return available
-}
-
 // SystemDSN resolves the DSN for the system / BYPASSRLS role. It returns
 // PostgresSystemDSN when set, otherwise falls back to PostgresDSN. The fallback
 // keeps local/dev/CI working when only POSTGRES_DSN is configured (the role
