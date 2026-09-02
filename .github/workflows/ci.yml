@@ -189,7 +189,7 @@ jobs:
           go run ./cmd/migrate up
           v=$(psql -h localhost -U image_platform -d image_platform -tAc \
             "SELECT max(version_id) FROM goose_db_version WHERE is_applied")
-          test "$v" = "20" || { echo "ERROR: after re-up, version=$v (want 20)"; exit 1; }
+          test "$v" = "21" || { echo "ERROR: after re-up, version=$v (want 21)"; exit 1; }
           count=$(psql -h localhost -U image_platform -d image_platform -tAc \
             "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'")
           test "$count" = "24" || { echo "ERROR: after re-up, table count=$count (want 24)"; exit 1; }
