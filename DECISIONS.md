@@ -95,15 +95,29 @@ S3_SECRET_ACCESS_KEY
 S3_USE_PATH_STYLE            # true for MinIO/local; false/default for AWS S3/R2 virtual-hosted style
 S3_PRESIGN_TTL               # presigned read-URL lifetime (default 15m)
 
-IMAGE_PROVIDER               # mock | bfl | fal — the single provider switch
-BFL_API_KEY                  # only required when IMAGE_PROVIDER=bfl
-FAL_KEY                      # registers the fal reference-conditioned adapters
-                             # (identity/pack routes) when set: BOTH FLUX.1
-                             # Kontext [pro] (provider id `fal`) and [dev]
-                             # (provider id `fal_dev`, cheaper, preferred at
-                             # route priority 150)
+IMAGE_PROVIDER               # mock | bfl | fal — a TIE-BREAK PREFERENCE, not a
+                             # filter. Real selection is the provider_routes
+                             # table ordered by priority; availability comes from
+                             # the registry (bootstrap.AvailableProviders)
+BFL_API_KEY                  # registers the bfl prompt-only scene adapter
+BFL_SAFETY_TOLERANCE         # default 6 (most permissive BFL offers; its own
+                             # default is 2 of 6, near strictest). Same reason as
+                             # FAL_SAFETY_CHECKER below: the product boundary is
+                             # not the vendor's to choose. Sending nothing is what
+                             # moderated every background until 2026-09-01
+FAL_KEY                      # registers THREE adapters, one credential:
+                             # - FLUX.1 Kontext [pro]  `fal`      identity/pack
+                             # - FLUX.1 Kontext [dev]  `fal_dev`  identity/pack,
+                             #   cheaper, priority 150
+                             # - FLUX1.1 [pro]         `fal_t2i`  SCENES,
+                             #   prompt-only, priority 150
+                             # `fal_t2i` exists because Kontext is
+                             # reference-conditioned and fails closed without one,
+                             # so scenes could only ever reach bfl — one provider's
+                             # unpaid invoice was a whole-product outage
 FAL_SAFETY_CHECKER           # default false. Sends enable_safety_checker on the
-                             # Kontext [dev] endpoint, which defaults it TRUE.
+                             # endpoints that expose it — Kontext [dev] and
+                             # FLUX1.1 [pro] — both of which default it TRUE.
                              # The permissiveness being OURS to set is the
                              # documented reason this platform is on fal at all
                              # (docs/research/2026-08-08-alpha-channel-

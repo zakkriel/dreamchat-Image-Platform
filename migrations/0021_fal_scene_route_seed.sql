@@ -3,6 +3,8 @@
 --
 -- Give `scene_capable` a SECOND real route, on fal's prompt-only endpoint.
 --
+-- Decision: image:ADR-I005.
+--
 -- WHY: until now scene work had exactly one route that could actually render -
 -- bfl. fal's adapters are FLUX.1 Kontext, which is reference-conditioned and
 -- fails closed without a reference image (correctly: it is what stops a
