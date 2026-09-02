@@ -561,6 +561,36 @@ contract needed to leave `log_only`.
   consumer must persist `identity_id → asset_id` itself). OpenAPI `0.14.0 → 0.14.1`
   (description + client guidance only; no schema, endpoint, behavior, or
   generated-code change). **No migration** (head stays **19**).
+- **Terminal refusals, the BFL dial, and a second scene route** (Done, 2026-09-01):
+  three fixes behind one total art blackout — every picture in the product
+  unfetchable while 544 assets sat `ready` in storage. (1) **`402` is terminal.**
+  BFL answers `402` when its account has no credit; the adapter flattened every
+  non-2xx into one error, so an unpaid invoice was indistinguishable from a `429`,
+  and the world backend's 2-minute sweep re-commissioned those owners forever —
+  **875 failed jobs in 24h**. They drained the token's whole 1000-requests/hour
+  budget, and because the asset READ path spends the same budget, `GET
+  /v1/assets/{id}` began answering `429` for everything, including assets **fal**
+  had rendered and been paid for. New `providers.ErrProviderUnpaid` +
+  `provider_unpaid` code, in `terminalGenerationError` (no asynq re-attempt) but
+  deliberately **not** in the fallback-walk stop: walking around a moderation
+  decision would circumvent policy, walking around an unpaid invoice just uses a
+  provider that IS paid. (2) **`BFL_SAFETY_TOLERANCE`**, default 6. BFL's own
+  default is 2 of 6, near strictest, and the adapter sent `{prompt,width,height}`
+  only — so every background rendered under the vendor's policy while the world's
+  latitude block said otherwise (20 slots terminal on `Content Moderated`). This is
+  the trap `config.go` already named for `FAL_SAFETY_CHECKER`; the protection had
+  been applied to fal and never here. (3) **`fal_t2i`** — FLUX1.1 [pro],
+  prompt-only, `scene_capable` ONLY, migration **0021** at priority 150 ahead of
+  bfl's 200. Kontext is reference-conditioned and fails closed without a reference,
+  so scenes could only ever reach bfl and one provider's billing status was a
+  whole-product outage. (4) **Availability now comes from the registry**
+  (`bootstrap.AvailableProviders` = `Registry(cfg).Available()`);
+  `config.AvailableProviders` is **deleted**. The hand-written list omitted
+  `fal_dev` and `fal_t2i`, so the resolver silently dropped their routes while the
+  boot reconciler logged them `decision="valid"` — the new scene route took **zero**
+  requests (66 attempts, all bfl) and **0020's routes had never once been
+  selectable**. Verified in production: 11/11 world covers and 6/6 character
+  sprites redirect and download real bytes. Migration head **19 → 21**.
 
 ## Cost optimization waves (Wave 3/4)
 
